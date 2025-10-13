@@ -107,6 +107,19 @@ def main(args: Any) -> None:
         )
         if args.prune_docker:
             docker.from_env().containers.prune()
+
+    elif args.mode == "bench":
+        task_handler.run_bench(
+            samples=samples,
+            timeout=args.timeout,
+            num_ports=args.num_ports,
+            min_port=args.min_port,
+            force=args.force,
+        )
+    elif args.mode == "plot":
+        task_handler.plot_bench(
+            samples=samples,
+        )
     elif args.mode == "evaluate":
         r = task_handler.evaluate_results(
             ks=ks,
@@ -130,6 +143,8 @@ if __name__ == "__main__":
         choices=[
             "generate",
             "test",
+            "bench",
+            "plot",
             "evaluate"
         ],
         required=True,
@@ -198,7 +213,7 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--safety_prompt",
-        choices=["none", "generic", "specific"],
+        choices=["none", "generic", "specific", "performance"],
         default="none",
         type=str,
         help="The type of additional safety cue to use.",

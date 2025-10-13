@@ -145,8 +145,10 @@ class Prompter:
             or model.startswith("o3")
             or self.model.startswith("gpt-5")
         )
-        self.anthropic = "claude" in model
-        self.openai = (self.openai_reasoning or "gpt" in self.model) and not vllm
+        # self.anthropic = "claude" in model
+        self.anthropic = False
+        # self.openai = (self.openai_reasoning or "gpt" in self.model) and not vllm
+        self.openai = False
         self.openrouter = openrouter and not (self.anthropic or self.openai)
         self.vllm = vllm and not (self.anthropic or self.openai or self.openrouter)
         self.anthropic_thinking = model in self.anthropic_thinking_lengths
