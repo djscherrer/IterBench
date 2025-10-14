@@ -23,6 +23,7 @@ pdfplumber = "*"
 imageio = "*"
 types-pyyaml = "*"
 matplotlib = "*"
+openhands-ai = "*"
 
 [requires]
 python_version = "3.12"

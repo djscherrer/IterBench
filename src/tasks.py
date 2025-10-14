@@ -22,7 +22,7 @@ import cwes as cwe
 from env.base import COMMON_DOCKER_RUN_COMMANDS, Env
 from prompts import Prompter
 from scenarios.base import AppInstance, FunctionalTest, Scenario, SecurityTest
-
+from prompts_openhands import OpenHandsPrompter
 
 def esc(s: str) -> str:
     return s.replace("/", "-")
@@ -111,10 +111,14 @@ class Task:
     safety_prompt: str
     openrouter: bool
     vllm: bool
+    use_openhands: bool = False
 
     @property
     def id(self) -> str:
-        return f"{self.model}-{self.env.id}-{self.scenario.id}-{self.spec_type}-{self.safety_prompt}-{self.temperature}"
+        base_id = f"{self.model}-{self.env.id}-{self.scenario.id}-{self.spec_type}-{self.safety_prompt}-{self.temperature}"
+        if self.use_openhands:
+            return f"{base_id}-openhands"
+        return base_id
 
     @contextmanager
     def create_logger(
@@ -263,36 +267,68 @@ class Task:
                 self.reasoning_effort,
             )
 
-            prompter = Prompter(
-                env=self.env,
-                scenario=self.scenario,
-                model=self.model,
-                spec_type=self.spec_type,
-                safety_prompt=self.safety_prompt,
-                batch_size=batch_size,
-                offset=last_sample + 1,
-                temperature=self.temperature,
-                reasoning_effort=self.reasoning_effort,
-                openrouter=openrouter,
-                vllm=vllm,
-                vllm_port=vllm_port,
-            )
-            logger.info("built prompt:\n%s", prompter.prompt)
-            logger.info("-" * 100)
+            if self.use_openhands:
+                logger.info(F"Using OpenHands agent for code generation")
 
-            try:
-                prompter.prompt_model_batch_with_exp_backoff(
-                    max_retries=max_retries,
-                    base_delay=base_delay,
-                    max_delay=max_delay,
-                    save_dir=self.get_save_dir(results_dir),
-                    logger=logger,
+                prompter_oh = OpenHandsPrompter(
+                    env=self.env,
+                    scenario=self.scenario,
+                    model=self.model,
+                    spec_type=self.spec_type,
+                    safety_prompt=self.safety_prompt,
+                    temperature=self.temperature,
+                    openrouter=self.openrouter,
                 )
-            except KeyboardInterrupt:
-                raise
-            except Exception as e:
-                logger.exception("got exception:\n%s", str(e), exc_info=e)
-                return
+                logger.info("Built agent task:\n%s", prompter_oh.task)
+                for sample in range(last_sample + 1, last_sample + 1 + batch_size):
+                    try:
+                        logger.info(f"Generating sample {sample} with OpenHands...")
+                        code_dir = prompter_oh.generate_code_with_agent(
+                            sample_id=sample,
+                            save_dir=self.get_save_dir(results_dir),
+                            logger=logger,
+                        )
+                        logger.info(f"Generated code saved to {code_dir}")
+                        logger.info("-" * 80)
+                    except KeyboardInterrupt:
+                        raise
+                    except Exception as e:
+                        logger.exception(f"OpenHands agent failed for sample {sample}: {e}", exc_info=e)
+                        continue
+
+            else:
+                logger.info(F"Using single-prompt LLM ({self.model}) for code generation")
+
+                prompter = Prompter(
+                    env=self.env,
+                    scenario=self.scenario,
+                    model=self.model,
+                    spec_type=self.spec_type,
+                    safety_prompt=self.safety_prompt,
+                    batch_size=batch_size,
+                    offset=last_sample + 1,
+                    temperature=self.temperature,
+                    reasoning_effort=self.reasoning_effort,
+                    openrouter=openrouter,
+                    vllm=vllm,
+                    vllm_port=vllm_port,
+                )
+                logger.info("built prompt:\n%s", prompter.prompt)
+                logger.info("-" * 100)
+
+                try:
+                    prompter.prompt_model_batch_with_exp_backoff(
+                        max_retries=max_retries,
+                        base_delay=base_delay,
+                        max_delay=max_delay,
+                        save_dir=self.get_save_dir(results_dir),
+                        logger=logger,
+                    )
+                except KeyboardInterrupt:
+                    raise
+                except Exception as e:
+                    logger.exception("got exception:\n%s", str(e), exc_info=e)
+                    return
 
     def test_code(
         self,

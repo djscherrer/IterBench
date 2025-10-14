@@ -69,6 +69,7 @@ def main(args: Any) -> None:
                 reasoning_effort=args.reasoning_effort,
                 openrouter=args.openrouter,
                 vllm=args.vllm,
+                use_openhands=args.use_openhands,
             )
             for env in envs
             for scenario in scenarios
@@ -282,5 +283,10 @@ if __name__ == "__main__":
         type=int,
         default=8000,
         help="Port for VLLM server",
+    )
+    parser.add_argument(
+        "--use_openhands",
+        action="store_true",
+        help="Use OpenHands for code generation instead of single LLM prompting",
     )
     main(parser.parse_args())

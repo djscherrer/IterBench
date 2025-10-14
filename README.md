@@ -82,6 +82,10 @@ To generate solutions to _all_ scenarios in the `scenarios` list, run the follow
 
 `pipenv run python src/main.py --models gpt-4o --mode generate --n_samples 10 --temperature 0.4`
 
+To use OpenHands agent for code generation:
+
+`pipenv run python src/main.py --models gpt-4o --mode generate --n_samples 10 --temperature 0.4 --use_openhands`
+
 To restrict the generation to a subset of scenarios or environments, see the ["Advanced" section](#advanced) below.
 
 The programs and the generation logs will be saved in the directory `results`.
