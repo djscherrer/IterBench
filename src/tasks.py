@@ -9,6 +9,8 @@ import os
 import pathlib
 import shutil
 import time
+import re
+import subprocess
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from sys import exc_info
@@ -39,6 +41,126 @@ def run_test_with_timeout(
             pool.terminate()
             raise TimeoutError("Functional test timed out")
 
+def run_bench_with_timeout(
+    locustfile: pathlib.Path, csv_prefix: pathlib.Path, port: int, timeout: int
+) -> bytes:
+    try:
+        result = subprocess.run([
+            "locust", "--headless",
+            "--locustfile", locustfile,
+            "--host", f"http://localhost:{port}",
+            "--users", "1800",
+            "--spawn-rate", "10",
+            "--run-time", "3m",
+            "--csv", csv_prefix,
+            "--csv-full-history",
+            "--only-summary",
+            ], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=timeout)
+        return result.stdout
+    except subprocess.TimeoutExpired:
+        raise TimeoutError("Benchmarking timed out")
+
+import pandas as pd
+import matplotlib.pyplot as plt
+from typing import Optional, Tuple
+
+def plot_requests_vs_percentile(
+    csv_path: str,
+    x_col: str = "Requests/s",
+    x_col2: str = "Failures/s",
+    y_col: str = "99%",                # any percentile column, e.g. "95%", "99.9%", etc.
+    name_col: str = "Name",
+    name_value: str = "Aggregated",
+    decreasing_run: int = 5,           # consecutive strictly-decreasing points to trigger cutoff
+    cutoff_delta: int = 0,             # keep rows up to (start_index_of_run + cutoff_delta), inclusive
+    ax: Optional[plt.Axes] = None,     # pass an existing axes to draw on, or leave None to create one
+    **plot_kwargs,                     # e.g. linewidth=2, marker="o"
+) -> Tuple[plt.Axes, pd.DataFrame]:
+    """
+    Read a CSV of load-test stats and plot y_col vs x_col for rows where name_col == name_value.
+    Additionally, if x_col strictly decreases for `decreasing_run` consecutive rows, drop all rows
+    AFTER (start_index_of_run + cutoff_delta).
+
+    Parameters
+    ----------
+    csv_path : str
+        Path to the CSV file.
+    x_col : str
+        Column name to use for the x-axis (default: "Requests/s").
+    y_col : str
+        Column name to use for the y-axis (default: "99%").
+    name_col : str
+        Column that identifies series/groups (default: "Name").
+    name_value : str
+        Required value in name_col to keep (default: "Aggregated").
+    decreasing_run : int
+        Length of a strictly decreasing run in x_col that triggers cutoff (default: 5).
+    cutoff_delta : int
+        Keep rows up to (start_index_of_run + cutoff_delta), inclusive (default: 0).
+    ax : matplotlib.axes.Axes or None
+        Existing axes to plot on; if None, a new figure/axes is created.
+    **plot_kwargs :
+        Passed through to `ax.plot(...)`.
+
+    Returns
+    -------
+    ax : matplotlib.axes.Axes
+        The axes the line was drawn on.
+    df_used : pandas.DataFrame
+        The filtered DataFrame that was actually plotted (after cutoff & NaN removal).
+
+    Notes
+    -----
+    - The CSV may contain non-numeric cells; this coerces x_col and y_col to numeric.
+    - Cutoff uses the *first* occurrence of a strictly-decreasing run of the requested length.
+    - Comparison is strict: x[i] > x[i+1] > ... > x[i+decreasing_run-1].
+    """
+    # Read & filter
+    df = pd.read_csv(csv_path)
+    df = df[df[name_col] == name_value].copy()
+
+    # Ensure numeric for x and y; drop rows with NaNs afterwards
+    df[x_col] = pd.to_numeric(df[x_col], errors="coerce")
+    df[x_col2] = pd.to_numeric(df[x_col2], errors="coerce")
+    df[y_col] = pd.to_numeric(df[y_col], errors="coerce")
+    df = df.dropna(subset=[x_col, x_col2, y_col])
+
+    # Preserve existing order; find first strictly-decreasing run in x_col
+    x = (df[x_col] - df[x_col2]).to_numpy()
+    start_idx = None
+    if len(x) >= decreasing_run:
+        # scan windows of size `decreasing_run`
+        for s in range(0, len(x) - decreasing_run + 1):
+            # strictly decreasing over the window?
+            if all(x[s + k] > x[s + k + 1] for k in range(decreasing_run - 1)):
+                start_idx = s
+                break
+
+    # Apply cutoff if a run was found
+    if start_idx is not None:
+        last_keep = max(0, min(len(df) - 1, start_idx + cutoff_delta))
+        df = df.iloc[: last_keep + 1]  # inclusive
+
+    # Prepare axes
+    created_fig = False
+    if ax is None:
+        fig, ax = plt.subplots()
+        created_fig = True
+
+    # Plot
+    ax.plot((df[x_col] - df[x_col2]).to_numpy(), df[y_col].to_numpy(), **plot_kwargs)
+    ax.set_xlabel(x_col)
+    ax.set_ylabel(y_col)
+    ax.set_title(f"{name_value}: {y_col} vs {x_col}")
+
+    # Optionally tighten layout if we created the figure
+    if created_fig:
+        try:
+            fig.tight_layout()
+        except Exception:
+            pass
+
+    return ax, df
 
 @dataclass
 class ContainerRunner:
@@ -157,6 +279,16 @@ class Task:
         self, results_dir: pathlib.Path, sample: int
     ) -> pathlib.Path:
         return self.get_sample_dir(results_dir, sample) / "test_results.json"
+
+    def get_bench_results_csv_prefix(
+        self, results_dir: pathlib.Path, sample: int
+    ) -> pathlib.Path:
+        return self.get_sample_dir(results_dir, sample) / "bench_results"
+
+    def get_bench_results_csv_path(
+        self, results_dir: pathlib.Path, sample: int
+    ) -> pathlib.Path:
+        return self.get_sample_dir(results_dir, sample) / "bench_results_stats_history.csv"
 
     def load_code(
         self,
@@ -507,6 +639,105 @@ class Task:
                 logger.info("saved test results")
                 logger.info("-" * 100)
 
+    def bench_code(
+        self,
+        results_dir: pathlib.Path,
+        samples: list[int],
+        port_manager: "SlotManager",
+        timeout: int,
+        force: bool,
+    ) -> None:
+        # clean the directory from bench artifacts if entered by force
+        if force:
+            for sample in samples:
+                sample_dir = self.get_sample_dir(results_dir, sample)
+                if sample_dir.exists():
+                    for extension in ("bench.log", "*.csv"):
+                        for file_path in sample_dir.glob(extension):
+                            if file_path.is_file():
+                                file_path.unlink()
+        for sample in samples:
+            sample_dir = self.get_sample_dir(results_dir, sample)
+            if not self.get_code_dir(results_dir, sample).exists():
+                continue
+            if (
+                self.get_bench_results_csv_path(results_dir, sample).exists()
+                and not force
+            ):
+                continue
+
+            test_result_path = self.get_test_results_json_path(results_dir, sample)
+            if not test_result_path.exists():
+                continue
+            else:
+                with open(test_result_path, "r") as f:
+                    test_result = TestResult.from_dict(json.load(f))
+                    if test_result.num_passed_ft < test_result.num_total_ft:
+                        continue
+            test_log_file = sample_dir / "test.log"
+            pattern = re.compile(r"sha256:[0-9a-f]{64}")
+            with open(test_log_file, "r", encoding="utf-8") as f:
+                for line in f:
+                    match = pattern.search(line)
+                    if match:
+                        image_id = match.group(0)
+                        break
+                if image_id is None:
+                    continue
+
+            log_file = sample_dir / "bench.log"
+            with self.create_logger(log_file) as logger:
+                logger.info("got docker image. id: %s", image_id)
+                logger.info("-" * 100)
+
+                from scenario_files import SCENARIO_FILE_PATH
+                locustfile = SCENARIO_FILE_PATH.joinpath(f"locustfiles/{self.scenario.id.lower()}.py")
+                logger.info("running load benchmark:\n%s", locustfile.read_text())
+                csv_prefix = self.get_bench_results_csv_prefix(results_dir, sample)
+
+                try:
+                    with ContainerRunner(
+                        self.env, port_manager, image_id, logger
+                    ) as cr:
+                        server_ran_before = self.env.process_still_running(
+                            cr.container.id, logger
+                        )
+                        locust_logs = run_bench_with_timeout(
+                            locustfile,
+                            csv_prefix,
+                            cr.port,
+                            timeout,
+                        )
+                        logger.info("loader logs:\n%s", locust_logs.decode())
+                        if (
+                            not self.env.process_still_running(
+                                cr.container.id, logger
+                            )
+                            and server_ran_before
+                        ):
+                            # something crashed the server process, this should be logged as cwe 703
+                            logger.warning(
+                                "server process crashed during functional test"
+                            )
+                except Exception as e:
+                    logger.exception("got exception:\n%s", str(e), exc_info=e)
+                logger.info("-" * 100)
+
+                logger.info("finished benchmarking sample %d", sample)
+                logger.info("-" * 100)
+
+    def plot_one(
+        self,
+        results_dir: pathlib.Path,
+        samples: list[int],
+        ax: plt.Axes,
+    ) -> None:
+        for sample in samples:
+            csv_path = self.get_bench_results_csv_path(results_dir, sample)
+            if not csv_path.exists():
+                continue
+            plot_requests_vs_percentile(csv_path, ax=ax, label=self.env.id)
+
     def evaluate_results(
         self, results_dir: pathlib.Path, samples: list[int], ks: list[int]
     ) -> "SampleTestResult":
@@ -764,6 +995,57 @@ class TaskHandler:
                     max_workers=self.max_concurrent_runs
                 ) as executor:
                     return list(executor.map(run_test_task, enumerate(self.tasks)))
+
+    def run_bench(
+        self,
+        samples: list[int],
+        timeout: int,
+        num_ports: int,
+        min_port: int,
+        force: bool,
+    ) -> list[int]:
+        with multiprocessing.Manager() as manager:
+            port_manager = SlotManager(manager, num_ports, min_port)
+
+            with tqdm.tqdm(total=len(self.tasks)) as pbar:
+
+                def run_bench_task(index_and_task: tuple[int, Task]) -> int:
+                    i, task = index_and_task
+                    task.bench_code(
+                        results_dir=self.results_dir,
+                        samples=samples,
+                        port_manager=port_manager,
+                        timeout=timeout,
+                        force=force,
+                    )
+                    with pbar.get_lock():  # type: ignore[no-untyped-call]
+                        pbar.update(1)
+                    return 1
+
+                with concurrent.futures.ThreadPoolExecutor(
+                    max_workers=1
+                ) as executor:
+                    return list(executor.map(run_bench_task, enumerate(self.tasks)))
+
+    def plot_bench(
+        self,
+        samples: list[int],
+    ) -> list[int]:
+        import matplotlib.pyplot as plt
+        fig, ax = plt.subplots(figsize=(10,8))
+
+        for task in self.tasks:
+            task.plot_one(
+                results_dir=self.results_dir,
+                samples=samples,
+                ax=ax,
+            )
+        
+        ax.set_xlabel("Achived RPS")
+        ax.set_ylabel("P99 [ms]")
+        ax.legend()
+        ax.set_ylim((0, 500))
+        fig.savefig("test_plot.png")
 
     def evaluate_results(
         self, samples: list[int], ks: list[int]
