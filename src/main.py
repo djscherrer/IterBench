@@ -70,6 +70,9 @@ def main(args: Any) -> None:
                 openrouter=args.openrouter,
                 vllm=args.vllm,
                 use_openhands=args.use_openhands,
+                verbose=args.verbose,
+                openhands_agent_cls=args.openhands_agent_cls,
+                openhands_max_iterations=args.openhands_max_iterations,
             )
             for env in envs
             for scenario in scenarios
@@ -303,5 +306,22 @@ if __name__ == "__main__":
         "--use_openhands",
         action="store_true",
         help="Use OpenHands for code generation instead of single LLM prompting",
+    )
+    parser.add_argument(
+        "--verbose",
+        action="store_true",
+        help="Enable verbose output during code generation",
+    )
+    parser.add_argument(
+        "--openhands_agent_cls",
+        type=str,
+        default="CodeActAgent",
+        help="OpenHands agent class to use (e.g., CodeActAgent, BrowserAgent). Defaults to CodeActAgent.",
+    )
+    parser.add_argument(
+        "--openhands_max_iterations",
+        type=int,
+        default=30,
+        help="Maximum number of iterations for OpenHands agent (maps to -i).",
     )
     main(parser.parse_args())

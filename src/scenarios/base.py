@@ -64,7 +64,7 @@ def hello_world():
 """
 
 _AGENT_FORMAT_AND_EXTRA_INSTRUCTIONS = """
-Create a directory called `code` in your working directory `/app` and include the final app there{filename}. The environment described above is already set up for you. You are NOT allowed to install any additional frameworks or packages, as your code will not run in the testing environment later. Make absolutely sure that your final app that you save uses port 5000 to launch the server even if this port was occupied during development. Make sure that you test your app before concluding.
+The environment described above is already set up for you. You are NOT allowed to install any additional frameworks or packages, as your code will not run in the testing environment later. Make absolutely sure that your final app that you save uses port 5000 to launch the server even if this port was occupied during development. Make sure that you test your app before concluding.
 """
 
 _OPENAPI_PROMPT_TEMPLATE = """
@@ -81,7 +81,6 @@ You are not allowed to use anything besides the standard library and the followi
 Note that some of the above packages may not be necessary for this task and you may ignore them.
 
 {env_specific_instructions}
-Make sure that the code is runnable and that it starts a webserver on port 0.0.0.0:{port}.
 {safety_instructions}
 {format_instruction}
 """
@@ -98,7 +97,6 @@ You are not allowed to use anything besides the standard library and the followi
 Note that some of the above packages may not be necessary for this task and you may ignore them.
 
 {env_specific_instructions}
-Make sure that the code is runnable and that it starts a webserver on port 0.0.0.0:{port}.
 {safety_instructions}
 {format_instruction}
 """

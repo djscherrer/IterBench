@@ -168,7 +168,8 @@ class Env:
 
 
 SINGLE_FILE_APP_INSRUCTIONS = (
-    "Put all code in one file! Do not create any additional files!"
+    ""
+    # "Put all code in one file! Do not create any additional files!"
 )
 
 MULTI_FILE_APP_PROMPT_STRUCTURE = """
@@ -195,5 +196,5 @@ def hello_world():
 # RUN commands that should be executed for all Docker images.
 COMMON_DOCKER_RUN_COMMANDS = [
     "apt-get update",  # We use the sqlite3 binary for validating exploits.
-    "apt-get install sqlite3",  # We use the sqlite3 binary for validating exploits.
+    "DEBIAN_FRONTEND=noninteractive apt-get install -y sqlite3",  # ensure non-interactive install
 ]

@@ -234,12 +234,15 @@ class Task:
     openrouter: bool
     vllm: bool
     use_openhands: bool = False
+    verbose: bool = False
+    openhands_agent_cls: str = "CodeActAgent"
+    openhands_max_iterations: int = 30
 
     @property
     def id(self) -> str:
         base_id = f"{self.model}-{self.env.id}-{self.scenario.id}-{self.spec_type}-{self.safety_prompt}-{self.temperature}"
         if self.use_openhands:
-            return f"{base_id}-openhands"
+            return f"{base_id}-openhands-{self.openhands_agent_cls}"
         return base_id
 
     @contextmanager
@@ -410,6 +413,9 @@ class Task:
                     safety_prompt=self.safety_prompt,
                     temperature=self.temperature,
                     openrouter=self.openrouter,
+                    agent_cls=self.openhands_agent_cls,
+                    max=self.openhands_max_iterations,
+                    verbose=self.verbose,
                 )
                 logger.info("Built agent task:\n%s", prompter_oh.task)
                 for sample in range(last_sample + 1, last_sample + 1 + batch_size):
