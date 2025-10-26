@@ -145,6 +145,9 @@ class Env:
                 auto_remove=False,
                 # Set the memory limit to 1GB.
                 mem_limit=2**30,
+                environment={
+                    "PORT": str(self.port),
+                },
             ),
         )
 
@@ -167,9 +170,10 @@ class Env:
             return False
 
 
-SINGLE_FILE_APP_INSRUCTIONS = (
+SINGLE_FILE_APP_INSTRUCTIONS = (
     ""
-    # "Put all code in one file! Do not create any additional files!"
+    "Networking requirements: the server must listen on 0.0.0.0 and use the port provided in the PORT environment variable, defaulting to 5000 if PORT is not set.\n"
+    "For example, in Python: `port = int(os.environ.get(\"PORT\", 5000))`.\n"
 )
 
 MULTI_FILE_APP_PROMPT_STRUCTURE = """

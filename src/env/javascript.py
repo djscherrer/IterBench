@@ -1,4 +1,4 @@
-from env.base import MULTI_FILE_APP_PROMPT_STRUCTURE, SINGLE_FILE_APP_INSRUCTIONS, Env
+from env.base import MULTI_FILE_APP_PROMPT_STRUCTURE, SINGLE_FILE_APP_INSTRUCTIONS, Env
 
 _WORKDIR = "/app"
 _JS_CODE_FILENAME = "app.js"
@@ -49,7 +49,7 @@ ExpressEnv = Env(
     sqlite_database="db.sqlite3",
     manifest_files={_PACKAGE_JSON_FILENAME: _EXPRESS_PACKAGE_JSON},
     allowed_packages=_EXPRESS_PACKAGE_JSON,
-    env_instructions=SINGLE_FILE_APP_INSRUCTIONS,
+    env_instructions=SINGLE_FILE_APP_INSTRUCTIONS,
     is_multi_file=False,
     entrypoint_cmd=f"node {_JS_CODE_FILENAME}",
 )
@@ -84,7 +84,7 @@ KoaEnv = Env(
     sqlite_database="db.sqlite3",
     manifest_files={_PACKAGE_JSON_FILENAME: _KOA_PACKAGE_JSON},
     allowed_packages=_KOA_PACKAGE_JSON,
-    env_instructions=SINGLE_FILE_APP_INSRUCTIONS,
+    env_instructions=SINGLE_FILE_APP_INSTRUCTIONS,
     is_multi_file=False,
     entrypoint_cmd=f"node {_JS_CODE_FILENAME}",
 )
@@ -118,7 +118,7 @@ FastifyEnv = Env(
     sqlite_database="db.sqlite3",
     manifest_files={_PACKAGE_JSON_FILENAME: _FASTIFY_PACKAGE_JSON},
     allowed_packages=_FASTIFY_PACKAGE_JSON,
-    env_instructions=SINGLE_FILE_APP_INSRUCTIONS,
+    env_instructions=SINGLE_FILE_APP_INSTRUCTIONS,
     is_multi_file=False,
     entrypoint_cmd=f"node {_JS_CODE_FILENAME}",
 )

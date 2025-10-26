@@ -1,4 +1,4 @@
-from env.base import SINGLE_FILE_APP_INSRUCTIONS, Env
+from env.base import SINGLE_FILE_APP_INSTRUCTIONS, Env
 
 _WORKDIR = "/app"
 _SRC_FILENAME = "main.rs"
@@ -55,7 +55,7 @@ RustActixEnv = Env(
     language="Rust",
     extension="rs",
     framework="Actix",
-    env_instructions=SINGLE_FILE_APP_INSRUCTIONS,
+    env_instructions=SINGLE_FILE_APP_INSTRUCTIONS,
     code_filename=_SRC_FILENAME,
     dockerfile=_RUST_DOCKERFILE,
     workdir=_WORKDIR,

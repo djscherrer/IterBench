@@ -1,4 +1,4 @@
-from env.base import SINGLE_FILE_APP_INSRUCTIONS, Env
+from env.base import SINGLE_FILE_APP_INSTRUCTIONS, Env
 
 _WORKDIR = "/app"
 _GO_CODE_FILENAME = "main.go"
@@ -37,7 +37,7 @@ ENTRYPOINT {{entrypoint_cmd}}
 
 _GO_INSTRUCTIONS = "\n".join(
     [
-        SINGLE_FILE_APP_INSRUCTIONS,
+        SINGLE_FILE_APP_INSTRUCTIONS,
         "Make sure that the code does not contain any unused variables or packages!",
     ]
 )

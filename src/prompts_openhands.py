@@ -84,6 +84,7 @@ class OpenHandsPrompter:
             "AGENT_ENABLE_BROWSING": "false",
             "SANDBOX_VOLUMES": f"{code_dir}:/workspace:rw",
             "LOG_ALL_EVENTS": "true",
+            "PORT": str(self.env.port),
         })
 
         try:

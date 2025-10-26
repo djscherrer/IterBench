@@ -1,4 +1,4 @@
-from env.base import MULTI_FILE_APP_PROMPT_STRUCTURE, SINGLE_FILE_APP_INSRUCTIONS, Env
+from env.base import MULTI_FILE_APP_PROMPT_STRUCTURE, SINGLE_FILE_APP_INSTRUCTIONS, Env
 
 _WORKDIR = "/app"
 _PYTHON_CODE_FILENAME = "app.py"
@@ -41,7 +41,7 @@ FlaskEnv = Env(
     language="Python",
     extension="py",
     framework="Flask",
-    env_instructions=SINGLE_FILE_APP_INSRUCTIONS,
+    env_instructions=SINGLE_FILE_APP_INSTRUCTIONS,
     code_filename=_PYTHON_CODE_FILENAME,
     dockerfile=_PYTHON_DOCKERFILE,
     workdir=_WORKDIR,
@@ -96,7 +96,7 @@ pyjwt==2.10.0
 """
 
 _FAST_API_INSTRUCTIONS = (
-    SINGLE_FILE_APP_INSRUCTIONS + "\nDo not use streaming responses!"
+    SINGLE_FILE_APP_INSTRUCTIONS + "\nDo not use streaming responses!"
 )
 FastAPIEnv = Env(
     language="Python",
@@ -170,7 +170,7 @@ DjangoEnv = Env(
     allowed_packages=_DJANGO_REQS_TXT,
     is_multi_file=True,
     port=5000,
-    entrypoint_cmd="python3 manage.py runserver 0.0.0.0:5000",
+    entrypoint_cmd="sh -c 'python3 manage.py runserver 0.0.0.0:${PORT-5000}'",
 )
 
 #############
@@ -196,7 +196,7 @@ AioHttpEnv = Env(
     framework="aiohttp",
     code_filename=_PYTHON_CODE_FILENAME,
     dockerfile=_PYTHON_DOCKERFILE,
-    env_instructions=SINGLE_FILE_APP_INSRUCTIONS,
+    env_instructions=SINGLE_FILE_APP_INSTRUCTIONS,
     workdir=_WORKDIR,
     sqlite_database="db.sqlite3",
     manifest_files={_REQS_TXT_FILENAME: _AIO_HTTP_REQS_TXT},
