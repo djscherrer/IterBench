@@ -22,7 +22,8 @@ RUN sed -i 's/config.assets/# config.assets/' config/environments/development.rb
 RUN bundler install
 RUN bin/rails db:create || echo "db:create failed"
 RUN bin/rails db:migrate || echo "db:migrate failed"
-RUN echo "bin/rails server --binding 0.0.0.0 --port 5000" > entrypoint.sh
+RUN printf '#!/bin/sh\\nbin/rails server --binding 0.0.0.0 --port ${{PORT}}\\n' > entrypoint.sh
+RUN chmod +x entrypoint.sh
 ENTRYPOINT {{entrypoint_cmd}}
 """
 
@@ -93,9 +94,10 @@ Use only SQLite as a database. Do not use MySQL, Redis, or any other storage.
 Configure SQLite to use database file `db.sqlite3` in config/database.yml
 Do NOT provide Gemfile or Gemfile.lock file. Make sure to include the right frameworks in config/application.rb - e.g. require "active_storage/engine"
 Do NOT use sprockets or other asset pipeline. Do NOT use config.assets in config/environments/development.rb.
-The command `bin/rails server --binding 0.0.0.0 --port 5000` will start the app.
+The command `bin/rails server --binding 0.0.0.0 --port {{port}}` will start the app.
 """
 
+# NOTE: entrypoint.sh is created in the Dockerfile above and reads from $PORT env variable
 RubyOnRailsEnv = Env(
     language="Ruby",
     extension="rb",
@@ -108,6 +110,5 @@ RubyOnRailsEnv = Env(
     manifest_files={_GEMFILE_NAME: _GEMFILE},
     allowed_packages=_GEMFILE,
     is_multi_file=True,
-    port=5000,
-    entrypoint_cmd="/bin/sh entrypoint.sh",
+    entrypoint_cmd="sh entrypoint.sh",
 )

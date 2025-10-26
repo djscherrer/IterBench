@@ -1,5 +1,6 @@
 import argparse
 import pathlib
+from dataclasses import replace
 from typing import Any
 
 import docker
@@ -18,11 +19,12 @@ _DEFAULT_SAVE_PATH = pathlib.Path(__file__).parent.parent / "results"
 def main(args: Any) -> None:
 
     # ----- Preparation -----#
-    envs = all_envs
+    # Override port for all environments with the value from args, if not provided defaults to 5001
+    envs = [replace(e, port=args.port) for e in all_envs]
     exclude_envs = args.exclude_envs if args.exclude_envs else []
-    envs = [e for e in all_envs if e.id not in exclude_envs]
+    envs = [e for e in envs if e.id not in exclude_envs]
     if args.envs:
-        envs = [e for e in all_envs if e.id in args.envs]
+        envs = [e for e in envs if e.id in args.envs]
     envs = sorted(envs, key=lambda e: e.id)
 
     if not envs:
@@ -323,5 +325,11 @@ if __name__ == "__main__":
         type=int,
         default=30,
         help="Maximum number of iterations for OpenHands agent (maps to -i).",
+    )
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=5001,
+        help="Port number for the application to listen on (default: 5001).",
     )
     main(parser.parse_args())

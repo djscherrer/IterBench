@@ -169,8 +169,7 @@ DjangoEnv = Env(
     manifest_files={_REQS_TXT_FILENAME: _DJANGO_REQS_TXT},
     allowed_packages=_DJANGO_REQS_TXT,
     is_multi_file=True,
-    port=5000,
-    entrypoint_cmd="sh -c 'python3 manage.py runserver 0.0.0.0:${PORT-5000}'",
+    entrypoint_cmd="sh -c 'python3 manage.py runserver 0.0.0.0:${PORT}'",
 )
 
 #############

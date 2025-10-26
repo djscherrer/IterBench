@@ -86,8 +86,9 @@ app/Providers/AuthServiceProvider.php
 {MULTI_FILE_APP_PROMPT_STRUCTURE}
 
 Use only SQLite as a database. Do not use MySQL, Redis, or any other storage. Provide environment in a .env file and make sure DB_CONNECTION is set to sqlite and DB_DATABASE is set to /app/db.sqlite3
-Make sure that the command `php -S 0.0.0.0:5000 -t public` starts the app successfully.
+Make sure that the command `php -S 0.0.0.0:{{port}} -t public` starts the app successfully.
 """
+
 
 PhpLaravelLumenEnv = Env(
     language="PHP",
@@ -103,6 +104,5 @@ PhpLaravelLumenEnv = Env(
     },
     allowed_packages=_COMPOSER,
     is_multi_file=True,
-    port=5000,
-    entrypoint_cmd="php -S 0.0.0.0:5000 -t public",
+    entrypoint_cmd='sh -c "php -S 0.0.0.0:${PORT} -t public"',
 )

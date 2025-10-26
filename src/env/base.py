@@ -46,8 +46,8 @@ class Env:
     # Instructions for the model that are specific to this env.
     env_instructions: str
 
-    # The model will be asked to make the app listen on this port.
-    port: int = 5000
+    # The model will be asked to make the app listen on this port. Set with replace() by main.py so it is based on the user args.
+    port: int = 5001
 
     # How much time (in seconds) we should wait for the app in the container to start.
     wait_to_start_time: float = 60.0
@@ -172,8 +172,8 @@ class Env:
 
 SINGLE_FILE_APP_INSTRUCTIONS = (
     ""
-    "Networking requirements: the server must listen on 0.0.0.0 and use the port provided in the PORT environment variable, defaulting to 5000 if PORT is not set.\n"
-    "For example, in Python: `port = int(os.environ.get(\"PORT\", 5000))`.\n"
+    "Networking requirements: the server must listen on 0.0.0.0 and use the port provided in the PORT environment variable, defaulting to {port} if PORT is not set.\n"
+    "For example, in Python: `port = int(os.environ.get(\"PORT\", {port}))`.\n"
 )
 
 MULTI_FILE_APP_PROMPT_STRUCTURE = """
