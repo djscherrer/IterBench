@@ -26,6 +26,7 @@ class KeyLocs(Enum):
     anthropic_key = "ANTHROPIC_API_KEY"
     together_key = "TOGETHER_API_KEY"
     openrouter_key = "OPENROUTER_API_KEY"
+    cscs_key = "CSCS_API_KEY"
 
 
 # TODO: this is a bit to hacky, find better approach
@@ -34,30 +35,45 @@ class ProviderDetector:
     @staticmethod
     def detect_provider(
         model: str,
+        explicit_provider: str | None = None,
         openrouter: bool = False,
         vllm: bool = False,
-    ) -> tuple[str, str, bool]:
+    ) -> tuple[str, str]:
         
-        is_openai_reasoning = (
-            model.startswith("o1")
-            or model.startswith("o3")
-            or model.startswith("o4")
-            or model.startswith("gpt-5")
-        )
-
-        is_anthropic_model = "claude" in model
-        is_openai_model = is_openai_reasoning or "gpt" in model
-
         if vllm:
-            return ("vllm", None, False) 
+            return ("vllm", None)
         elif openrouter:
-            return ("openrouter", KeyLocs.openrouter_key, False)
+            return ("openrouter", KeyLocs.openrouter_key)
+        
+        # If explicit provider is given, we use it
+        if explicit_provider:
+            if explicit_provider == "swissai":
+                return ("swissai", KeyLocs.cscs_key)
+            elif explicit_provider == "openai":
+                return ("openai", KeyLocs.openai_key)
+            elif explicit_provider == "anthropic":
+                return ("anthropic", KeyLocs.anthropic_key)
+            elif explicit_provider == "together":
+                return ("together", KeyLocs.together_key)
+            elif explicit_provider == "openrouter":
+                return ("openrouter", KeyLocs.openrouter_key)
+            elif explicit_provider == "vllm":
+                return ("vllm", None)
+            else:
+                raise ValueError(f"Unknown provider: {explicit_provider}")
+
+        is_anthropic_model = "claude" in model.lower()
+        is_openai_model = "o1" in model.lower() or "o3" in model.lower() or "o4" in model.lower() or "gpt" in model.lower()
+        is_swissai_model = "apertus" in model.lower()
+        
+        if is_swissai_model:
+            return ("swissai", KeyLocs.cscs_key)
         elif is_anthropic_model:
-            return ("anthropic", KeyLocs.anthropic_key, False)
+            return ("anthropic", KeyLocs.anthropic_key)
         elif is_openai_model:
-            return ("openai", KeyLocs.openai_key, True)
+            return ("openai", KeyLocs.openai_key)
         else:
-            return ("together", KeyLocs.together_key, True)
+            return ("together", KeyLocs.together_key)
 
     @staticmethod
     def is_openai_reasoning(model: str) -> bool:
@@ -82,6 +98,7 @@ class Prompter:
         "Qwen/Qwen2.5-Coder-32B-Instruct": 32768,
         "Qwen/Qwen2.5-72B-Instruct-Turbo": 32768,
         "Qwen/Qwen2.5-7B-Instruct-Turbo": 32768,
+        "Qwen/Qwen3-Next-80B-A3B-Thinking": 32768,
         "gpt-4o": 128000,
         "chatgpt-4o-latest": 128000,
         "gpt-4.1-2025-04-14": 32000,
@@ -168,6 +185,7 @@ class Prompter:
         openrouter: bool,
         vllm: bool,
         vllm_port: int,
+        explicit_provider: str | None = None,
     ):
         self.env = env
         self.scenario = scenario
@@ -182,8 +200,8 @@ class Prompter:
 
         self.system_prompt = _SYSTEM_PROMPT
 
-        provider_name, api_key_loc, supports_batching = ProviderDetector.detect_provider(
-            model, openrouter, vllm
+        provider_name, api_key_loc = ProviderDetector.detect_provider(
+            model, explicit_provider, openrouter, vllm
         )
 
         self.provider = provider_name
@@ -382,6 +400,45 @@ class Prompter:
         except Exception as e:
             raise e
 
+    def prompt_swissai(self, logger: logging.Logger) -> list[str]:
+        client = OpenAI(
+            api_key=os.environ[KeyLocs.cscs_key.value],
+            base_url="https://api.swissai.cscs.ch/v1",
+        )
+        try:
+            response = client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": self.system_prompt},
+                    {"role": "user", "content": self.prompt},
+                ],
+                n=1,
+                temperature=self.temperature,
+                max_tokens=(
+                    8192
+                    if self.model not in Prompter.openai_together_context_lengths
+                    else Prompter.openai_together_context_lengths[self.model] - 3000
+                ),
+            )
+            if response.choices is None:
+                logger.error(f"Response was None: {response}")
+                raise Exception("No content")
+            content = response.choices[0].message.content
+            if content is not None and len(content) > 0:
+                if response.usage is not None:
+                    logger.info(
+                        f"Token stats: {response.usage}; around {response.usage.completion_tokens} completion tokens per completion"
+                    )
+                else:
+                    logger.info(f"Token stats unavailable")
+                if response.choices[0].finish_reason == "length":
+                    logger.warning(f"Completion was cut off due to length.")
+                return [content]
+            else:
+                raise Exception("No content")
+        except Exception as e:
+            raise e
+
     def prompt_openai_together_batch(self, logger: logging.Logger) -> list[str]:
         if self.openai:
             client = OpenAI(api_key=os.environ[KeyLocs.openai_key.value])
@@ -471,6 +528,8 @@ class Prompter:
             return self.prompt_openrouter(logger)
         elif self.vllm:
             return self.prompt_vllm(logger)
+        elif self.provider == "swissai":
+            return self.prompt_swissai(logger)
         else:
             return self.prompt_openai_together_batch(logger)
 
@@ -496,9 +555,11 @@ class Prompter:
         save_dir: pathlib.Path,
         logger: logging.Logger,
     ) -> None:
-        # Anthropic and OpenRouter don't support batching, and for VLLM we risk timing out on batches, so we have to sample a single completion multiple times
+        # Anthropic, OpenRouter, SwissAI, and VLLM don't support batching, so we have to sample a single completion multiple times
         n_times_to_sample = (
-            self.batch_size if self.openrouter or self.anthropic or self.vllm else 1
+            self.batch_size 
+            if self.openrouter or self.anthropic or self.vllm or self.provider == "swissai"
+            else 1
         )
         for i in range(n_times_to_sample):
             retries = 0

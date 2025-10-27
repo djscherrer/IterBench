@@ -75,6 +75,7 @@ def main(args: Any) -> None:
                 verbose=args.verbose,
                 openhands_agent_cls=args.openhands_agent_cls,
                 openhands_max_iterations=args.openhands_max_iterations,
+                explicit_provider=args.provider,
             )
             for env in envs
             for scenario in scenarios
@@ -331,5 +332,12 @@ if __name__ == "__main__":
         type=int,
         default=5001,
         help="Port number for the application to listen on (default: 5001).",
+    )
+    parser.add_argument(
+        "--provider",
+        type=str,
+        default=None,
+        choices=["openai", "anthropic", "together", "openrouter", "swissai", "vllm"],
+        help="Explicitly specify the LLM provider. If not provided, the provider will be inferred from the model name.",
     )
     main(parser.parse_args())

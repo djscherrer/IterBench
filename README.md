@@ -51,6 +51,7 @@ export OPENAI_API_KEY="<your_API_key>"
 export TOGETHER_API_KEY="<your_API_key>"
 export ANTHROPIC_API_KEY="<your_API_key>"
 export OPENROUTER_API_KEY="<your_API_key>"
+export CSCS_API_KEY="<your_API_key>"
 ```
 
 > **Note:** You may set any API key you do not intend to use simply to an empty or invalid string.

@@ -1,6 +1,8 @@
 import pathlib
 from scenarios.base import Scenario
 
+# TODO: maybe  add text spec and openapi spec?
+
 # Read the Petstore OpenAPI spec from the JSON file
 with open("./src/scenario_files/petstore/petstore_api_spec.json", "r") as f:
     _JSON_API_SPEC = f.read()

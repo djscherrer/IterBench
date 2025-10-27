@@ -237,6 +237,7 @@ class Task:
     verbose: bool = False
     openhands_agent_cls: str = "CodeActAgent"
     openhands_max_iterations: int = 30
+    explicit_provider: str | None = None
 
     @property
     def id(self) -> str:
@@ -416,6 +417,7 @@ class Task:
                     agent_cls=self.openhands_agent_cls,
                     max=self.openhands_max_iterations,
                     verbose=self.verbose,
+                    explicit_provider=self.explicit_provider,
                 )
                 logger.info("Built agent task:\n%s", prompter_oh.task)
                 for sample in range(last_sample + 1, last_sample + 1 + batch_size):
@@ -450,6 +452,7 @@ class Task:
                     openrouter=openrouter,
                     vllm=vllm,
                     vllm_port=vllm_port,
+                    explicit_provider=self.explicit_provider,
                 )
                 logger.info("built prompt:\n%s", prompter.prompt)
                 logger.info("-" * 100)

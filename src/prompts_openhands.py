@@ -23,6 +23,7 @@ class OpenHandsPrompter:
         agent_cls: str = "CodeActAgent",
         max: int = 30,
         verbose: bool = False,
+        explicit_provider: str | None = None,
     ):
         self.env = env
         self.scenario = scenario
@@ -35,8 +36,8 @@ class OpenHandsPrompter:
         self.max_iterations = max
         self.verbose = verbose
 
-        provider_name, api_key_loc, supports_batching = ProviderDetector.detect_provider(
-            model, openrouter, vllm=False
+        provider_name, api_key_loc = ProviderDetector.detect_provider(
+            model, explicit_provider, openrouter, vllm=False
         )
 
         self.provider = provider_name
@@ -74,21 +75,36 @@ class OpenHandsPrompter:
         if self.provider == "vllm":
             raise ValueError("OpenHands does not support vLLM yet")
 
-        provider = self.provider
+        # SwissAI uses OpenAI-compatible API, so we set provider as "openai" with custom base URL
+        if self.provider == "swissai":
+            provider = "openai"
+            base_url = "https://api.swissai.cscs.ch/v1"
+            # Prefix model with "openai/" for LiteLLM (backend used by OpenHands) to recognize it
+            model_name = f"openai/{self.model}" if not self.model.startswith("openai/") else self.model
+        else:
+            provider = self.provider
+            base_url = None
+            model_name = self.model
+
         api_key = os.environ[self.api_key_location.value]
 
         env = os.environ.copy()
-        env.update({
+        env_config = {
             "RUNTIME": "local",
             "LLM_PROVIDER": provider,
-            "LLM_MODEL": self.model,
+            "LLM_MODEL": model_name,
             "LLM_API_KEY": api_key,
             "ENABLE_BROWSER": "false",
             "AGENT_ENABLE_BROWSING": "false",
             "SANDBOX_VOLUMES": f"{code_dir}:/workspace:rw",
             "LOG_ALL_EVENTS": "true",
             "PORT": str(self.env.port),
-        })
+        }
+
+        if base_url:
+            env_config["LLM_BASE_URL"] = base_url
+
+        env.update(env_config)
 
         try:
             logger.info("Running OpenHands agent...")
