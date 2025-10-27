@@ -212,7 +212,7 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--spec_type",
-        choices=["openapi", "text"],
+        choices=["openapi", "text", "json_api"],
         default="openapi",
         type=str,
         help="The type of specifications to use.",

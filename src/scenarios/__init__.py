@@ -13,6 +13,7 @@ import scenarios.login
 import scenarios.monitor
 import scenarios.pdf_cat
 import scenarios.pdf_to_text
+import scenarios.petstore
 import scenarios.product_catalog
 import scenarios.profile_collection
 import scenarios.recipes
@@ -43,6 +44,7 @@ all_scenarios: list[scenarios.base.Scenario] = [
     scenarios.monitor.SCENARIO,
     scenarios.pdf_cat.SCENARIO,
     scenarios.pdf_to_text.SCENARIO,
+    scenarios.petstore.SCENARIO,
     scenarios.product_catalog.SCENARIO,
     scenarios.profile_collection.SCENARIO,
     scenarios.recipes.SCENARIO,

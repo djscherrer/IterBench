@@ -7,7 +7,7 @@ from typing import Any
 
 from env.base import Env
 from scenarios.base import Scenario
-from prompts import KeyLocs
+from prompts import KeyLocs, ProviderDetector
 
 
 class OpenHandsPrompter:
@@ -35,8 +35,15 @@ class OpenHandsPrompter:
         self.max_iterations = max
         self.verbose = verbose
 
-        self.anthropic = "claude" in model
-        self.openai = "gpt" in model or model.startswith("o1") or model.startswith("o3")
+        provider_name, api_key_loc, supports_batching = ProviderDetector.detect_provider(
+            model, openrouter, vllm=False
+        )
+
+        self.provider = provider_name
+        self.api_key_location = api_key_loc
+        self.anthropic = provider_name == "anthropic"
+        self.openai = provider_name == "openai"
+        self.together = provider_name == "together"
 
         self.task = self.scenario.build_prompt(
             self.env, self.spec_type, self.safety_prompt, agent=True
@@ -64,15 +71,11 @@ class OpenHandsPrompter:
         logger.info(f"Task:\n{self.task}")
         logger.info("-" * 80)
 
-        if self.anthropic:
-            provider = "anthropic"
-            api_key = os.environ[KeyLocs.anthropic_key.value]
-        elif self.openrouter:
-            provider = "openrouter"
-            api_key = os.environ[KeyLocs.openrouter_key.value]
-        else:
-            provider = "openai"
-            api_key = os.environ[KeyLocs.openai_key.value]
+        if self.provider == "vllm":
+            raise ValueError("OpenHands does not support vLLM yet")
+
+        provider = self.provider
+        api_key = os.environ[self.api_key_location.value]
 
         env = os.environ.copy()
         env.update({

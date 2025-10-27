@@ -28,6 +28,47 @@ class KeyLocs(Enum):
     openrouter_key = "OPENROUTER_API_KEY"
 
 
+# TODO: this is a bit to hacky, find better approach
+class ProviderDetector:
+
+    @staticmethod
+    def detect_provider(
+        model: str,
+        openrouter: bool = False,
+        vllm: bool = False,
+    ) -> tuple[str, str, bool]:
+        
+        is_openai_reasoning = (
+            model.startswith("o1")
+            or model.startswith("o3")
+            or model.startswith("o4")
+            or model.startswith("gpt-5")
+        )
+
+        is_anthropic_model = "claude" in model
+        is_openai_model = is_openai_reasoning or "gpt" in model
+
+        if vllm:
+            return ("vllm", None, False) 
+        elif openrouter:
+            return ("openrouter", KeyLocs.openrouter_key, False)
+        elif is_anthropic_model:
+            return ("anthropic", KeyLocs.anthropic_key, False)
+        elif is_openai_model:
+            return ("openai", KeyLocs.openai_key, True)
+        else:
+            return ("together", KeyLocs.together_key, True)
+
+    @staticmethod
+    def is_openai_reasoning(model: str) -> bool:
+        return (
+            model.startswith("o1")
+            or model.startswith("o3")
+            or model.startswith("o4")
+            or model.startswith("gpt-5")
+        )
+
+
 class Prompter:
 
     # NOTE: unused because Together expects you to set
@@ -140,17 +181,19 @@ class Prompter:
         self.vllm_port = vllm_port
 
         self.system_prompt = _SYSTEM_PROMPT
-        self.openai_reasoning = (
-            model.startswith("o1")
-            or model.startswith("o3")
-            or self.model.startswith("gpt-5")
+
+        provider_name, api_key_loc, supports_batching = ProviderDetector.detect_provider(
+            model, openrouter, vllm
         )
-        # self.anthropic = "claude" in model
-        self.anthropic = False
-        # self.openai = (self.openai_reasoning or "gpt" in self.model) and not vllm
-        self.openai = False
-        self.openrouter = openrouter and not (self.anthropic or self.openai)
-        self.vllm = vllm and not (self.anthropic or self.openai or self.openrouter)
+
+        self.provider = provider_name
+        self.api_key_location = api_key_loc
+        self.anthropic = provider_name == "anthropic"
+        self.openai = provider_name == "openai"
+        self.openrouter = provider_name == "openrouter"
+        self.vllm = provider_name == "vllm"
+
+        self.openai_reasoning = ProviderDetector.is_openai_reasoning(model)
         self.anthropic_thinking = model in self.anthropic_thinking_lengths
 
         self.prompt = self.scenario.build_prompt(
