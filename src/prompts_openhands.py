@@ -1,15 +1,19 @@
 import logging
 import os
 import pathlib
+import sys
+from io import StringIO
 from typing import Any
 
 from pydantic import SecretStr
 from openhands.sdk import LLM, Conversation, Event
 from openhands.tools.preset.default import get_default_agent
+from ansi2html import Ansi2HTMLConverter
+from contextlib import redirect_stdout, redirect_stderr
 
 from env.base import Env
 from scenarios.base import Scenario
-from prompts import KeyLocs, ProviderDetector
+from prompts import KeyLocs
 
 
 class OpenHandsPrompter:
@@ -21,11 +25,11 @@ class OpenHandsPrompter:
         spec_type: str,
         safety_prompt: str,
         temperature: float,
-        agent_cls: str = "CodeActAgent",
-        max_iterations: int = 30,
-        explicit_provider: str | None = None,
-        max_cost: float | None = None,
-        max_tokens: int | None = None,
+        provider: str | None,
+        max_cost: float | None,
+        max_tokens: int | None,
+        max_iterations: int,
+        agent_cls: str,
     ):
         self.env = env
         self.scenario = scenario
@@ -37,20 +41,72 @@ class OpenHandsPrompter:
         self.max_iterations = max_iterations
         self.max_cost = max_cost
         self.max_tokens = max_tokens
-
-        provider_name, api_key_loc = ProviderDetector.get_provider(
-            model, explicit_provider
-        )
-
-        self.provider = provider_name
-        self.api_key_location = api_key_loc
-        self.anthropic = provider_name == "anthropic"
-        self.openai = provider_name == "openai"
-        self.together = provider_name == "together"
+        self.provider = provider
 
         self.task = self.scenario.build_prompt(
             self.env, self.spec_type, self.safety_prompt, agent=True
         )
+
+    def _get_llm_params(self) -> tuple[str, str, str | None]:
+        provider_config = {
+            "swissai": {
+                "prefix": "openai",
+                "base_url": "https://api.swissai.cscs.ch/v1",
+                "api_key": KeyLocs.cscs_key,
+            },
+            "openrouter": {
+                "prefix": "openrouter",
+                "base_url": None,
+                "api_key": KeyLocs.openrouter_key,
+            },
+            "anthropic": {
+                "prefix": "anthropic",
+                "base_url": None,
+                "api_key": KeyLocs.anthropic_key,
+            },
+            "together_ai": {
+                "prefix": "together_ai",
+                "base_url": None,
+                "api_key": KeyLocs.together_key,
+            },
+            "openai": {
+                "prefix": None,
+                "base_url": None,
+                "api_key": KeyLocs.openai_key,
+            },
+        }
+        
+        if self.provider is None:
+            provider_prefix = self.model.split("/")[0]
+            if provider_prefix in provider_config:
+                config = provider_config[provider_prefix]
+                if config["prefix"] and not self.model.startswith(f"{config['prefix']}/"):
+                    model_name = f"{config['prefix']}{self.model[len(provider_prefix): ]}"
+                else:
+                    model_name = self.model
+                return (model_name, os.environ[config["api_key"].value], config["base_url"])
+            else:
+                raise ValueError(f"Cannot infer provider from model name: {self.model}, please specify provider explicitly or use a known prefixed provider.")
+
+        if self.provider == "vllm":
+            # TODO: implement OpenHands support for vLLM
+            raise ValueError("OpenHands does not support vLLM yet")
+
+
+        if self.provider not in provider_config:
+            raise ValueError(f"Unknown provider: {self.provider}")
+
+        config = provider_config[self.provider]
+        prefix = config["prefix"]
+        base_url = config["base_url"]
+        api_key = os.environ[config["api_key"].value]
+
+        if prefix and not self.model.startswith(f"{prefix}/"):
+            model_name = f"{prefix}/{self.model}"
+        else:
+            model_name = self.model
+
+        return (model_name, api_key, base_url)
 
     def get_code_dir(self, save_dir: pathlib.Path, sample: int) -> pathlib.Path:
         return save_dir / f"sample{sample}" / "code"
@@ -64,40 +120,17 @@ class OpenHandsPrompter:
         code_dir = self.get_code_dir(save_dir, sample_id)
         code_dir.mkdir(parents=True, exist_ok=True)
 
-        # Create a log file for OpenHands output
+        # log file for OpenHands output
         openhands_log_file = save_dir / f"sample{sample_id}" / "openhands.log"
+        openhands_console_log_file = save_dir / f"sample{sample_id}" / "openhands_console.html"
         openhands_log_file.parent.mkdir(parents=True, exist_ok=True)
 
-        if self.provider == "vllm":
-            raise ValueError("OpenHands does not support vLLM yet")
+        model_name, api_key, base_url = self._get_llm_params()
 
-        # LiteLLM (backend used by OpenHands) requires provider prefix 
-        # TODO: would be nice to use LiteLLM backend also for default genertion so to standardize everything 
-        provider_prefixes = {
-            "swissai": "openai",  # swissai uses openai-compatible api
-            "openrouter": "openrouter",
-            "anthropic": "anthropic",
-            "together_ai": "together_ai",
-            "openai": None,  
-        }
-
-        if self.provider == "swissai":
-            base_url = "https://api.swissai.cscs.ch/v1"
-        else:
-            base_url = None
-
-        prefix = provider_prefixes.get(self.provider)
-        if prefix and not self.model.startswith(f"{prefix}/"):
-            model_name = f"{prefix}/{self.model}"
-        else:
-            model_name = self.model
-
-        api_key = os.environ[self.api_key_location.value]
-
-        # Create list to capture all events for logging
+        # list to capture all events for logging
         events: list[Event] = []
         limits = {"exceeded": False, "reason": ""}
-        conversation_ref: Conversation | None = None
+        conversation: Conversation | None = None
         
         def event_callback(event: Event) -> None:
             events.append(event)
@@ -106,8 +139,8 @@ class OpenHandsPrompter:
                 limits["exceeded"] = True
                 limits["reason"] = f"Iteration limit exceeded: {len(events)} > {self.max_iterations}"
                 logger.warning(limits["reason"])
-                if conversation_ref is not None:
-                    conversation_ref.pause()
+                if conversation is not None:
+                    conversation.pause()
                 return
             
             if llm.metrics is not None:
@@ -115,8 +148,8 @@ class OpenHandsPrompter:
                     limits["exceeded"] = True
                     limits["reason"] =  f"Cost limit exceeded: ${llm.metrics.accumulated_cost:.4f} > ${self.max_cost:.4f}"
                     logger.warning(limits["reason"])
-                    if conversation_ref is not None:
-                        conversation_ref.pause()
+                    if conversation is not None:
+                        conversation.pause()
                 
                 if self.max_tokens is not None and llm.metrics.accumulated_token_usage is not None:
                     total_tokens = (
@@ -127,8 +160,8 @@ class OpenHandsPrompter:
                         limits["exceeded"] = True
                         limits["reason"] =  f"Token limit exceeded: {total_tokens} > {self.max_tokens}"
                         logger.warning(limits["reason"])
-                        if conversation_ref is not None:
-                            conversation_ref.pause()
+                        if conversation is not None:
+                            conversation.pause()
 
         try:
             llm = LLM(
@@ -140,22 +173,29 @@ class OpenHandsPrompter:
 
             agent = get_default_agent(llm=llm, cli_mode=True)
 
-            conversation_ref = Conversation(
+            conversation = Conversation(
                 agent=agent, 
                 workspace=str(code_dir),
                 callbacks=[event_callback],
             )
 
-            # send task to agent
-            conversation_ref.send_message(self.task)
-
-            # execute the conversation
-            conversation_ref.run()
+            # capture stdout and stderr and print to file
+            console_output = StringIO()
+            
+            with redirect_stdout(console_output), redirect_stderr(console_output):
+                conversation.send_message(self.task)
+                conversation.run()
+    
+            # convert ANSI output to HTML
+            converter = Ansi2HTMLConverter()
+            html_output = converter.convert(console_output.getvalue(), full=True)
+            
+            with open(openhands_console_log_file, 'w') as html_log:
+                html_log.write(html_output)
             
             if limits["reason"]:
-                logger.warning(f"Agent execution stopped: {limits["reason"]}")
+                logger.warning(f"Agent execution stopped: {limits['reason']}")
 
-            # Write log to openhands.log
             with open(openhands_log_file, 'w') as log_file:
                 log_file.write(f"OpenHands Agent Execution Log\n")
                 log_file.write("=" * 80 + "\n\n")

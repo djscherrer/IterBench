@@ -29,57 +29,6 @@ class KeyLocs(Enum):
     cscs_key = "CSCS_API_KEY"
 
 
-# TODO: this is a bit to hacky, find better approach
-class ProviderDetector:
-
-    @staticmethod
-    def get_provider(
-        model: str,
-        explicit_provider: str | None = None,
-    ) -> tuple[str, str]:
-
-        # If explicit provider is given, use it
-        if explicit_provider:
-            if explicit_provider == "swissai":
-                return ("swissai", KeyLocs.cscs_key)
-            elif explicit_provider == "openai":
-                return ("openai", KeyLocs.openai_key)
-            elif explicit_provider == "anthropic":
-                return ("anthropic", KeyLocs.anthropic_key)
-            elif explicit_provider == "together_ai":
-                return ("together_ai", KeyLocs.together_key)
-            elif explicit_provider == "openrouter":
-                return ("openrouter", KeyLocs.openrouter_key)
-            elif explicit_provider == "vllm":
-                return ("vllm", None)
-            else:
-                raise ValueError(f"Unknown provider: {explicit_provider}")
-
-        # if not set explicitly try detecting provider from model name
-        is_anthropic_model = "claude" in model.lower()
-        is_openai_model = "o1" in model.lower() or "o3" in model.lower() or "o4" in model.lower() or "gpt" in model.lower()
-        is_swissai_model = "apertus" in model.lower()
-
-        if is_swissai_model:
-            return ("swissai", KeyLocs.cscs_key)
-        elif is_anthropic_model:
-            return ("anthropic", KeyLocs.anthropic_key)
-        elif is_openai_model:
-            return ("openai", KeyLocs.openai_key)
-        # if not detected or set explicitly, we default to Together
-        else:
-            return ("together-ai", KeyLocs.together_key)
-
-    @staticmethod
-    def is_openai_reasoning(model: str) -> bool:
-        return (
-            model.startswith("o1")
-            or model.startswith("o3")
-            or model.startswith("o4")
-            or model.startswith("gpt-5")
-        )
-
-
 class Prompter:
 
     # NOTE: unused because Together expects you to set
@@ -178,7 +127,7 @@ class Prompter:
         temperature: float,
         reasoning_effort: str,
         vllm_port: int,
-        explicit_provider: str | None = None,
+        provider: str | None,
     ):
         self.env = env
         self.scenario = scenario
@@ -193,18 +142,19 @@ class Prompter:
 
         self.system_prompt = _SYSTEM_PROMPT
 
-        provider_name, api_key_loc = ProviderDetector.get_provider(
-            model, explicit_provider
+
+        # we default to together_ai if provider not set
+        if provider is None:
+            self.provider = "together_ai"
+        else:
+            self.provider = provider
+
+        self.openai_reasoning = (
+            model.startswith("o1")
+            or model.startswith("o3")
+            or model.startswith("o4")
+            or model.startswith("gpt-5")
         )
-
-        self.provider = provider_name
-        self.api_key_location = api_key_loc
-        self.anthropic = provider_name == "anthropic"
-        self.openai = provider_name == "openai"
-        self.openrouter = provider_name == "openrouter"
-        self.vllm = provider_name == "vllm"
-
-        self.openai_reasoning = ProviderDetector.is_openai_reasoning(model)
         self.anthropic_thinking = model in self.anthropic_thinking_lengths
 
         self.prompt = self.scenario.build_prompt(
@@ -432,25 +382,16 @@ class Prompter:
         except Exception as e:
             raise e
 
-    def prompt_openai_together_batch(self, logger: logging.Logger) -> list[str]:
-        if self.openai:
-            client = OpenAI(api_key=os.environ[KeyLocs.openai_key.value])
-        else:
-            client = OpenAI(
-                api_key=os.environ[KeyLocs.together_key.value],
-                base_url="https://api.together.xyz/v1",
-            )
+    def prompt_openai_batch(self, logger: logging.Logger) -> list[str]:
+
+        client = OpenAI(api_key=os.environ[KeyLocs.openai_key.value])
+
         try:
             # Prepare extra kwargs
             extra_kwargs: dict[str, Any] = {}
-            if (
-                self.model == "o1"
-                or self.model.startswith("o3")
-                or self.model.startswith("o4")
-                or self.model.startswith("gpt-5")
-            ):  # NOTE: o1-mini does not have this
+            if self.openai_reasoning: 
                 extra_kwargs["reasoning_effort"] = self.reasoning_effort
-            if self.openai:
+            if self.provider == "openai":
                 extra_kwargs["max_completion_tokens"] = (
                     Prompter.openai_max_completion_tokens[self.model]
                 )
@@ -462,12 +403,77 @@ class Prompter:
                 )
             # Prepare the message
             messages: list[Any] = []
-            if (
-                self.model == "o1"
-                or self.model.startswith("o3")
-                or self.model.startswith("o4")
-                or self.model.startswith("gpt-5")
-            ):
+            if self.openai_reasoning:
+                messages.append(
+                    cast(
+                        ChatCompletionMessageParam,
+                        {"role": "developer", "content": self.system_prompt},
+                    )
+                )
+            elif self.model == "o1-mini":
+                # No sysprompt
+                pass
+            else:
+                messages.append(
+                    cast(
+                        ChatCompletionMessageParam,
+                        {"role": "system", "content": self.system_prompt},
+                    )
+                )
+            messages.append({"role": "user", "content": self.prompt})
+
+            # Query
+            completions = client.chat.completions.create(
+                model=self.model,
+                messages=messages,
+                n=self.batch_size,
+                temperature=(
+                    self.temperature if not self.openai_reasoning else NOT_GIVEN
+                ),
+                **extra_kwargs,
+            )
+            if completions.usage is not None:
+                logger.info(
+                    f"Batch token stats: {completions.usage}; around {completions.usage.completion_tokens / self.batch_size:.2f} completion tokens per completion"
+                )
+            else:
+                logger.info(f"Batch token stats unavailable")
+            responses = []
+            for idx, choice in enumerate(completions.choices):
+                if choice.finish_reason == "length":
+                    logger.warning(f"Completion {idx} was cut off due to length.")
+                if choice.message.content:
+                    responses.append(choice.message.content)
+            return responses
+
+        except Exception as e:
+            raise e
+        
+    def prompt_togetherai_batch(self, logger: logging.Logger) -> list[str]:
+
+        client = OpenAI(
+            api_key=os.environ[KeyLocs.together_key.value],
+            base_url="https://api.together.xyz/v1",
+        )
+
+        try:
+            # Prepare extra kwargs
+            extra_kwargs: dict[str, Any] = {}
+            if self.openai_reasoning: 
+                extra_kwargs["reasoning_effort"] = self.reasoning_effort
+            if self.provider == "openai":
+                extra_kwargs["max_completion_tokens"] = (
+                    Prompter.openai_max_completion_tokens[self.model]
+                )
+            else:
+                extra_kwargs["max_tokens"] = (
+                    8192
+                    if self.model not in Prompter.openai_together_context_lengths
+                    else Prompter.openai_together_context_lengths[self.model] - 3000
+                )
+            # Prepare the message
+            messages: list[Any] = []
+            if self.openai_reasoning:
                 messages.append(
                     cast(
                         ChatCompletionMessageParam,
@@ -515,16 +521,21 @@ class Prompter:
 
     @no_type_check
     def prompt_model(self, logger: logging.Logger) -> list[str]:
-        if self.anthropic:
+        if self.provider == "anthropic":
             return self.prompt_anthropic(logger)
-        elif self.openrouter:
+        elif self.provider =="openrouter":
             return self.prompt_openrouter(logger)
-        elif self.vllm:
+        elif self.provider == "vllm":
             return self.prompt_vllm(logger)
         elif self.provider == "swissai":
             return self.prompt_swissai(logger)
+        elif self.provider == "openai":
+            return self.prompt_openai_batch(logger)
+        elif self.provider == "together_ai":
+            return self.prompt_togetherai_batch(logger)
         else:
-            return self.prompt_openai_together_batch(logger)
+            logger.error(f"Unknown provider: {self.provider}")
+            raise Exception(f"Unknown provider: {self.provider}")
 
     def get_code_dir(self, save_dir: pathlib.Path, sample: int) -> pathlib.Path:
         return save_dir / f"sample{sample}" / "code"

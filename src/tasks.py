@@ -231,12 +231,12 @@ class Task:
     reasoning_effort: str
     spec_type: str
     safety_prompt: str
-    use_openhands: bool = False
-    openhands_agent_cls: str = "CodeActAgent"
-    openhands_max_iterations: int = 30
-    openhands_max_cost: float | None = None
-    openhands_max_tokens: int | None = None
-    explicit_provider: str | None = None
+    use_openhands: bool
+    openhands_agent_cls: str
+    openhands_max_iterations: int
+    openhands_max_cost: float | None 
+    openhands_max_tokens: int | None
+    provider: str | None
 
     @property
     def id(self) -> str:
@@ -415,7 +415,7 @@ class Task:
                     temperature=self.temperature,
                     agent_cls=self.openhands_agent_cls,
                     max_iterations=self.openhands_max_iterations,
-                    explicit_provider=self.explicit_provider,
+                    provider=self.provider,
                     max_cost=self.openhands_max_cost,
                     max_tokens=self.openhands_max_tokens,
                 )
@@ -450,7 +450,7 @@ class Task:
                     temperature=self.temperature,
                     reasoning_effort=self.reasoning_effort,
                     vllm_port=vllm_port,
-                    explicit_provider=self.explicit_provider,
+                    provider=self.provider,
                 )
                 logger.info("built prompt:\n%s", prompter.prompt)
                 logger.info("-" * 100)

@@ -74,7 +74,7 @@ def main(args: Any) -> None:
                 openhands_max_iterations=args.openhands_max_iterations,
                 openhands_max_cost=args.openhands_max_cost,
                 openhands_max_tokens=args.openhands_max_tokens,
-                explicit_provider=args.provider,
+                provider=args.provider,
             )
             for env in envs
             for scenario in scenarios
