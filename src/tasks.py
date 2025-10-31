@@ -264,13 +264,16 @@ class Task:
             logfile_handler.close()
 
     def get_save_dir(self, results_dir: pathlib.Path) -> pathlib.Path:
-        save_dir = (
+        base_dir = (
             results_dir
             / esc(self.model)
             / esc(self.scenario.id)
             / esc(self.env.id)
-            / f"temp{float(self.temperature)}-{esc(self.spec_type)}-{esc(self.safety_prompt)}"
         )
+        if self.use_openhands:
+            save_dir = base_dir / f"temp{float(self.temperature)}-{esc(self.spec_type)}-{esc(self.safety_prompt)}-openhands"
+        else:
+            save_dir = base_dir / f"temp{float(self.temperature)}-{esc(self.spec_type)}-{esc(self.safety_prompt)}"
         return save_dir
 
     def get_sample_dir(self, results_dir: pathlib.Path, sample: int) -> pathlib.Path:

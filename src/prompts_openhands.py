@@ -81,6 +81,10 @@ class OpenHandsPrompter:
             base_url = "https://api.swissai.cscs.ch/v1"
             # Prefix model with "openai/" for LiteLLM (backend used by OpenHands) to recognize it
             model_name = f"openai/{self.model}" if not self.model.startswith("openai/") else self.model
+        elif self.provider == "openrouter":
+            provider = "openrouter"
+            base_url = None
+            model_name = f"openrouter/{self.model}" if not self.model.startswith("openrouter/") else self.model
         else:
             provider = self.provider
             base_url = None
