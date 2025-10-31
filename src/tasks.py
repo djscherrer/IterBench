@@ -231,12 +231,11 @@ class Task:
     reasoning_effort: str
     spec_type: str
     safety_prompt: str
-    openrouter: bool
-    vllm: bool
     use_openhands: bool = False
-    verbose: bool = False
     openhands_agent_cls: str = "CodeActAgent"
     openhands_max_iterations: int = 30
+    openhands_max_cost: float | None = None
+    openhands_max_tokens: int | None = None
     explicit_provider: str | None = None
 
     @property
@@ -353,8 +352,6 @@ class Task:
         max_delay: float,
         force: bool,
         skip_failed: bool,
-        openrouter: bool,
-        vllm: bool,
         vllm_port: int,
     ) -> None:
         # check if there are already some results generated
@@ -416,11 +413,11 @@ class Task:
                     spec_type=self.spec_type,
                     safety_prompt=self.safety_prompt,
                     temperature=self.temperature,
-                    openrouter=self.openrouter,
                     agent_cls=self.openhands_agent_cls,
-                    max=self.openhands_max_iterations,
-                    verbose=self.verbose,
+                    max_iterations=self.openhands_max_iterations,
                     explicit_provider=self.explicit_provider,
+                    max_cost=self.openhands_max_cost,
+                    max_tokens=self.openhands_max_tokens,
                 )
                 logger.info("Built agent task:\n%s", prompter_oh.task)
                 for sample in range(last_sample + 1, last_sample + 1 + batch_size):
@@ -452,8 +449,6 @@ class Task:
                     offset=last_sample + 1,
                     temperature=self.temperature,
                     reasoning_effort=self.reasoning_effort,
-                    openrouter=openrouter,
-                    vllm=vllm,
                     vllm_port=vllm_port,
                     explicit_provider=self.explicit_provider,
                 )
@@ -948,8 +943,6 @@ class TaskHandler:
         max_delay: float,
         force: bool,
         skip_failed: bool,
-        openrouter: bool,
-        vllm: bool,
         vllm_port: int,
     ) -> list[int]:
         with tqdm.tqdm(total=len(self.tasks)) as pbar:
@@ -963,9 +956,7 @@ class TaskHandler:
                     max_retries=max_retries,
                     base_delay=base_delay,
                     max_delay=max_delay,
-                    openrouter=openrouter,
                     skip_failed=skip_failed,
-                    vllm=vllm,
                     vllm_port=vllm_port,
                 )
                 with pbar.get_lock():  # type: ignore[no-untyped-call]

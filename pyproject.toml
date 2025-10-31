@@ -23,6 +23,8 @@ dependencies = [
     "types-pyyaml",
     "matplotlib",
     "pandas>=2.3.3",
+    "openhands-sdk>=1.0.0a5",
+    "openhands-tools>=1.0.0a5",
 ]
 
 [dependency-groups]

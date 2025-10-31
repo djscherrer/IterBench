@@ -33,19 +33,12 @@ class KeyLocs(Enum):
 class ProviderDetector:
 
     @staticmethod
-    def detect_provider(
+    def get_provider(
         model: str,
         explicit_provider: str | None = None,
-        openrouter: bool = False,
-        vllm: bool = False,
     ) -> tuple[str, str]:
-        
-        if vllm:
-            return ("vllm", None)
-        elif openrouter:
-            return ("openrouter", KeyLocs.openrouter_key)
-        
-        # If explicit provider is given, we use it
+
+        # If explicit provider is given, use it
         if explicit_provider:
             if explicit_provider == "swissai":
                 return ("swissai", KeyLocs.cscs_key)
@@ -53,8 +46,8 @@ class ProviderDetector:
                 return ("openai", KeyLocs.openai_key)
             elif explicit_provider == "anthropic":
                 return ("anthropic", KeyLocs.anthropic_key)
-            elif explicit_provider == "together":
-                return ("together", KeyLocs.together_key)
+            elif explicit_provider == "together_ai":
+                return ("together_ai", KeyLocs.together_key)
             elif explicit_provider == "openrouter":
                 return ("openrouter", KeyLocs.openrouter_key)
             elif explicit_provider == "vllm":
@@ -62,18 +55,20 @@ class ProviderDetector:
             else:
                 raise ValueError(f"Unknown provider: {explicit_provider}")
 
+        # if not set explicitly try detecting provider from model name
         is_anthropic_model = "claude" in model.lower()
         is_openai_model = "o1" in model.lower() or "o3" in model.lower() or "o4" in model.lower() or "gpt" in model.lower()
         is_swissai_model = "apertus" in model.lower()
-        
+
         if is_swissai_model:
             return ("swissai", KeyLocs.cscs_key)
         elif is_anthropic_model:
             return ("anthropic", KeyLocs.anthropic_key)
         elif is_openai_model:
             return ("openai", KeyLocs.openai_key)
+        # if not detected or set explicitly, we default to Together
         else:
-            return ("together", KeyLocs.together_key)
+            return ("together-ai", KeyLocs.together_key)
 
     @staticmethod
     def is_openai_reasoning(model: str) -> bool:
@@ -182,8 +177,6 @@ class Prompter:
         offset: int,
         temperature: float,
         reasoning_effort: str,
-        openrouter: bool,
-        vllm: bool,
         vllm_port: int,
         explicit_provider: str | None = None,
     ):
@@ -200,8 +193,8 @@ class Prompter:
 
         self.system_prompt = _SYSTEM_PROMPT
 
-        provider_name, api_key_loc = ProviderDetector.detect_provider(
-            model, explicit_provider, openrouter, vllm
+        provider_name, api_key_loc = ProviderDetector.get_provider(
+            model, explicit_provider
         )
 
         self.provider = provider_name

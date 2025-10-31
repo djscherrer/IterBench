@@ -69,12 +69,11 @@ def main(args: Any) -> None:
                 spec_type=args.spec_type,
                 safety_prompt=args.safety_prompt,
                 reasoning_effort=args.reasoning_effort,
-                openrouter=args.openrouter,
-                vllm=args.vllm,
                 use_openhands=args.use_openhands,
-                verbose=args.verbose,
                 openhands_agent_cls=args.openhands_agent_cls,
                 openhands_max_iterations=args.openhands_max_iterations,
+                openhands_max_cost=args.openhands_max_cost,
+                openhands_max_tokens=args.openhands_max_tokens,
                 explicit_provider=args.provider,
             )
             for env in envs
@@ -100,8 +99,6 @@ def main(args: Any) -> None:
             max_delay=args.max_delay,
             force=args.force,
             skip_failed=args.skip_failed,
-            openrouter=args.openrouter,
-            vllm=args.vllm,
             vllm_port=args.vllm_port,
         )
     elif args.mode == "test":
@@ -290,16 +287,6 @@ if __name__ == "__main__":
         help="Prune docker containers after running tests",
     )
     parser.add_argument(
-        "--openrouter",
-        action="store_true",
-        help="Route requests through OpenRouter",
-    )
-    parser.add_argument(
-        "--vllm",
-        action="store_true",
-        help="Use VLLM for generation",
-    )
-    parser.add_argument(
         "--vllm_port",
         type=int,
         default=8000,
@@ -311,11 +298,6 @@ if __name__ == "__main__":
         help="Use OpenHands for code generation instead of single LLM prompting",
     )
     parser.add_argument(
-        "--verbose",
-        action="store_true",
-        help="Enable verbose output during code generation",
-    )
-    parser.add_argument(
         "--openhands_agent_cls",
         type=str,
         default="CodeActAgent",
@@ -324,8 +306,20 @@ if __name__ == "__main__":
     parser.add_argument(
         "--openhands_max_iterations",
         type=int,
-        default=30,
+        default=50,
         help="Maximum number of iterations for OpenHands agent (maps to -i).",
+    )
+    parser.add_argument(
+        "--openhands_max_cost",
+        type=float,
+        default=None,
+        help="Maximum cost for OpenHands agent execution. Agent will stop if this limit is exceeded.",
+    )
+    parser.add_argument(
+        "--openhands_max_tokens",
+        type=int,
+        default=None,
+        help="Maximum total tokens (input + output) for OpenHands agent execution. Agent will stop if this limit is exceeded.",
     )
     parser.add_argument(
         "--port",
@@ -337,7 +331,7 @@ if __name__ == "__main__":
         "--provider",
         type=str,
         default=None,
-        choices=["openai", "anthropic", "together", "openrouter", "swissai", "vllm"],
+        choices=["openai", "anthropic", "together_ai", "openrouter", "swissai", "vllm"],
         help="Explicitly specify the LLM provider. If not provided, the provider will be inferred from the model name.",
     )
     main(parser.parse_args())
