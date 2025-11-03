@@ -15,6 +15,12 @@ from tasks import Task, TaskHandler
 
 _DEFAULT_SAVE_PATH = pathlib.Path(__file__).parent.parent / "results"
 
+import shlex
+
+class ArgFileParser(argparse.ArgumentParser):
+    def convert_arg_line_to_args(self, arg_line: str):
+        for tok in shlex.split(arg_line, comments=True, posix=True):
+            yield tok
 
 def main(args: Any) -> None:
 
@@ -137,7 +143,7 @@ def main(args: Any) -> None:
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
+    parser = ArgFileParser(fromfile_prefix_chars='@')
     parser.add_argument(
         "--models", type=str, nargs="+", required=True, help="List of models"
     )

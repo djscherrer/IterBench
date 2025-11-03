@@ -2,12 +2,14 @@ import logging
 import os
 import pathlib
 import sys
+import threading
 from io import StringIO
 from typing import Any
 
 from pydantic import SecretStr
-from openhands.sdk import LLM, Conversation, Event
-from openhands.tools.preset.default import get_default_agent
+from openhands.sdk import LLM, Conversation, Event, Agent, Tool
+from openhands.sdk.context.condenser import LLMSummarizingCondenser
+from openhands.tools.preset.default import register_default_tools
 from ansi2html import Ansi2HTMLConverter
 from contextlib import redirect_stdout, redirect_stderr
 
@@ -15,6 +17,8 @@ from env.base import Env
 from scenarios.base import Scenario
 from prompts import KeyLocs
 
+_agent_creation_lock = threading.Lock()
+_tools_registered = False
 
 class OpenHandsPrompter:
     def __init__(
@@ -164,25 +168,51 @@ class OpenHandsPrompter:
                             conversation.pause()
 
         try:
-            llm = LLM(
-                model=model_name,
-                api_key=SecretStr(api_key),
-                base_url=base_url,
-                usage_id="baxbench",
-            )
-
-            agent = get_default_agent(llm=llm, cli_mode=True)
-
-            conversation = Conversation(
-                agent=agent, 
-                workspace=str(code_dir),
-                callbacks=[event_callback],
-            )
-
+            with _agent_creation_lock:
+                global _tools_registered
+                if not _tools_registered:
+                    register_default_tools(enable_browser=False)
+                    _tools_registered = True
+                    
             # capture stdout and stderr and print to file
             console_output = StringIO()
-            
+
             with redirect_stdout(console_output), redirect_stderr(console_output):
+                llm = LLM(
+                    model=model_name,
+                    api_key=SecretStr(api_key),
+                    base_url=base_url,
+                    usage_id="baxbench",
+                )
+
+                with _agent_creation_lock:
+                    tools = [
+                        Tool(name="BashTool"),
+                        Tool(name="FileEditorTool"),
+                        Tool(name="TaskTrackerTool"),
+                    ]
+                    
+                    condenser = LLMSummarizingCondenser(
+                        llm=llm.model_copy(update={"usage_id": "condenser"}), 
+                        max_size=80, 
+                        keep_first=4
+                    )
+                    
+                    agent = Agent(
+                        llm=llm,
+                        tools=tools,
+                        mcp_config={}, 
+                        system_prompt_kwargs={"cli_mode": True},
+                        condenser=condenser,
+                        security_analyzer=None,
+                    )
+
+                    conversation = Conversation(
+                        agent=agent, 
+                        workspace=str(code_dir),
+                        callbacks=[event_callback],
+                    )
+                
                 conversation.send_message(self.task)
                 conversation.run()
     

@@ -251,6 +251,7 @@ class Task:
     ) -> Generator[logging.Logger, None, None]:
         logger = logging.getLogger(self.id)
         logger.setLevel(logging.INFO)
+        logger.propagate = False
         logfile_handler = logging.FileHandler(logfile_path, mode="w")
         logfile_handler.setLevel(logging.INFO)
         logfile_handler.setFormatter(
@@ -945,6 +946,7 @@ class TaskHandler:
         skip_failed: bool,
         vllm_port: int,
     ) -> list[int]:
+        
         with tqdm.tqdm(total=len(self.tasks)) as pbar:
             pbar.get_lock()  # type: ignore[no-untyped-call]
 

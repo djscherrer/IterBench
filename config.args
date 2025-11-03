@@ -1,0 +1,10 @@
+# config.args
+--models openai/gpt-4o-mini
+--mode generate
+--n_samples 1
+--temperature 0.7
+--scenarios Petstore
+--envs Python-Flask Python-Django JavaScript-express JavaScript-koa
+--use_openhands
+--spec_type json_api
+--openhands_max_iterations 10
