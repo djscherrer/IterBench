@@ -1042,20 +1042,54 @@ class TaskHandler:
         samples: list[int],
     ) -> list[int]:
         import matplotlib.pyplot as plt
-        fig, ax = plt.subplots(figsize=(10,8))
 
+        # compare performance of different LLMs. For each LLM, we take the best performing implementation
+        df = pd.DataFrame(columns=["model", "scenario", "framework", "task"])
         for task in self.tasks:
-            task.plot_one(
-                results_dir=self.results_dir,
-                samples=samples,
-                ax=ax,
-            )
-        
-        ax.set_xlabel("Achived RPS")
-        ax.set_ylabel("P99 [ms]")
-        ax.legend()
-        ax.set_ylim((0, 500))
-        fig.savefig("test_plot.png")
+            df.loc[len(df)] = [task.model, task.scenario.id, f"{task.env.language}-{task.env.framework}", task]
+
+        for (scenario,), data_s in df.groupby(["scenario"]):
+            fig, ax = plt.subplots(figsize=(10,8))
+            for (model,), data in data_s.groupby(["model"]):
+                # find the best performance
+                self.plot_best(data, samples, ax, model)
+
+            ax.set_xlabel("Achived RPS")
+            ax.set_ylabel("P99 [ms]")
+            ax.legend()
+            ax.set_ylim((0, 1500))
+            os.makedirs(f"{self.results_dir}/performance/by_llm", exist_ok=True)
+            fig.savefig(f"{self.results_dir}/performance/by_llm/{esc(scenario)}_RPS_latency_plot.png")
+
+            fig, ax = plt.subplots(figsize=(10,8))
+            for (framework,), data in data_s.groupby(["framework"]):
+                # find the best performance
+                self.plot_best(data, samples, ax, framework)
+
+            ax.set_xlabel("Achived RPS")
+            ax.set_ylabel("P99 [ms]")
+            ax.legend()
+            ax.set_ylim((0, 1500))
+            os.makedirs(f"{self.results_dir}/performance/by_framework", exist_ok=True)
+            fig.savefig(f"{self.results_dir}/performance/by_framework/{esc(scenario)}_RPS_latency_plot.png")
+
+    def plot_best(self, data: pd.DataFrame, samples: list[int], ax: plt.Axes, label: str):
+        csv_max = None
+        max_rps = 0
+
+        for idx, row in data.iterrows():
+            for sample in samples:
+                for test in row.task.scenario.performance_tests:
+                    csv_path = row.task.get_bench_results_csv_path(self.results_dir, sample, test)
+                    if not csv_path.exists():
+                        continue
+                    df = pd.read_csv(csv_path)
+
+                    if max(df["Requests/s"]) > max_rps:
+                        max_rps = max(df["Requests/s"])
+                        csv_max = csv_path
+        if csv_max is not None:
+            plot_requests_vs_percentile(csv_max, ax=ax, label=label)
 
     def evaluate_results(
         self, samples: list[int], ks: list[int]
