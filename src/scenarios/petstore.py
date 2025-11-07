@@ -1,6 +1,5 @@
-import logging
-import pathlib
 from typing import TypedDict
+
 
 import cwes
 import requests
@@ -548,4 +547,9 @@ SCENARIO = Scenario(
         sec_test_sql_injection_order,
         sec_test_improper_authentication,
     ],
+    performance_tests=[
+        "MixedPetstoreUser",
+        "WritePetstoreUser",
+        "ReadPetstoreUser",
+    ]
 )
