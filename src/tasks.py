@@ -42,7 +42,7 @@ def run_test_with_timeout(
             raise TimeoutError("Functional test timed out")
 
 def run_bench_with_timeout(
-    locustfile: pathlib.Path, csv_prefix: pathlib.Path, port: int, timeout: int
+    locustfile: pathlib.Path, csv_prefix: pathlib.Path, port: int, timeout: int, user: str
 ) -> bytes:
     try:
         result = subprocess.run([
@@ -55,6 +55,7 @@ def run_bench_with_timeout(
             "--csv", csv_prefix,
             "--csv-full-history",
             "--only-summary",
+            user
             ], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=timeout)
         return result.stdout
     except subprocess.TimeoutExpired:
@@ -288,14 +289,14 @@ class Task:
         return self.get_sample_dir(results_dir, sample) / "test_results.json"
 
     def get_bench_results_csv_prefix(
-        self, results_dir: pathlib.Path, sample: int
+        self, results_dir: pathlib.Path, sample: int, user: str
     ) -> pathlib.Path:
-        return self.get_sample_dir(results_dir, sample) / "bench_results"
+        return self.get_sample_dir(results_dir, sample) / f"bench_results_{user}"
 
     def get_bench_results_csv_path(
-        self, results_dir: pathlib.Path, sample: int
+        self, results_dir: pathlib.Path, sample: int, user: str
     ) -> pathlib.Path:
-        return self.get_sample_dir(results_dir, sample) / "bench_results_stats_history.csv"
+        return self.get_sample_dir(results_dir, sample) / f"bench_results_{user}_stats_history.csv"
 
     def load_code(
         self,
@@ -669,7 +670,7 @@ class Task:
             if not self.get_code_dir(results_dir, sample).exists():
                 continue
             if (
-                self.get_bench_results_csv_path(results_dir, sample).exists()
+                self.get_bench_results_csv_path(results_dir, sample, self.scenario.performance_tests[0]).exists()
                 and not force
             ):
                 continue
@@ -698,41 +699,44 @@ class Task:
                 logger.info("got docker image. id: %s", image_id)
                 logger.info("-" * 100)
 
-                from scenario_files import SCENARIO_FILE_PATH
-                locustfile = SCENARIO_FILE_PATH.joinpath(f"locustfiles/{self.scenario.id.lower()}.py")
-                logger.info("running load benchmark:\n%s", locustfile.read_text())
-                csv_prefix = self.get_bench_results_csv_prefix(results_dir, sample)
+                # todo: repeate for each user
+                for test in self.scenario.performance_tests:
+                    from scenario_files import SCENARIO_FILE_PATH
+                    locustfile = SCENARIO_FILE_PATH.joinpath(f"locustfiles/{self.scenario.id.lower()}.py")
+                    logger.info("running load benchmark:\n%s", locustfile.read_text())
+                    csv_prefix = self.get_bench_results_csv_prefix(results_dir, sample, test)
 
-                try:
-                    with ContainerRunner(
-                        self.env, port_manager, image_id, logger
-                    ) as cr:
-                        server_ran_before = self.env.process_still_running(
-                            cr.container.id, logger
-                        )
-                        locust_logs = run_bench_with_timeout(
-                            locustfile,
-                            csv_prefix,
-                            cr.port,
-                            timeout,
-                        )
-                        logger.info("loader logs:\n%s", locust_logs.decode())
-                        if (
-                            not self.env.process_still_running(
+                    try:
+                        with ContainerRunner(
+                            self.env, port_manager, image_id, logger
+                        ) as cr:
+                            server_ran_before = self.env.process_still_running(
                                 cr.container.id, logger
                             )
-                            and server_ran_before
-                        ):
-                            # something crashed the server process, this should be logged as cwe 703
-                            logger.warning(
-                                "server process crashed during functional test"
+                            locust_logs = run_bench_with_timeout(
+                                locustfile,
+                                csv_prefix,
+                                cr.port,
+                                timeout,
+                                test
                             )
-                except Exception as e:
-                    logger.exception("got exception:\n%s", str(e), exc_info=e)
-                logger.info("-" * 100)
+                            logger.info("loader logs:\n%s", locust_logs.decode())
+                            if (
+                                not self.env.process_still_running(
+                                    cr.container.id, logger
+                                )
+                                and server_ran_before
+                            ):
+                                # something crashed the server process, this should be logged as cwe 703
+                                logger.warning(
+                                    "server process crashed during functional test"
+                                )
+                    except Exception as e:
+                        logger.exception("got exception:\n%s", str(e), exc_info=e)
+                    logger.info("-" * 100)
 
-                logger.info("finished benchmarking sample %d", sample)
-                logger.info("-" * 100)
+                    logger.info("finished benchmarking sample %d", sample)
+                    logger.info("-" * 100)
 
     def plot_one(
         self,
@@ -741,10 +745,11 @@ class Task:
         ax: plt.Axes,
     ) -> None:
         for sample in samples:
-            csv_path = self.get_bench_results_csv_path(results_dir, sample)
-            if not csv_path.exists():
-                continue
-            plot_requests_vs_percentile(csv_path, ax=ax, label=self.env.id)
+            for test in self.scenario.performance_tests:
+                csv_path = self.get_bench_results_csv_path(results_dir, sample, test)
+                if not csv_path.exists():
+                    continue
+                plot_requests_vs_percentile(csv_path, ax=ax, label=self.env.id)
 
     def evaluate_results(
         self, results_dir: pathlib.Path, samples: list[int], ks: list[int]

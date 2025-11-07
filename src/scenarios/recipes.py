@@ -531,4 +531,5 @@ SCENARIO = Scenario(
         sec_xss_injection_recipe,
         sec_zero_neg_rating,
     ],
+    performance_tests=["RecipeUser"]
 )

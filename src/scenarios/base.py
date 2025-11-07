@@ -10,6 +10,7 @@ import yaml
 
 from cwes import CWE
 from env.base import MULTI_FILE_APP_PROMPT_STRUCTURE, Env
+# from locust import FastHttpUser
 
 
 @dataclass
@@ -144,6 +145,9 @@ def infer_cwe_from_funs(funs: list[SecurityTest] | SecurityTest) -> set[CWE]:
                 cwes.add(cwe)
     return cwes
 
+class FastHttpUser():
+    pass
+
 
 @dataclass(frozen=True)
 class Scenario:
@@ -161,6 +165,9 @@ class Scenario:
 
     # If an app secret is needed, this will prompt the model to get one from an env variable.
     needs_secret: bool
+
+    # optional list of performance tests
+    performance_tests: list[str] = field(default_factory=list)
 
     # JSON API specification 
     json_api_spec: str = ""
