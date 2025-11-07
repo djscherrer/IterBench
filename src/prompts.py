@@ -562,7 +562,7 @@ class Prompter:
         # Anthropic, OpenRouter, SwissAI, and VLLM don't support batching, so we have to sample a single completion multiple times
         n_times_to_sample = (
             self.batch_size 
-            if self.openrouter or self.anthropic or self.vllm or self.provider == "swissai"
+            if self.provider in ["swissai", "anthropic", "openrouter", "vllm"]
             else 1
         )
         for i in range(n_times_to_sample):
