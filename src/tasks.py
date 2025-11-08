@@ -163,6 +163,48 @@ def plot_requests_vs_percentile(
 
     return ax, df
 
+def plot_requests_vs_success_rate(
+    csv_path: str,
+    x_col: str = "Requests/s",
+    x_col2: str = "Failures/s",
+    name_col: str = "Name",
+    name_value: str = "Aggregated",
+    decreasing_run: int = 5,           # consecutive strictly-decreasing points to trigger cutoff
+    cutoff_delta: int = 0,             # keep rows up to (start_index_of_run + cutoff_delta), inclusive
+    ax: Optional[plt.Axes] = None,     # pass an existing axes to draw on, or leave None to create one
+    **plot_kwargs
+) -> Tuple[plt.Axes, pd.DataFrame]:
+    # Read & filter
+    df = pd.read_csv(csv_path)
+    df = df[df[name_col] == name_value].copy()
+    y_col = "success_rate"
+
+    # Ensure numeric for x and y; drop rows with NaNs afterwards
+    df[x_col] = pd.to_numeric(df[x_col], errors="coerce")
+    df[x_col2] = pd.to_numeric(df[x_col2], errors="coerce")
+    df[y_col] = pd.to_numeric(((df[x_col] - df[x_col2]) / df[x_col]) * 100, errors="coerce")
+    df = df.dropna(subset=[x_col, x_col2, y_col])
+
+    # Preserve existing order; find first strictly-decreasing run in x_col
+    x = (df[x_col] - df[x_col2]).to_numpy()
+    start_idx = None
+    if len(x) >= decreasing_run:
+        # scan windows of size `decreasing_run`
+        for s in range(0, len(x) - decreasing_run + 1):
+            # strictly decreasing over the window?
+            if all(x[s + k] > x[s + k + 1] for k in range(decreasing_run - 1)):
+                start_idx = s
+                break
+
+    # Apply cutoff if a run was found
+    if start_idx is not None:
+        last_keep = max(0, min(len(df) - 1, start_idx + cutoff_delta))
+        df = df.iloc[: last_keep + 1]  # inclusive
+
+    ax.plot((df[x_col] - df[x_col2]).to_numpy(), df[y_col].to_numpy(), **plot_kwargs)
+
+    return ax, df
+
 @dataclass
 class ContainerRunner:
     env: Env
@@ -1049,33 +1091,37 @@ class TaskHandler:
             df.loc[len(df)] = [task.model, task.scenario.id, f"{task.env.language}-{task.env.framework}", task]
 
         for (scenario,), data_s in df.groupby(["scenario"]):
-            fig, ax = plt.subplots(figsize=(10,8))
+            fig, axes = plt.subplots(1, 2, figsize=(20,8))
             for (model,), data in data_s.groupby(["model"]):
                 # find the best performance
-                self.plot_best(data, samples, ax, model)
+                self.plot_best(data, samples, axes, model)
+            axes[0].legend(title="Model")
+            axes[1].legend(title="Model")
 
-            ax.set_xlabel("Achived RPS")
-            ax.set_ylabel("P99 [ms]")
-            ax.legend()
-            ax.set_ylim((0, 1500))
             os.makedirs(f"{self.results_dir}/performance/by_llm", exist_ok=True)
             fig.savefig(f"{self.results_dir}/performance/by_llm/{esc(scenario)}_RPS_latency_plot.png")
 
-            fig, ax = plt.subplots(figsize=(10,8))
+            fig, axes = plt.subplots(1, 2, figsize=(20,8))
             for (framework,), data in data_s.groupby(["framework"]):
                 # find the best performance
-                self.plot_best(data, samples, ax, framework)
+                self.plot_best(data, samples, axes, framework)
+            axes[0].legend(title="Framework")
+            axes[1].legend(title="Framework")
 
-            ax.set_xlabel("Achived RPS")
-            ax.set_ylabel("P99 [ms]")
-            ax.legend()
-            ax.set_ylim((0, 1500))
             os.makedirs(f"{self.results_dir}/performance/by_framework", exist_ok=True)
             fig.savefig(f"{self.results_dir}/performance/by_framework/{esc(scenario)}_RPS_latency_plot.png")
 
-    def plot_best(self, data: pd.DataFrame, samples: list[int], ax: plt.Axes, label: str):
+    def plot_best(self, data: pd.DataFrame, samples: list[int], axes: list[plt.Axes], label: str):
         csv_max = None
         max_rps = 0
+
+        axes[0].set_xlabel("Achived RPS")
+        axes[0].set_ylabel("P99 [ms]")
+        axes[0].set_ylim((0, 1500))
+
+        axes[1].set_xlabel("Achived RPS")
+        axes[1].set_ylabel("Percentage")
+        axes[1].set_ylim((90, 102))
 
         for idx, row in data.iterrows():
             for sample in samples:
@@ -1085,11 +1131,12 @@ class TaskHandler:
                         continue
                     df = pd.read_csv(csv_path)
 
-                    if max(df["Requests/s"]) > max_rps:
-                        max_rps = max(df["Requests/s"])
+                    if max(df["Requests/s"]-df["Failures/s"]) > max_rps:
+                        max_rps = max(df["Requests/s"]-df["Failures/s"])
                         csv_max = csv_path
         if csv_max is not None:
-            plot_requests_vs_percentile(csv_max, ax=ax, label=label)
+            plot_requests_vs_percentile(csv_max, ax=axes[0], label=label)
+            plot_requests_vs_success_rate(csv_max, ax=axes[1], label=label)
 
     def evaluate_results(
         self, samples: list[int], ks: list[int]
