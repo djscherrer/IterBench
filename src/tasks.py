@@ -24,6 +24,7 @@ import cwes as cwe
 from env.base import COMMON_DOCKER_RUN_COMMANDS, Env
 from prompts import Prompter
 from scenarios.base import AppInstance, FunctionalTest, Scenario, SecurityTest
+from remote import RemoteConfig, run_remote_bench
 
 
 def esc(s: str) -> str:
@@ -49,13 +50,10 @@ def run_bench_with_timeout(
             "locust", "--headless",
             "--locustfile", locustfile,
             "--host", f"http://localhost:{port}",
-            "--users", "1800",
-            "--spawn-rate", "10",
-            "--run-time", "3m",
             "--csv", csv_prefix,
             "--csv-full-history",
             "--only-summary",
-            ], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=timeout)
+        ], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=timeout)
         return result.stdout
     except subprocess.TimeoutExpired:
         raise TimeoutError("Benchmarking timed out")
@@ -610,6 +608,7 @@ class Task:
         port_manager: "SlotManager",
         timeout: int,
         force: bool,
+        remote_config: RemoteConfig | None,
     ) -> None:
         # clean the directory from bench artifacts if entered by force
         if force:
@@ -640,14 +639,15 @@ class Task:
                         continue
             test_log_file = sample_dir / "test.log"
             pattern = re.compile(r"sha256:[0-9a-f]{64}")
+            image_id = None
             with open(test_log_file, "r", encoding="utf-8") as f:
                 for line in f:
                     match = pattern.search(line)
                     if match:
                         image_id = match.group(0)
                         break
-                if image_id is None:
-                    continue
+            if image_id is None:
+                continue
 
             log_file = sample_dir / "bench.log"
             with self.create_logger(log_file) as logger:
@@ -660,29 +660,43 @@ class Task:
                 csv_prefix = self.get_bench_results_csv_prefix(results_dir, sample)
 
                 try:
-                    with ContainerRunner(
-                        self.env, port_manager, image_id, logger
-                    ) as cr:
-                        server_ran_before = self.env.process_still_running(
-                            cr.container.id, logger
+                    if remote_config is not None:
+                        sample_slug = f"{esc(self.model)}-{esc(self.env.id)}-{esc(self.scenario.id)}-sample{sample}"
+                        run_remote_bench(
+                            config=remote_config,
+                            env=self.env,
+                            sample_slug=sample_slug,
+                            sample_dir=sample_dir,
+                            image_id=image_id,
+                            locustfile=locustfile,
+                            csv_prefix=csv_prefix,
+                            timeout=timeout,
+                            logger=logger,
                         )
-                        locust_logs = run_bench_with_timeout(
-                            locustfile,
-                            csv_prefix,
-                            cr.port,
-                            timeout,
-                        )
-                        logger.info("loader logs:\n%s", locust_logs.decode())
-                        if (
-                            not self.env.process_still_running(
+                    else:
+                        with ContainerRunner(
+                            self.env, port_manager, image_id, logger
+                        ) as cr:
+                            server_ran_before = self.env.process_still_running(
                                 cr.container.id, logger
                             )
-                            and server_ran_before
-                        ):
-                            # something crashed the server process, this should be logged as cwe 703
-                            logger.warning(
-                                "server process crashed during functional test"
+                            locust_logs = run_bench_with_timeout(
+                                locustfile,
+                                csv_prefix,
+                                cr.port,
+                                timeout,
                             )
+                            logger.info("loader logs:\n%s", locust_logs.decode())
+                            if (
+                                not self.env.process_still_running(
+                                    cr.container.id, logger
+                                )
+                                and server_ran_before
+                            ):
+                                # something crashed the server process, this should be logged as cwe 703
+                                logger.warning(
+                                    "server process crashed during functional test"
+                                )
                 except Exception as e:
                     logger.exception("got exception:\n%s", str(e), exc_info=e)
                 logger.info("-" * 100)
@@ -887,10 +901,12 @@ class TaskHandler:
         tasks: list[Task],
         results_dir: pathlib.Path,
         max_concurrent_runs: int | None,
+        bench_remote_config: RemoteConfig | None = None,
     ):
         self.tasks = tasks
         self.results_dir = results_dir
         self.max_concurrent_runs = max_concurrent_runs
+        self.bench_remote_config = bench_remote_config
 
     def run_generation(
         self,
@@ -981,6 +997,7 @@ class TaskHandler:
                         port_manager=port_manager,
                         timeout=timeout,
                         force=force,
+                        remote_config=self.bench_remote_config,
                     )
                     with pbar.get_lock():  # type: ignore[no-untyped-call]
                         pbar.update(1)
