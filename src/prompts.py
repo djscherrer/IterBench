@@ -72,6 +72,8 @@ class Prompter:
         "deepseek/deepseek-r1-0528": 32000,
         "x-ai/grok-4": 256000,
         "qwen/qwen3-coder": 32000,
+        "anthropic/claude-sonnet-4.5": 1000000,
+        "x-ai/grok-code-fast-1": 256000
     }
 
     anthropic_thinking_lengths = {
