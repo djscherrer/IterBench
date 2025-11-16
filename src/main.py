@@ -12,6 +12,7 @@ from print import (
 )
 from scenarios import all_scenarios
 from tasks import Task, TaskHandler
+from remote import RemoteConfig
 
 _DEFAULT_SAVE_PATH = pathlib.Path(__file__).parent.parent / "results"
 
@@ -89,10 +90,26 @@ def main(args: Any) -> None:
         key=lambda t: t.id,
     )
 
+    bench_remote_config = None
+    if args.bench_app_host or args.bench_loader_host:
+        if not args.bench_app_host or not args.bench_loader_host:
+            raise ValueError(
+                "Both --bench-app-host and --bench-loader-host must be provided for remote benchmarking"
+            )
+        remote_kwargs: dict[str, Any] = {
+            "app_host": args.bench_app_host,
+            "app_private_addr": args.bench_app_private_addr,
+            "load_host": args.bench_loader_host,
+            "remote_base_dir": args.bench_remote_dir,
+            "app_port": args.bench_remote_port,
+        }
+        bench_remote_config = RemoteConfig(**remote_kwargs)
+
     task_handler = TaskHandler(
         tasks=tasks,
         results_dir=args.results_dir,
         max_concurrent_runs=args.max_concurrent_runs,
+        bench_remote_config=bench_remote_config,
     )
 
     # ----- Run tasks -----#
@@ -275,6 +292,36 @@ if __name__ == "__main__":
         type=float,
         default=128.0,
         help="Maximum delay for backoff during generation",
+    )
+    parser.add_argument(
+        "--bench-app-host",
+        type=str,
+        default=None,
+        help="SSH host (e.g. user@host) where the application container should run",
+    )
+    parser.add_argument(
+        "--bench-app-private-addr",
+        type=str,
+        default=None,
+        help="Private IP address for the app host, used by the load generator to reach the app",
+    )
+    parser.add_argument(
+        "--bench-loader-host",
+        type=str,
+        default=None,
+        help="Host (e.g. user@host) where the load generator should run",
+    )
+    parser.add_argument(
+        "--bench-remote-dir",
+        type=str,
+        default="/tmp/baxbench",
+        help="Remote base directory to store benchmark artifacts when using remote hosts",
+    )
+    parser.add_argument(
+        "--bench-remote-port",
+        type=int,
+        default=None,
+        help="Override application port when running benchmarks on remote hosts",
     )
     parser.add_argument(
         "--force",
