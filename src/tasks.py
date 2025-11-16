@@ -184,6 +184,7 @@ def plot_requests_vs_success_rate(
     df[x_col2] = pd.to_numeric(df[x_col2], errors="coerce")
     df[y_col] = pd.to_numeric(((df[x_col] - df[x_col2]) / df[x_col]) * 100, errors="coerce")
     df = df.dropna(subset=[x_col, x_col2, y_col])
+    df = df.sort_values(by=(df[x_col] - df[x_col2]), ascending=True)
 
     # Preserve existing order; find first strictly-decreasing run in x_col
     x = (df[x_col] - df[x_col2]).to_numpy()
@@ -1088,7 +1089,10 @@ class TaskHandler:
         # compare performance of different LLMs. For each LLM, we take the best performing implementation
         df = pd.DataFrame(columns=["model", "scenario", "framework", "task"])
         for task in self.tasks:
-            df.loc[len(df)] = [task.model, task.scenario.id, f"{task.env.language}-{task.env.framework}", task]
+            suffix = ""
+            if task.use_openhands:
+                suffix = "-openhands"
+            df.loc[len(df)] = [f"{task.model}{suffix}", task.scenario.id, f"{task.env.language}-{task.env.framework}", task]
 
         for (scenario,), data_s in df.groupby(["scenario"]):
             fig, axes = plt.subplots(1, 2, figsize=(20,8))
