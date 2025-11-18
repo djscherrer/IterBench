@@ -14,7 +14,7 @@ from env.base import Env
 
 _docker_client = docker.from_env()
 
-_REMOTE_LOAD_PACKAGES = ("locust", "faker")
+_REMOTE_LOAD_PACKAGES = ("locust", "faker", "zope.event==6.0")
 _REMOTE_ENV_MARKER = hashlib.sha256(
     "|".join(_REMOTE_LOAD_PACKAGES).encode("utf-8")
 ).hexdigest()[:12]
@@ -165,20 +165,19 @@ def _wait_for_remote_http(
     last_exc: Exception | None = None
     while time.time() - start < wait_budget:
         try:
-            response = requests.get(
-                f"http://{host}:{port}",
-                timeout=config.request_timeout,
+            probe_cmd = (
+                "set -euo pipefail; "
+                f"curl {host}:{port} --max-time 5"
             )
-            logger.info(
-                "Remote server %s:%d responded with %d",
-                host,
-                port,
-                response.status_code,
-            )
+            probe_cmd = f'bash -lc "{probe_cmd}"'
+
+            out = _ssh(config.load_host, probe_cmd, logger)
+            out.check_returncode()
+            logger.info("Remote server %s:%d is ready", host,port)
             return
-        except requests.RequestException as exc:
+        except subprocess.CalledProcessError as exc:
             last_exc = exc
-            logger.debug("Remote server not ready yet: %s", exc)
+            logger.info("Remote server not ready yet: %s", exc)
         time.sleep(config.poll_interval)
     raise TimeoutError(
         f"Remote server {host}:{port} did not respond within {wait_budget} seconds"
@@ -248,6 +247,9 @@ def run_remote_bench(
             f"cd {shlex.quote(remote_load_dir)}; "
             f"{shlex.quote(locust_bin)} --headless --locustfile {shlex.quote(locustfile.name)} "
             f"--host http://{app_private_addr}:{app_port} "
+            "--users 3600 "
+            "--spawn-rate 20 "
+            "--run-time 3m "
             f"--csv {shlex.quote(csv_prefix.name)} "
             "--csv-full-history "
             "--only-summary"
