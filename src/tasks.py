@@ -978,6 +978,9 @@ class TaskHandler:
             os.makedirs(f"{self.results_dir}/performance/by_framework", exist_ok=True)
             fig.savefig(f"{self.results_dir}/performance/by_framework/{esc(scenario)}_RPS_latency_plot.png")
 
+        plot.compare_frameworks_and_models(df, self.results_dir, samples)
+        plot.error_rate_vs_rps_over_time(df, self.results_dir, samples)
+
 
     def evaluate_results(
         self, samples: list[int], ks: list[int]

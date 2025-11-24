@@ -1,8 +1,15 @@
 import pathlib
 
+import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 from typing import Optional, Tuple
+
+import matplotlib.cm as cm
+from matplotlib import colormaps
+from matplotlib.colors import Normalize
+from matplotlib.collections import LineCollection
+
 
 def plot_requests_vs_percentile(
     csv_path: str,
@@ -157,16 +164,135 @@ def plot_best(data: pd.DataFrame, samples: list[int], axes: list[plt.Axes], resu
     # axes[1].set_ylim((90, 102))
 
     for idx, row in data.iterrows():
-        for sample in samples:
-            for test in row.task.scenario.performance_tests:
-                csv_path = row.task.get_bench_results_csv_path(results_dir, sample, test)
-                if not csv_path.exists():
-                    continue
-                df = pd.read_csv(csv_path)
+        next_csv, next_rps = _get_best_sample_by_rps(row.task, samples, results_dir)
+        if next_rps > max_rps:
+            max_rps = next_rps
+            csv_max = next_csv
 
-                if max(df["Requests/s"]-df["Failures/s"]) > max_rps:
-                    max_rps = max(df["Requests/s"]-df["Failures/s"])
-                    csv_max = csv_path
     if csv_max is not None:
         plot_requests_vs_percentile(csv_max, ax=axes[0], label=label)
         plot_requests_vs_success_rate(csv_max, ax=axes[1], label=label)
+
+
+def compare_frameworks_and_models(
+    data: pd.DataFrame,
+    results_dir: pathlib.Path,
+    samples: list[int],
+):
+    nb_plots = len(data.scenario.unique())
+    if nb_plots == 0:
+        return
+    nb_rows = (nb_plots+1) // 2
+
+    fig, axes = plt.subplots(nb_rows, 2, figsize=(18, 5*nb_rows))
+    ax_i = 0
+
+    for (scenario,), data_s in data.groupby(["scenario"]):
+        ax = axes[ax_i//2][ax_i%2]
+        ax.set_title(scenario)
+
+        data_best = pd.DataFrame(columns=data.model.unique())
+
+        for idx, row in data_s.iterrows():
+            _, max_rps = _get_best_sample_by_rps(row.task, samples, results_dir)
+            data_best.loc[row.framework, row.model] = max_rps
+
+        data_best.plot(kind="bar", ax=ax, stacked=False)
+        ax.tick_params(axis='x', labelrotation=45)
+        ax_i += 1
+
+    fig.tight_layout()
+    fig.savefig(results_dir / "performance" / "framework_comparison.png")
+
+
+def error_rate_vs_rps_over_time(
+        data: pd.DataFrame,
+        results_dir: pathlib.Path,
+        samples: list[int],
+):
+    nb_plots = len(data.scenario.unique())
+    if nb_plots == 0:
+        return
+    nb_rows = (nb_plots + 1) // 2
+
+    fig, axes = plt.subplots(nb_rows, 2, figsize=(18, 5 * nb_rows))
+    ax_i = 0
+
+    cmap = colormaps["gist_rainbow"]
+    my_cmap = cm.colors.ListedColormap(cmap(np.linspace(0, 0.4, 256)))
+    norm = Normalize(vmin=0.8, vmax=1.0)
+    ls = ["-", "--", ":", "-."]
+
+    for (scenario,), data_s in data.groupby(["scenario"]):
+        ax = axes[ax_i // 2][ax_i % 2]
+        ax.set_title(scenario)
+
+        data_best = pd.DataFrame(columns=["csv", "rps"])
+
+        for (model, ), rows in data_s.groupby(["model"]):
+            csv, rps, framework = _get_best_framework_by_rps(rows, samples, results_dir)
+            data_best.loc[f"{model}-{framework}", "csv"] = csv
+            data_best.loc[f"{model}-{framework}", "rps"] = rps
+
+        ls_i = 0
+        lines = []
+        legends = []
+        for idx, row in data_best.iterrows():
+            if row.csv is None:
+                continue
+            df = pd.read_csv(row.csv)
+            df["Timestamp"] -= df["Timestamp"].min()
+            df["rps"] = df["Requests/s"] - df["Failures/s"]
+            df["rps_avg"] = df["rps"].rolling(window=10).max().rolling(window=10).mean()
+            df["success_rate"] = (df["Requests/s"] - df["Failures/s"]) / df["Requests/s"]
+
+            points = np.array([df["Timestamp"], df["rps_avg"]]).T.reshape(-1,1,2)
+            segments = np.concatenate([points[:-1], points[1:]], axis=1)
+
+            lc = LineCollection(segments, cmap=my_cmap, norm=norm, linestyles=ls[ls_i % len(ls)])
+            lc.set_array(df["success_rate"])
+            ax.add_collection(lc)
+            ax.set_xlim(0, df["Timestamp"].max())
+            ax.set_ylim(0, df["rps_avg"].max())
+            ls_i+=1
+            lines.append(lc)
+            legends.append(idx)
+
+        ax.legend(lines, legends, loc='best')
+        ax_i += 1
+
+    fig.colorbar(lc)
+    fig.tight_layout()
+    fig.savefig(results_dir / "performance" / "model_perf_comparison.png",dpi=600)
+
+def _get_best_sample_by_rps(task, samples: list[int], results_dir: pathlib.Path):
+    max_rps = 0
+    csv_max = None
+    # find the best sample for each model - framework combination
+    for sample in samples:
+        for test in task.scenario.performance_tests:
+            csv_path = task.get_bench_results_csv_path(results_dir, sample, test)
+            if not csv_path.exists():
+                continue
+            df = pd.read_csv(csv_path)
+
+            if max(df["Requests/s"] - df["Failures/s"]) > max_rps:
+                max_rps = max(df["Requests/s"] - df["Failures/s"])
+                csv_max = csv_path
+
+    return csv_max, max_rps
+
+
+def _get_best_framework_by_rps(tasks: pd.DataFrame, samples: list[int], results_dir: pathlib.Path):
+    max_rps = 0
+    csv_max = None
+    framework_max = None
+    # find the best sample for framework
+    for idx, row in tasks.iterrows():
+        next_csv, next_rps = _get_best_sample_by_rps(row.task, samples, results_dir)
+        if next_rps > max_rps:
+            max_rps = next_rps
+            csv_max = next_csv
+            framework_max = row.framework
+
+    return csv_max, max_rps, framework_max
