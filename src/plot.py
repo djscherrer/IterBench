@@ -98,6 +98,7 @@ def plot_requests_vs_percentile(
     ax.plot((df[x_col] - df[x_col2]).to_numpy(), df[y_col].to_numpy(), **plot_kwargs)
     ax.set_xlabel(x_col)
     ax.set_ylabel(y_col)
+    ax.set_ylim((0,5010))
     ax.set_title(f"{name_value}: {y_col} vs {x_col}")
 
     # Optionally tighten layout if we created the figure
@@ -148,6 +149,7 @@ def plot_requests_vs_success_rate(
         df = df.iloc[: last_keep + 1]  # inclusive
 
     ax.plot((df[x_col] - df[x_col2]).to_numpy(), df[y_col].to_numpy(), **plot_kwargs)
+    ax.set_title(f"{name_value}: {y_col} vs {x_col}")
 
     return ax, df
 
@@ -202,7 +204,7 @@ def compare_frameworks_and_models(
         ax_i += 1
 
     fig.tight_layout()
-    fig.savefig(results_dir / "performance" / "framework_comparison.png")
+    fig.savefig(results_dir / "performance" / "framework_performance_comparison.png")
 
 
 def error_rate_vs_rps_over_time(
