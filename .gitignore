@@ -1,14 +1,18 @@
 .vim
+.env
 .idea
 *.zip
 **/.DS_Store
 .vscode
 prompt_cache.json
-results
 tmp
+results-good
+results-old
 results_copy
 secret.sh
 .DS_Store
+.env_templates/
+.devbox/
 # Created by https://www.toptal.com/developers/gitignore/api/python,pycharm+all,visualstudiocode
 # Edit at https://www.toptal.com/developers/gitignore?templates=python,pycharm+all,visualstudiocode
 
@@ -227,7 +231,6 @@ celerybeat.pid
 .venv
 # env/
 venv/
-ENV/
 # env.bak/
 venv.bak/
 
@@ -304,3 +307,31 @@ results3.tar.gz
 results_backup.tar.gz
 results_11_2.tar.gz
 results_old.tar.gz
+.configs
+src/.jinja_cache/__jinja2_29e7b4d08b10777a3505f3336848074ba213d2d0.cache
+
+# --- User Requested Additions ---
+# Node
+node_modules/
+
+# Go
+vendor/
+bin/
+*.exe
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+
+# Rust / General
+target/
+
+# Python Envs
+/env/
+.venv/
+.env/
+
+results-all/
+results-old/
+results/

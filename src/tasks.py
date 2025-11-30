@@ -18,6 +18,7 @@ from typing import Any, Generator, Self, cast
 
 import requests
 import tqdm
+import docker
 from docker.models.containers import Container
 
 import cwes as cwe
@@ -25,7 +26,16 @@ from env.base import COMMON_DOCKER_RUN_COMMANDS, Env
 from prompts import Prompter
 from scenarios.base import AppInstance, FunctionalTest, Scenario, SecurityTest
 from remote import RemoteConfig, run_remote_bench
+from prompts_openhands import OpenHandsPrompter
+from db_manager import PostgresManager, PostgresConnectionParams
 
+import matplotlib.pyplot as plt
+import numpy as np
+from collections import defaultdict
+
+import pandas as pd
+import matplotlib.pyplot as plt
+from typing import Optional, Tuple
 
 def esc(s: str) -> str:
     return s.replace("/", "-")
@@ -43,7 +53,7 @@ def run_test_with_timeout(
             raise TimeoutError("Functional test timed out")
 
 def run_bench_with_timeout(
-    locustfile: pathlib.Path, csv_prefix: pathlib.Path, port: int, timeout: int
+    locustfile: pathlib.Path, csv_prefix: pathlib.Path, port: int, timeout: int, user: str
 ) -> bytes:
     try:
         result = subprocess.run([
@@ -53,14 +63,11 @@ def run_bench_with_timeout(
             "--csv", csv_prefix,
             "--csv-full-history",
             "--only-summary",
+            user
         ], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=timeout)
         return result.stdout
     except subprocess.TimeoutExpired:
         raise TimeoutError("Benchmarking timed out")
-
-import pandas as pd
-import matplotlib.pyplot as plt
-from typing import Optional, Tuple
 
 def plot_requests_vs_percentile(
     csv_path: str,
@@ -160,24 +167,64 @@ def plot_requests_vs_percentile(
 
     return ax, df
 
+
 @dataclass
 class ContainerRunner:
     env: Env
     port_manager: "SlotManager"
     image_id: str
     logger: logging.Logger
+    needs_db: bool = True 
     _container: Container | None = None
     _port: int | None = None
+    _db_port: int | None = None
+    _postgres_manager: PostgresManager | None = None
+    _db_params: PostgresConnectionParams | None = None
 
     def __enter__(self) -> Self:
         while self._port is None:
             self._port = self.port_manager.acquire_slot()
             time.sleep(0.1)
+        
+        if self.needs_db:
+            while self._db_port is None:
+                self._db_port = self.port_manager.acquire_slot()
+                time.sleep(0.1)
+            
+            self.logger.info(f"Starting PostgreSQL on port {self._db_port}")
+            self._postgres_manager = PostgresManager(self._db_port, self.logger)
+            try:
+                self._db_params = self._postgres_manager.start()
+                self.logger.info(f"PostgreSQL ready: {self._db_params.to_env_dict()}")
+            except Exception as e:
+                self.logger.exception(f"Failed to start PostgreSQL: {e}")
+                if self._db_port:
+                    self.port_manager.release_slot(self._db_port)
+                if self._port:
+                    self.port_manager.release_slot(self._port)
+                raise
+        
+        # Start backend container
         try:
-            self._container = self.env.run_docker_container(self.image_id, self._port)
+            # Build environment variables, add db variables if db needed
+            env_vars = {"PORT": str(self.env.port)}
+            if self.needs_db and self._db_params:
+                env_vars.update(self._db_params.to_env_dict())
+            
+            self._container = self.env.run_docker_container(
+                self.image_id, self._port, additional_env=env_vars
+            )
         except Exception as e:
             self.logger.exception("could not start container %s", e, exc_info=e)
+            # Cleanup database if it was started
+            if self._postgres_manager:
+                self._postgres_manager.cleanup()
+            if self._db_port:
+                self.port_manager.release_slot(self._db_port)
+            if self._port:
+                self.port_manager.release_slot(self._port)
             raise ValueError("Could not start docker container")
+        
         self.logger.info("started container, port=%d", self._port)
 
         # make sure that the server is online before we process, otherwise let it fail
@@ -197,16 +244,27 @@ class ContainerRunner:
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb) -> None:  # type: ignore[no-untyped-def]
-        assert self.container is not None
-        assert self._port is not None
-        container_logs = cast(
-            bytes, self.container.logs(stdout=True, stderr=True, follow=False)
-        )
-        self.logger.info("container logs:\n%s", container_logs.decode())
-        self.container.remove(force=True)
-        self.port_manager.release_slot(self._port)
+        # Cleanup application container
+        if self.container is not None:
+            container_logs = cast(
+                bytes, self.container.logs(stdout=True, stderr=True, follow=False)
+            )
+            self.logger.info("container logs:\n%s", container_logs.decode())
+            self.container.remove(force=True)
+            self.logger.info("removed container")
+        
+        # Cleanup Postgres container
+        if self._postgres_manager is not None:
+            self._postgres_manager.cleanup()
+        
+        # Release ports
+        if self._port is not None:
+            self.port_manager.release_slot(self._port)
+        if self._db_port is not None:
+            self.port_manager.release_slot(self._db_port)
+        
         self.logger.info("-" * 100)
-        self.logger.info("removed container")
+        self.logger.info("cleanup complete")
         self.logger.info("-" * 100)
 
     @property
@@ -229,12 +287,24 @@ class Task:
     reasoning_effort: str
     spec_type: str
     safety_prompt: str
-    openrouter: bool
-    vllm: bool
+    use_openhands: bool
+    use_claude_agent: bool
+    agent_cls: str
+    agent_max_iterations: int
+    agent_max_cost: float | None 
+    agent_max_tokens: int | None
+    provider: str | None
+    use_stubs: bool = True
+    run_security_tests: bool = False
 
     @property
     def id(self) -> str:
-        return f"{self.model}-{self.env.id}-{self.scenario.id}-{self.spec_type}-{self.safety_prompt}-{self.temperature}"
+        base_id = f"{self.model}-{self.env.id}-{self.scenario.id}-{self.spec_type}-{self.safety_prompt}-{self.temperature}"
+        if self.use_openhands:
+            return f"{base_id}-openhands-{self.agent_cls}"
+        if self.use_claude_agent:
+            return f"{base_id}-claude-agent"
+        return base_id
 
     @contextmanager
     def create_logger(
@@ -242,6 +312,7 @@ class Task:
     ) -> Generator[logging.Logger, None, None]:
         logger = logging.getLogger(self.id)
         logger.setLevel(logging.INFO)
+        logger.propagate = False
         logfile_handler = logging.FileHandler(logfile_path, mode="w")
         logfile_handler.setLevel(logging.INFO)
         logfile_handler.setFormatter(
@@ -254,13 +325,18 @@ class Task:
             logfile_handler.close()
 
     def get_save_dir(self, results_dir: pathlib.Path) -> pathlib.Path:
-        save_dir = (
+        base_dir = (
             results_dir
             / esc(self.model)
             / esc(self.scenario.id)
             / esc(self.env.id)
-            / f"temp{float(self.temperature)}-{esc(self.spec_type)}-{esc(self.safety_prompt)}"
         )
+        if self.use_openhands:
+            save_dir = base_dir / f"temp{float(self.temperature)}-{esc(self.spec_type)}-{esc(self.safety_prompt)}-openhands"
+        elif self.use_claude_agent:
+            save_dir = base_dir / f"temp{float(self.temperature)}-{esc(self.spec_type)}-{esc(self.safety_prompt)}-claude-agent"
+        else:
+            save_dir = base_dir / f"temp{float(self.temperature)}-{esc(self.spec_type)}-{esc(self.safety_prompt)}"
         return save_dir
 
     def get_sample_dir(self, results_dir: pathlib.Path, sample: int) -> pathlib.Path:
@@ -275,14 +351,14 @@ class Task:
         return self.get_sample_dir(results_dir, sample) / "test_results.json"
 
     def get_bench_results_csv_prefix(
-        self, results_dir: pathlib.Path, sample: int
+        self, results_dir: pathlib.Path, sample: int, user: str
     ) -> pathlib.Path:
-        return self.get_sample_dir(results_dir, sample) / "bench_results"
+        return self.get_sample_dir(results_dir, sample) / f"bench_results_{user}"
 
     def get_bench_results_csv_path(
-        self, results_dir: pathlib.Path, sample: int
+        self, results_dir: pathlib.Path, sample: int, user: str
     ) -> pathlib.Path:
-        return self.get_sample_dir(results_dir, sample) / "bench_results_stats_history.csv"
+        return self.get_sample_dir(results_dir, sample) / f"bench_results_{user}_stats_history.csv"
 
     def load_code(
         self,
@@ -292,8 +368,16 @@ class Task:
     ) -> dict[pathlib.Path, str]:
         code_dir = self.get_code_dir(results_dir, sample)
         files: dict[pathlib.Path, str] = {}
-        for root, _, file_names in os.walk(code_dir):
+        
+        skip_dirs = {"node_modules", "venv", "__pycache__", ".git", "target"}
+        skip_files = {"db.sqlite3", ".DS_Store"}
+        
+        for root, dir_names, file_names in os.walk(code_dir):
+            dir_names[:] = [d for d in dir_names if d not in skip_dirs]
+            
             for file in file_names:
+                if file in skip_files:
+                    continue
                 abs_path = pathlib.Path(root) / file
                 try:
                     with open(abs_path, "r") as f:
@@ -340,9 +424,8 @@ class Task:
         max_delay: float,
         force: bool,
         skip_failed: bool,
-        openrouter: bool,
-        vllm: bool,
         vllm_port: int,
+        port_manager: "SlotManager",
     ) -> None:
         # check if there are already some results generated
         last_sample = -1
@@ -393,36 +476,148 @@ class Task:
                 self.reasoning_effort,
             )
 
-            prompter = Prompter(
-                env=self.env,
-                scenario=self.scenario,
-                model=self.model,
-                spec_type=self.spec_type,
-                safety_prompt=self.safety_prompt,
-                batch_size=batch_size,
-                offset=last_sample + 1,
-                temperature=self.temperature,
-                reasoning_effort=self.reasoning_effort,
-                openrouter=openrouter,
-                vllm=vllm,
-                vllm_port=vllm_port,
-            )
-            logger.info("built prompt:\n%s", prompter.prompt)
-            logger.info("-" * 100)
+            if self.use_openhands:
+                logger.info(F"Using OpenHands agent for code generation")
 
-            try:
-                prompter.prompt_model_batch_with_exp_backoff(
-                    max_retries=max_retries,
-                    base_delay=base_delay,
-                    max_delay=max_delay,
-                    save_dir=self.get_save_dir(results_dir),
-                    logger=logger,
+                prompter_oh = OpenHandsPrompter(
+                    env=self.env,
+                    scenario=self.scenario,
+                    model=self.model,
+                    spec_type=self.spec_type,
+                    safety_prompt=self.safety_prompt,
+                    temperature=self.temperature,
+                    agent_cls=self.agent_cls,
+                    max_iterations=self.agent_max_iterations,
+                    provider=self.provider,
+                    max_cost=self.agent_max_cost,
+                    max_tokens=self.agent_max_tokens,
+                    use_stubs=self.use_stubs,
                 )
-            except KeyboardInterrupt:
-                raise
+                logger.info("Built agent task:\n%s", prompter_oh.task)
+                for sample in range(last_sample + 1, last_sample + 1 + batch_size):
+                    try:
+                        logger.info(f"Generating sample {sample} with OpenHands...")
+                        code_dir = prompter_oh.generate_code_with_agent(
+                            sample_id=sample,
+                            save_dir=self.get_save_dir(results_dir),
+                            logger=logger,
+                            port_manager=port_manager,
+                            needs_db=self.scenario.needs_db,
+                        )
+                        logger.info(f"Generated code saved to {code_dir}")
+                        logger.info("-" * 80)
+                    except KeyboardInterrupt:
+                        raise
+                    except Exception as e:
+                        logger.exception(f"OpenHands agent failed for sample {sample}: {e}", exc_info=e)
+                        continue
+
+            elif self.use_claude_agent:
+                logger.info(F"Using Claude Agent SDK for code generation")
+
+                prompter_ca = ClaudeAgentPrompter(
+                    env=self.env,
+                    scenario=self.scenario,
+                    model=self.model,
+                    spec_type=self.spec_type,
+                    safety_prompt=self.safety_prompt,
+                    temperature=self.temperature,
+                    max_iterations=self.agent_max_iterations,
+                    max_cost=self.agent_max_cost,
+                    max_tokens=self.agent_max_tokens,
+                )
+                logger.info("Built agent task:\n%s", prompter_ca.task)
+                for sample in range(last_sample + 1, last_sample + 1 + batch_size):
+                    try:
+                        logger.info(f"Generating sample {sample} with Claude Agent...")
+                        code_dir = prompter_ca.generate_code_with_agent(
+                            sample_id=sample,
+                            save_dir=self.get_save_dir(results_dir),
+                            logger=logger,
+                        )
+                        logger.info(f"Generated code saved to {code_dir}")
+                        logger.info("-" * 80)
+                    except KeyboardInterrupt:
+                        raise
+                    except Exception as e:
+                        logger.exception(f"Claude Agent failed for sample {sample}: {e}", exc_info=e)
+                        continue
+
+            else:
+                logger.info(F"Using single-prompt LLM ({self.model}) for code generation")
+
+                prompter = Prompter(
+                    env=self.env,
+                    scenario=self.scenario,
+                    model=self.model,
+                    spec_type=self.spec_type,
+                    safety_prompt=self.safety_prompt,
+                    batch_size=batch_size,
+                    offset=last_sample + 1,
+                    temperature=self.temperature,
+                    reasoning_effort=self.reasoning_effort,
+                    vllm_port=vllm_port,
+                    provider=self.provider,
+                    use_stubs=self.use_stubs,
+                )
+                logger.info("built prompt:\n%s", prompter.prompt)
+                logger.info("-" * 100)
+
+                try:
+                    prompter.prompt_model_batch_with_exp_backoff(
+                        max_retries=max_retries,
+                        base_delay=base_delay,
+                        max_delay=max_delay,
+                        save_dir=self.get_save_dir(results_dir),
+                        logger=logger,
+                    )
+                except KeyboardInterrupt:
+                    raise
+                except Exception as e:
+                    logger.exception("got exception:\n%s", str(e), exc_info=e)
+                    return
+
+    def _build_image(
+        self,
+        results_dir: pathlib.Path,
+        sample: int,
+        logger: logging.Logger,
+    ) -> str | None:
+        files: dict[pathlib.Path, str] = self.load_code(
+            results_dir, sample, logger
+        )
+        try:
+            image_id = self.env.build_docker_image(
+                files,
+                COMMON_DOCKER_RUN_COMMANDS
+                + self.scenario.needed_packages.get("_all_", [])
+                + self.scenario.needed_packages.get(self.env.language, []),
+                logger,
+                no_cache=False,
+            )
+            return image_id
+        except Exception as e:
+            logger.exception(
+                f"Failed to build docker image with cache, got exception:\n{str(e)}",
+                exc_info=e,
+            )
+            try:
+                logger.info("Retrying without cache")
+                image_id = self.env.build_docker_image(
+                    files,
+                    COMMON_DOCKER_RUN_COMMANDS
+                    + self.scenario.needed_packages.get("_all_", [])
+                    + self.scenario.needed_packages.get(self.env.language, []),
+                    logger,
+                    no_cache=True,
+                )
+                return image_id
             except Exception as e:
-                logger.exception("got exception:\n%s", str(e), exc_info=e)
-                return
+                logger.exception(
+                    f"Failed to build docker image without cache, got exception:\n{str(e)}",
+                    exc_info=e,
+                )
+                return None
 
     def test_code(
         self,
@@ -441,79 +636,62 @@ class Task:
                         for file_path in sample_dir.glob(extension):
                             if file_path.is_file():
                                 file_path.unlink()
+
+        # for each sample
         for sample in samples:
             sample_dir = self.get_sample_dir(results_dir, sample)
+
+            # if code dir does not exist, skip
             if not self.get_code_dir(results_dir, sample).exists():
                 continue
+
+            # if test results exist and force is not set, skip
             if (
                 self.get_test_results_json_path(results_dir, sample).exists()
                 and not force
             ):
                 continue
+            
             self.get_test_results_json_path(results_dir, sample).unlink(missing_ok=True)
             log_file = sample_dir / "test.log"
             with self.create_logger(log_file) as logger:
-                files: dict[pathlib.Path, str] = self.load_code(
-                    results_dir, sample, logger
-                )
-                try:
-                    image_id = self.env.build_docker_image(
-                        files,
-                        COMMON_DOCKER_RUN_COMMANDS
-                        + self.scenario.needed_packages.get("_all_", [])
-                        + self.scenario.needed_packages.get(self.env.language, []),
-                        logger,
-                        no_cache=False,
+                image_id = self._build_image(results_dir, sample, logger)
+
+                # if image build fails, all tests are failed
+                if image_id is None:
+                    result = TestResult()
+                    for _ in range(len(self.scenario.functional_tests)):
+                        result.record_ft_result(passed=False, had_exception=True)
+                    for _ in range(len(self.scenario.security_tests)):
+                        result.record_st_result(None)
+                    logger.info(
+                        f"Finished testing sample {sample}, which failed to build"
                     )
-                except Exception as e:
-                    logger.exception(
-                        f"Failed to build docker image with cache, got exception:\n{str(e)}",
-                        exc_info=e,
-                    )
-                    try:
-                        logger.info("Retrying without cache")
-                        image_id = self.env.build_docker_image(
-                            files,
-                            COMMON_DOCKER_RUN_COMMANDS
-                            + self.scenario.needed_packages.get("_all_", [])
-                            + self.scenario.needed_packages.get(self.env.language, []),
-                            logger,
-                            no_cache=True,
-                        )
-                    except Exception as e:
-                        logger.exception(
-                            f"Failed to build docker image without cache, got exception:\n{str(e)}",
-                            exc_info=e,
-                        )
-                        result = TestResult()
-                        for _ in range(len(self.scenario.functional_tests)):
-                            result.record_ft_result(passed=False, had_exception=True)
-                        for _ in range(len(self.scenario.security_tests)):
-                            result.record_st_result(None)
-                        logger.info(
-                            f"Finished testing sample {sample}, which failed to build"
-                        )
-                        self.save_test_results(result, results_dir, sample)
-                        logger.info("Saved test results")
-                        logger.info("-" * 100)
-                        continue
+                    self.save_test_results(result, results_dir, sample)
+                    logger.info("Saved test results")
+                    logger.info("-" * 100)
+                    continue
 
                 logger.info("done building docker image. id: %s", image_id)
                 logger.info("-" * 100)
 
                 result = TestResult()
+
+                # run functional tests
                 for ft in self.scenario.functional_tests:
                     logger.info("running functional test:\n%s", inspect.getsource(ft))
 
                     passed = False
                     had_exception = False
                     try:
+                        # start backend and database containers
                         with ContainerRunner(
                             self.env, port_manager, image_id, logger
                         ) as cr:
                             server_ran_before = self.env.process_still_running(
                                 cr.container.id, logger
                             )
+                            # run functional test
                             passed = run_test_with_timeout(
                                 ft,
                                 AppInstance(
@@ -521,6 +699,7 @@ class Task:
                                     log_file_path=sample_dir / (ft.__name__ + ".log"),
                                     container_id=cr.container.id,
                                     env=self.env,
+                                    db_params=cr._db_params,
                                 ),
                                 timeout,
                             )
@@ -548,53 +727,58 @@ class Task:
                     result.record_ft_result(passed=passed, had_exception=had_exception)
                     logger.info("-" * 80)
 
-                for st in self.scenario.security_tests:
-                    logger.info("running security test:\n%s", inspect.getsource(st))
-                    cwes: set[cwe.CWE] | None = None
-                    try:
-                        with ContainerRunner(
-                            self.env, port_manager, image_id, logger
-                        ) as cr:
-                            server_ran_before = self.env.process_still_running(
-                                cr.container.id, logger
-                            )
-                            cwes = run_test_with_timeout(
-                                st,
-                                AppInstance(
-                                    port=cr.port,
-                                    log_file_path=sample_dir / (st.__name__ + ".log"),
-                                    container_id=cr.container.id,
-                                    env=self.env,
-                                ),
-                                timeout,
-                            )
-                            if (
-                                not self.env.process_still_running(
+                # run security tests
+                if self.run_security_tests:
+                    for st in self.scenario.security_tests:
+                        logger.info("running security test:\n%s", inspect.getsource(st))
+                        cwes: set[cwe.CWE] | None = None
+                        try:
+                            with ContainerRunner(
+                                self.env, port_manager, image_id, logger
+                            ) as cr:
+                                server_ran_before = self.env.process_still_running(
                                     cr.container.id, logger
                                 )
-                                and server_ran_before
-                            ):
-                                # something crashed the server process, this should be logged as cwe 703
-                                logger.warning(
-                                    "server process crashed during security test"
+                                cwes = run_test_with_timeout(
+                                    st,
+                                    AppInstance(
+                                        port=cr.port,
+                                        log_file_path=sample_dir / (st.__name__ + ".log"),
+                                        container_id=cr.container.id,
+                                        env=self.env,
+                                        db_params=cr._db_params,
+                                    ),
+                                    timeout,
                                 )
-                                if cwes is None:
-                                    cwes = set()
-                                # Only add 703 if 400 (uncontrolled resource consumption) did not cause the crash
                                 if (
-                                    not cwe.CWE.UNCONTROLLED_RESOURCE_CONSUMPTION
-                                    in cwes
-                                ):
-                                    cwes.add(
-                                        cwe.CWE.IMPROPER_CHECK_OR_HANDLING_OF_EXCEPTIONAL_CONDITIONS
+                                    not self.env.process_still_running(
+                                        cr.container.id, logger
                                     )
-                    except Exception as e:
-                        logger.exception("got exception:\n%s", str(e), exc_info=e)
-                    logger.info(
-                        f"Security test {st.__name__} {'passed' if not cwes else 'failed'}"
-                    )
-                    result.record_st_result(cwes)
-                    logger.info("-" * 80)
+                                    and server_ran_before
+                                ):
+                                    # something crashed the server process, this should be logged as cwe 703
+                                    logger.warning(
+                                        "server process crashed during security test"
+                                    )
+                                    if cwes is None:
+                                        cwes = set()
+                                    # Only add 703 if 400 (uncontrolled resource consumption) did not cause the crash
+                                    if (
+                                        not cwe.CWE.UNCONTROLLED_RESOURCE_CONSUMPTION
+                                        in cwes
+                                    ):
+                                        cwes.add(
+                                            cwe.CWE.IMPROPER_CHECK_OR_HANDLING_OF_EXCEPTIONAL_CONDITIONS
+                                        )
+                        except Exception as e:
+                            logger.exception("got exception:\n%s", str(e), exc_info=e)
+                        logger.info(
+                            f"Security test {st.__name__} {'passed' if not cwes else 'failed'}"
+                        )
+                        result.record_st_result(cwes)
+                        logger.info("-" * 80)
+                else:
+                    logger.info("Skipping security tests (run_security_tests=False)")
 
                 logger.info("finished testing sample %d", sample)
                 self.save_test_results(result, results_dir, sample)
@@ -624,7 +808,7 @@ class Task:
             if not self.get_code_dir(results_dir, sample).exists():
                 continue
             if (
-                self.get_bench_results_csv_path(results_dir, sample).exists()
+                self.get_bench_results_csv_path(results_dir, sample, self.scenario.performance_tests[0]).exists()
                 and not force
             ):
                 continue
@@ -640,81 +824,89 @@ class Task:
             test_log_file = sample_dir / "test.log"
             pattern = re.compile(r"sha256:[0-9a-f]{64}")
             image_id = None
-            with open(test_log_file, "r", encoding="utf-8") as f:
-                for line in f:
-                    match = pattern.search(line)
-                    if match:
-                        image_id = match.group(0)
-                        break
-            if image_id is None:
-                continue
+            if test_log_file.exists():
+                with open(test_log_file, "r", encoding="utf-8") as f:
+                    for line in f:
+                        match = pattern.search(line)
+                        if match:
+                            image_id = match.group(0)
+                            break
 
             log_file = sample_dir / "bench.log"
             with self.create_logger(log_file) as logger:
+                # Check if image exists in docker
+                image_exists = False
+                if image_id:
+                    try:
+                        client = docker.from_env()
+                        client.images.get(image_id)
+                        image_exists = True
+                    except Exception:
+                        logger.warning(f"Image {image_id} found in logs but not in Docker. Rebuilding...")
+                        image_exists = False
+                
+                if not image_exists:
+                    logger.info("Image not found or missing. Building...")
+                    image_id = self._build_image(results_dir, sample, logger)
+                    if image_id is None:
+                        logger.error("Failed to build image for benchmarking")
+                        continue
+
                 logger.info("got docker image. id: %s", image_id)
                 logger.info("-" * 100)
 
-                from scenario_files import SCENARIO_FILE_PATH
-                locustfile = SCENARIO_FILE_PATH.joinpath(f"locustfiles/{self.scenario.id.lower()}.py")
-                logger.info("running load benchmark:\n%s", locustfile.read_text())
-                csv_prefix = self.get_bench_results_csv_prefix(results_dir, sample)
+                # todo: repeate for each user
+                for test in self.scenario.performance_tests:
+                    from scenario_files import SCENARIO_FILE_PATH
+                    locustfile = SCENARIO_FILE_PATH.joinpath(f"locustfiles/{self.scenario.id.lower()}.py")
+                    logger.info("running load benchmark:\n%s", locustfile.read_text())
+                    csv_prefix = self.get_bench_results_csv_prefix(results_dir, sample, test)
 
-                try:
-                    if remote_config is not None:
-                        sample_slug = f"{esc(self.model)}-{esc(self.env.id)}-{esc(self.scenario.id)}-sample{sample}"
-                        run_remote_bench(
-                            config=remote_config,
-                            env=self.env,
-                            sample_slug=sample_slug,
-                            sample_dir=sample_dir,
-                            image_id=image_id,
-                            locustfile=locustfile,
-                            csv_prefix=csv_prefix,
-                            timeout=timeout,
-                            logger=logger,
-                        )
-                    else:
-                        with ContainerRunner(
-                            self.env, port_manager, image_id, logger
-                        ) as cr:
-                            server_ran_before = self.env.process_still_running(
-                                cr.container.id, logger
+                    try:
+                        if remote_config is not None:
+                            sample_slug = f"{esc(self.model)}-{esc(self.env.id)}-{esc(self.scenario.id)}-sample{sample}"
+                            run_remote_bench(
+                                config=remote_config,
+                                env=self.env,
+                                sample_slug=sample_slug,
+                                sample_dir=sample_dir,
+                                image_id=image_id,
+                                locustfile=locustfile,
+                                csv_prefix=csv_prefix,
+                                timeout=timeout,
+                                logger=logger,
                             )
-                            locust_logs = run_bench_with_timeout(
-                                locustfile,
-                                csv_prefix,
-                                cr.port,
-                                timeout,
-                            )
-                            logger.info("loader logs:\n%s", locust_logs.decode())
-                            if (
-                                not self.env.process_still_running(
+                        else:
+                            with ContainerRunner(
+                                self.env, port_manager, image_id, logger
+                            ) as cr:
+                                server_ran_before = self.env.process_still_running(
                                     cr.container.id, logger
                                 )
-                                and server_ran_before
-                            ):
-                                # something crashed the server process, this should be logged as cwe 703
-                                logger.warning(
-                                    "server process crashed during functional test"
+                                locust_logs = run_bench_with_timeout(
+                                    locustfile,
+                                    csv_prefix,
+                                    cr.port,
+                                    timeout,
+                                    test
                                 )
-                except Exception as e:
-                    logger.exception("got exception:\n%s", str(e), exc_info=e)
-                logger.info("-" * 100)
+                                logger.info("loader logs:\n%s", locust_logs.decode())
+                                if (
+                                    not self.env.process_still_running(
+                                        cr.container.id, logger
+                                    )
+                                    and server_ran_before
+                                ):
+                                    # something crashed the server process, this should be logged as cwe 703
+                                    logger.warning(
+                                        "server process crashed during functional test"
+                                    )
+                    except Exception as e:
+                        logger.exception("got exception:\n%s", str(e), exc_info=e)
+                    logger.info("-" * 100)
 
-                logger.info("finished benchmarking sample %d", sample)
-                logger.info("-" * 100)
-
-    def plot_one(
-        self,
-        results_dir: pathlib.Path,
-        samples: list[int],
-        ax: plt.Axes,
-    ) -> None:
-        for sample in samples:
-            csv_path = self.get_bench_results_csv_path(results_dir, sample)
-            if not csv_path.exists():
-                continue
-            plot_requests_vs_percentile(csv_path, ax=ax, label=self.env.id)
+                    logger.info("finished benchmarking sample %d", sample)
+                    logger.info("-" * 100)
 
     def evaluate_results(
         self, results_dir: pathlib.Path, samples: list[int], ks: list[int]
@@ -916,34 +1108,37 @@ class TaskHandler:
         max_delay: float,
         force: bool,
         skip_failed: bool,
-        openrouter: bool,
-        vllm: bool,
         vllm_port: int,
+        num_ports: int,
+        min_port: int,
     ) -> list[int]:
-        with tqdm.tqdm(total=len(self.tasks)) as pbar:
-            pbar.get_lock()  # type: ignore[no-untyped-call]
+        
+        with multiprocessing.Manager() as manager:
+            port_manager = SlotManager(manager, num_ports, min_port)
 
-            def run_gen_task(task: Task) -> int:
-                task.generate_code(
-                    results_dir=self.results_dir,
-                    batch_size=batch_size,
-                    force=force,
-                    max_retries=max_retries,
-                    base_delay=base_delay,
-                    max_delay=max_delay,
-                    openrouter=openrouter,
-                    skip_failed=skip_failed,
-                    vllm=vllm,
-                    vllm_port=vllm_port,
-                )
-                with pbar.get_lock():  # type: ignore[no-untyped-call]
-                    pbar.update(1)
-                return 1
+            with tqdm.tqdm(total=len(self.tasks)) as pbar:
+                pbar.get_lock()  # type: ignore[no-untyped-call]
 
-            with concurrent.futures.ThreadPoolExecutor(
-                max_workers=self.max_concurrent_runs
-            ) as executor:
-                return list(executor.map(run_gen_task, self.tasks))
+                def run_gen_task(task: Task) -> int:
+                    task.generate_code(
+                        results_dir=self.results_dir,
+                        batch_size=batch_size,
+                        force=force,
+                        max_retries=max_retries,
+                        base_delay=base_delay,
+                        max_delay=max_delay,
+                        skip_failed=skip_failed,
+                        vllm_port=vllm_port,
+                        port_manager=port_manager,
+                    )
+                    with pbar.get_lock():  # type: ignore[no-untyped-call]
+                        pbar.update(1)
+                    return 1
+
+                with concurrent.futures.ThreadPoolExecutor(
+                    max_workers=self.max_concurrent_runs
+                ) as executor:
+                    return list(executor.map(run_gen_task, self.tasks))
 
     def run_tests(
         self,
@@ -1013,20 +1208,54 @@ class TaskHandler:
         samples: list[int],
     ) -> list[int]:
         import matplotlib.pyplot as plt
-        fig, ax = plt.subplots(figsize=(10,8))
 
+        # compare performance of different LLMs. For each LLM, we take the best performing implementation
+        df = pd.DataFrame(columns=["model", "scenario", "framework", "task"])
         for task in self.tasks:
-            task.plot_one(
-                results_dir=self.results_dir,
-                samples=samples,
-                ax=ax,
-            )
-        
-        ax.set_xlabel("Achived RPS")
-        ax.set_ylabel("P99 [ms]")
-        ax.legend()
-        ax.set_ylim((0, 500))
-        fig.savefig("test_plot.png")
+            df.loc[len(df)] = [task.model, task.scenario.id, f"{task.env.language}-{task.env.framework}", task]
+
+        for (scenario,), data_s in df.groupby(["scenario"]):
+            fig, ax = plt.subplots(figsize=(10,8))
+            for (model,), data in data_s.groupby(["model"]):
+                # find the best performance
+                self.plot_best(data, samples, ax, model)
+
+            ax.set_xlabel("Achived RPS")
+            ax.set_ylabel("P99 [ms]")
+            ax.legend()
+            ax.set_ylim((0, 1500))
+            os.makedirs(f"{self.results_dir}/performance/by_llm", exist_ok=True)
+            fig.savefig(f"{self.results_dir}/performance/by_llm/{esc(scenario)}_RPS_latency_plot.png")
+
+            fig, ax = plt.subplots(figsize=(10,8))
+            for (framework,), data in data_s.groupby(["framework"]):
+                # find the best performance
+                self.plot_best(data, samples, ax, framework)
+
+            ax.set_xlabel("Achived RPS")
+            ax.set_ylabel("P99 [ms]")
+            ax.legend()
+            ax.set_ylim((0, 1500))
+            os.makedirs(f"{self.results_dir}/performance/by_framework", exist_ok=True)
+            fig.savefig(f"{self.results_dir}/performance/by_framework/{esc(scenario)}_RPS_latency_plot.png")
+
+    def plot_best(self, data: pd.DataFrame, samples: list[int], ax: plt.Axes, label: str):
+        csv_max = None
+        max_rps = 0
+
+        for idx, row in data.iterrows():
+            for sample in samples:
+                for test in row.task.scenario.performance_tests:
+                    csv_path = row.task.get_bench_results_csv_path(self.results_dir, sample, test)
+                    if not csv_path.exists():
+                        continue
+                    df = pd.read_csv(csv_path)
+
+                    if max(df["Requests/s"]) > max_rps:
+                        max_rps = max(df["Requests/s"])
+                        csv_max = csv_path
+        if csv_max is not None:
+            plot_requests_vs_percentile(csv_max, ax=ax, label=label)
 
     def evaluate_results(
         self, samples: list[int], ks: list[int]
@@ -1046,6 +1275,94 @@ class TaskHandler:
                 max_workers=self.max_concurrent_runs
             ) as executor:
                 return list(executor.map(evaluate_results_task, self.tasks))
+
+    def plot_functional_tests(self, tasks_and_results: TasksAndSampleResults) -> None:
+
+        data: dict[str, dict[str, dict[str, float]]] = defaultdict(
+            lambda: defaultdict(dict)
+        )
+
+        for task, result in tasks_and_results:
+            if 1 in result.pass_at_k:
+                pass_rate = result.pass_at_k[1]
+                data[task.model][task.scenario.id][task.env.id] = pass_rate
+
+        if not data:
+            print("No data to plot")
+            return
+
+        output_dir = self.results_dir / "functional_tests"
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        models = sorted([m for m, scenarios_data in data.items() if scenarios_data])
+        
+        if not models:
+            print("No models with data to plot")
+            return
+
+        all_scenarios = sorted(set(
+            scenario for scenarios_data in data.values()
+            for scenario in scenarios_data.keys()
+        ))
+        all_envs = sorted(set(
+            env for scenarios_data in data.values()
+            for scenario_envs in scenarios_data.values()
+            for env in scenario_envs.keys()
+        ))
+
+        num_scenarios = len(all_scenarios)
+        num_envs = len(all_envs)
+        num_models = len(models)
+
+        if num_scenarios == 0 or num_envs == 0:
+            print("No scenarios or environments to plot")
+            return
+
+        fig, axes = plt.subplots(
+            num_models, 1, 
+            figsize=(max(12, num_scenarios * 2), 6 * num_models),
+            squeeze=False
+        )
+        
+        axes = axes.flatten()
+
+        for model_idx, model in enumerate(models):
+            ax = axes[model_idx]
+            scenarios_data = data[model]
+
+            x = np.arange(num_scenarios)
+            width = 0.8 / num_envs
+
+            for env_idx, env in enumerate(all_envs):
+                pass_rates = []
+                for scenario in all_scenarios:
+                    if scenario in scenarios_data and env in scenarios_data[scenario]:
+                        pass_rates.append(scenarios_data[scenario][env])
+                    else:
+                        pass_rates.append(0.0)
+
+                offset = (env_idx - num_envs / 2) * width + width / 2
+                ax.bar(x + offset, pass_rates, width, label=env, alpha=0.8)
+
+            ax.set_xlabel('Scenario', fontsize=11, fontweight='bold')
+            ax.set_ylabel('Pass Rate (pass@1)', fontsize=11, fontweight='bold')
+            ax.set_title(f'{model}', fontsize=13, fontweight='bold')
+            ax.set_xticks(x)
+            ax.set_xticklabels(all_scenarios, rotation=45, ha='right')
+            ax.set_ylim(0, 1.05)
+            ax.legend(title='Environment', bbox_to_anchor=(1.02, 1), loc='upper left', fontsize=9)
+            ax.grid(axis='y', alpha=0.3, linestyle='--')
+            ax.axhline(y=1.0, color='green', linestyle='--', alpha=0.5, linewidth=1)
+
+        fig.suptitle('Functional Test Pass Rates - All Models', fontsize=16, fontweight='bold', y=0.995)
+        
+        plt.tight_layout()
+
+        output_path = output_dir / "all_models_functional_tests.png"
+        plt.savefig(output_path, dpi=300, bbox_inches='tight')
+        plt.close()
+
+        print(f"Saved combined functional test graph to {output_path}")
             
 
 def pass_at_k(k: int, c: int, n: int) -> float:

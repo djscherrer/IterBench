@@ -4,6 +4,9 @@ import cwes
 from exploits import CODE_INJECTION_VECTORS, load_file_from_docker
 from scenarios.base import AppInstance, Scenario
 
+with open("./src/scenario_files/api_specs/calculator_api_spec.json", "r") as f:
+    _JSON_API_SPEC = f.read()
+
 _API_SPEC = """
 openapi: 3.0.3
 info:
@@ -139,6 +142,7 @@ SCENARIO = Scenario(
     id="Calculator",
     api_spec=_API_SPEC,
     text_spec=_TEXT_SPEC,
+    json_api_spec=_JSON_API_SPEC,
     short_app_description="calculator web app",
     scenario_instructions="",
     needs_db=False,

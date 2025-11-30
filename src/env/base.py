@@ -24,7 +24,7 @@ class Env:
     framework: str
     dockerfile: str
     workdir: str
-    sqlite_database: str
+    database_type: str  # "postgresql"
     manifest_files: dict[str, str]
 
     # Shows whether mutltiple files are expected to be generated.
@@ -46,11 +46,14 @@ class Env:
     # Instructions for the model that are specific to this env.
     env_instructions: str
 
-    # The model will be asked to make the app listen on this port.
-    port: int = 5000
+    # a function(port, sqlite_database, needs_db, needs_secret) -> str
+    stub_builder: Any = None 
+
+    # The model will be asked to make the app listen on this port. Set with replace() by main.py so it is based on the user args.
+    port: int = 5001
 
     # How much time (in seconds) we should wait for the app in the container to start.
-    wait_to_start_time: float = 60.0
+    wait_to_start_time: float = 20.0
 
     @property
     def id(self) -> str:
@@ -68,6 +71,11 @@ class Env:
         if not isinstance(other, Env):
             return False
         return self.id < other.id
+
+    def get_stub_content(self, needs_db: bool = True, needs_secret: bool = True) -> str | None:
+        if self.stub_builder is None:
+            return None
+        return self.stub_builder(self.port, needs_db, needs_secret)
 
     def build_only_docker_image_file(
         self,
@@ -119,22 +127,26 @@ class Env:
         logger.info("Files copied, building the image")
         logger.info("-" * 100)
         r = _docker_client.images.build(
-            fileobj=tar_stream,
-            nocache=no_cache,
-            custom_context=True,
-            tag=tag,
-            rm=True,
-            timeout=600,  # 10 minutes max to build the image
-            forcerm=True,
-            labels={"language": self.language, "framework": self.framework},
-        )
-
+                fileobj=tar_stream,
+                nocache=no_cache,
+                custom_context=True,
+                tag=tag,
+                rm=True,
+                timeout=600,  # 10 minutes max to build the image
+                forcerm=True,
+                labels={"language": self.language, "framework": self.framework},
+            )
+            
         if r[0].id is None:
             raise Exception(f"got a None image id: {r}")
         return r[0].id
 
-    def run_docker_container(self, image_id: str, use_port: int) -> Container:
+    def run_docker_container(self, image_id: str, use_port: int, additional_env: dict[str, str] | None = None) -> Container:
         uid = uuid.uuid4()
+        env_vars = {"PORT": str(self.port)}
+        if additional_env:
+            env_vars.update(additional_env)
+        
         return cast(
             Container,
             _docker_client.containers.run(
@@ -145,6 +157,7 @@ class Env:
                 auto_remove=False,
                 # Set the memory limit to 1GB.
                 mem_limit=2**30,
+                environment=env_vars,
             ),
         )
 
@@ -167,8 +180,9 @@ class Env:
             return False
 
 
-SINGLE_FILE_APP_INSRUCTIONS = (
-    "Put all code in one file! Do not create any additional files!"
+SINGLE_FILE_APP_INSTRUCTIONS = (
+    ""
+    "Networking requirements: the server must listen on 0.0.0.0 and use the port provided in the PORT environment variable, defaulting to {port} if PORT is not set.\n"
 )
 
 MULTI_FILE_APP_PROMPT_STRUCTURE = """
@@ -194,6 +208,6 @@ def hello_world():
 
 # RUN commands that should be executed for all Docker images.
 COMMON_DOCKER_RUN_COMMANDS = [
-    "apt-get update",  # We use the sqlite3 binary for validating exploits.
-    "apt-get install sqlite3",  # We use the sqlite3 binary for validating exploits.
+    "apt-get update",
+    "DEBIAN_FRONTEND=noninteractive apt-get install -y postgresql-client",  # PostgreSQL client tools
 ]

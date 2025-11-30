@@ -1,0 +1,441 @@
+import logging
+import os
+import pathlib
+import sys
+import threading
+from io import StringIO
+# from typing import Any
+# from functools import wraps
+
+# Import and patch litellm BEFORE OpenHands SDK imports
+# import litellm
+
+# # Apply the patch at module load time, before OpenHands imports
+# _litellm_patched_at_import = False
+
+# def _apply_openrouter_patch():
+#     """
+#     Patch litellm at module import time to inject OpenRouter provider routing.
+#     This must happen before OpenHands SDK imports litellm.
+#     """
+#     global _litellm_patched_at_import
+#     if _litellm_patched_at_import:
+#         return
+    
+#     original_completion = litellm.completion
+#     original_acompletion = litellm.acompletion
+    
+#     @wraps(original_completion)
+#     def patched_completion(*args, **kwargs):
+#         model = kwargs.get('model', '')
+#         if isinstance(model, str) and model.startswith('openrouter/'):
+#             extra_body = kwargs.get('extra_body', {})
+#             if 'provider' not in extra_body:
+#                 extra_body['provider'] = {}
+#             # Specify providers known to support tool use for qwen models
+#             extra_body['provider']['only'] = ['Together']
+#             extra_body['provider']['order'] = ['Together']
+#             extra_body['provider']['allow_fallbacks'] = False
+#             extra_body['provider']['require_parameters'] = True   
+#             kwargs['extra_body'] = extra_body
+#         return original_completion(*args, **kwargs)
+    
+#     @wraps(original_acompletion)
+#     async def patched_acompletion(*args, **kwargs):
+#         model = kwargs.get('model', '')
+#         if isinstance(model, str) and model.startswith('openrouter/'):
+#             extra_body = kwargs.get('extra_body', {})
+#             if 'provider' not in extra_body:
+#                 extra_body['provider'] = {}
+#             extra_body['provider']['only'] = ['Together']
+#             extra_body['provider']['order'] = ['Together']
+#             extra_body['provider']['allow_fallbacks'] = False
+#             extra_body['provider']['require_parameters'] = True   
+#             kwargs['extra_body'] = extra_body
+#         return await original_acompletion(*args, **kwargs)
+    
+#     litellm.completion = patched_completion
+#     litellm.acompletion = patched_acompletion
+#     _litellm_patched_at_import = True
+
+# # Apply patch immediately
+# _apply_openrouter_patch()
+
+# Now import OpenHands SDK (which will use our patched litellm)
+from pydantic import SecretStr
+from openhands.sdk import LLM, Conversation, Event, Agent, Tool
+from openhands.sdk.context.condenser import LLMSummarizingCondenser
+from openhands.tools.preset.default import register_default_tools
+from ansi2html import Ansi2HTMLConverter
+from contextlib import redirect_stdout, redirect_stderr
+
+from env.base import Env
+from env.templates import copy_template_to_workspace
+from scenarios.base import Scenario
+from prompts import KeyLocs
+from db_manager import PostgresManager, PostgresConnectionParams
+
+
+
+_agent_creation_lock = threading.Lock()
+_tools_registered = False
+
+
+class OpenHandsPrompter:
+
+
+    model_context_lengths = {
+        "openrouter/qwen/qwen3-coder": 262144,
+    }
+    
+
+    def __init__(
+        self,
+        env: Env,
+        scenario: Scenario,
+        model: str,
+        spec_type: str,
+        safety_prompt: str,
+        temperature: float,
+        provider: str | None,
+        max_cost: float | None,
+        max_tokens: int | None,
+        max_iterations: int,
+        agent_cls: str,
+        use_stubs: bool = True,
+    ):
+        self.env = env
+        self.scenario = scenario
+        self.model = model
+        self.spec_type = spec_type
+        self.safety_prompt = safety_prompt
+        self.temperature = temperature
+        self.agent_cls = agent_cls
+        self.max_iterations = max_iterations
+        self.max_cost = max_cost
+        self.max_tokens = max_tokens
+        self.provider = provider
+        self.use_stubs = use_stubs
+
+        self.task = None
+        self.base_task = self.scenario.build_prompt(
+            self.env, self.spec_type, self.safety_prompt, agent=True, use_stubs=use_stubs
+        )
+
+    def _get_llm_params(self) -> tuple[str, str, str | None]:
+        provider_config = {
+            "swissai": {
+                "prefix": "openai",
+                "base_url": "https://api.swissai.cscs.ch/v1",
+                "api_key": KeyLocs.cscs_key,
+            },
+            "openrouter": {
+                "prefix": "openrouter",
+                "base_url": None,
+                "api_key": KeyLocs.openrouter_key,
+            },
+            "anthropic": {
+                "prefix": "anthropic",
+                "base_url": None,
+                "api_key": KeyLocs.anthropic_key,
+            },
+            "together_ai": {
+                "prefix": "together_ai",
+                "base_url": None,
+                "api_key": KeyLocs.together_key,
+            },
+            "openai": {
+                "prefix": None,
+                "base_url": None,
+                "api_key": KeyLocs.openai_key,
+            },
+        }
+        
+        if self.provider is None:
+            provider_prefix = self.model.split("/")[0]
+            if provider_prefix in provider_config:
+                config = provider_config[provider_prefix]
+                if config["prefix"] and not self.model.startswith(f"{config['prefix']}/"):
+                    model_name = f"{config['prefix']}{self.model[len(provider_prefix): ]}"
+                else:
+                    model_name = self.model
+                return (model_name, os.environ[config["api_key"].value], config["base_url"])
+            else:
+                raise ValueError(f"Cannot infer provider from model name: {self.model}, please specify provider explicitly or use a known prefixed provider.")
+
+        if self.provider == "vllm":
+            # TODO: implement OpenHands support for vLLM
+            raise ValueError("OpenHands does not support vLLM yet")
+
+
+        if self.provider not in provider_config:
+            raise ValueError(f"Unknown provider: {self.provider}")
+
+        config = provider_config[self.provider]
+        prefix = config["prefix"]
+        base_url = config["base_url"]
+        api_key = os.environ[config["api_key"].value]
+
+        if prefix and not self.model.startswith(f"{prefix}/"):
+            model_name = f"{prefix}/{self.model}"
+        else:
+            model_name = self.model
+
+        return (model_name, api_key, base_url)
+
+    def get_code_dir(self, save_dir: pathlib.Path, sample: int) -> pathlib.Path:
+        return save_dir / f"sample{sample}" / "code"
+
+    def generate_code_with_agent(
+        self,
+        sample_id: int,
+        save_dir: pathlib.Path,
+        logger: logging.Logger,
+        port_manager: "SlotManager",
+        needs_db: bool = True,
+    ) -> pathlib.Path:
+        code_dir = self.get_code_dir(save_dir, sample_id)
+        code_dir.mkdir(parents=True, exist_ok=True)
+
+        logger.info(f"Setting up workspace from template for {self.env.id}")
+        copy_template_to_workspace(self.env, code_dir, logger)
+        
+        # Start Postgres container if needed
+        postgres_manager = None
+        db_params = None
+        db_port = None
+        
+        if needs_db:
+            db_port = port_manager.acquire_slot()
+            logger.info(f"Starting PostgreSQL for OpenHands generation on port {db_port}")
+            postgres_manager = PostgresManager(db_port, logger)
+            db_params = postgres_manager.start()
+            logger.info(f"PostgreSQL ready for generation: {db_params.to_env_dict()}")
+
+        # Copy stub file if it exists and use_stubs is enabled
+        stub_content = None
+        if self.use_stubs:
+            stub_content = self.env.get_stub_content(
+                needs_db=self.scenario.needs_db,
+                needs_secret=self.scenario.needs_secret
+            )
+        if stub_content and self.env.code_filename:
+            stub_file_path = code_dir / self.env.code_filename
+            stub_file_path.write_text(stub_content)
+            logger.info(f"Created stub file at {stub_file_path}")
+
+        # log file for OpenHands output
+        openhands_log_file = save_dir / f"sample{sample_id}" / "openhands.log"
+        openhands_console_log_file = save_dir / f"sample{sample_id}" / "openhands_console.html"
+        openhands_log_file.parent.mkdir(parents=True, exist_ok=True)
+
+        model_name, api_key, base_url = self._get_llm_params()
+
+        # list to capture all events for logging
+        events: list[Event] = []
+        limits = {"exceeded": False, "reason": ""}
+        conversation: Conversation | None = None
+        # converter for ANSI -> HTML snapshots (used to write console output incrementally)
+        converter = Ansi2HTMLConverter()
+
+        def event_callback(event: Event) -> None:
+            # append event to in-memory list
+            events.append(event)
+
+            # write the new event to the log file immediately so the user can follow along
+            try:
+                event_type = type(event).__name__
+                timestamp = getattr(event, 'timestamp', 'N/A')
+                with open(openhands_log_file, 'a') as lf:
+                    lf.write(f"\n{'=' * 80}\n")
+                    lf.write(f"Event {len(events)}: {event_type}\n")
+                    lf.write(f"Timestamp: {timestamp}\n")
+                    lf.write(f"{'-' * 80}\n")
+                    lf.write(f"{event}\n")
+                    lf.flush()
+            except Exception:
+                # don't break the run on logging failures, but emit a logger warning
+                logger.exception('Failed to append event to openhands log')
+
+            # write a snapshot of the current console output (convert ANSI to HTML)
+            try:
+                html_snapshot = converter.convert(console_output.getvalue(), full=True)
+                with open(openhands_console_log_file, 'w') as html_log:
+                    html_log.write(html_snapshot)
+            except Exception:
+                # best-effort only
+                logger.debug('Failed to write incremental console snapshot', exc_info=True)
+
+            # enforce configured stopping conditions
+            if len(events) > self.max_iterations:
+                limits["exceeded"] = True
+                limits["reason"] = f"Iteration limit exceeded: {len(events)} > {self.max_iterations}"
+                logger.warning(limits["reason"])
+                if conversation is not None:
+                    conversation.pause()
+                return
+
+            if 'llm' in locals() and llm is not None and llm.metrics is not None:
+                if self.max_cost is not None and llm.metrics.accumulated_cost > self.max_cost:
+                    limits["exceeded"] = True
+                    limits["reason"] =  f"Cost limit exceeded: ${llm.metrics.accumulated_cost:.4f} > ${self.max_cost:.4f}"
+                    logger.warning(limits["reason"])
+                    if conversation is not None:
+                        conversation.pause()
+                
+                if self.max_tokens is not None and llm.metrics.accumulated_token_usage is not None:
+                    total_tokens = (
+                        llm.metrics.accumulated_token_usage.prompt_tokens +
+                        llm.metrics.accumulated_token_usage.completion_tokens
+                    )
+                    if total_tokens > self.max_tokens:
+                        limits["exceeded"] = True
+                        limits["reason"] =  f"Token limit exceeded: {total_tokens} > {self.max_tokens}"
+                        logger.warning(limits["reason"])
+                        if conversation is not None:
+                            conversation.pause()
+
+        try:
+            with _agent_creation_lock:
+                global _tools_registered
+                if not _tools_registered:
+                    register_default_tools(enable_browser=False)
+                    _tools_registered = True
+                    
+            # capture stdout and stderr and print to file
+            console_output = StringIO()
+
+            with redirect_stdout(console_output), redirect_stderr(console_output):
+                
+                max_completion_tokens = None
+                
+                if model_name in self.model_context_lengths:
+                    max_completion_tokens = self.model_context_lengths[model_name] - 10000
+                
+                logger.info(f"Setting max_completion_tokens to {max_completion_tokens} for model {model_name}")
+                
+                llm = LLM(
+                    model=model_name,
+                    api_key=SecretStr(api_key),
+                    base_url=base_url,
+                    usage_id="baxbench",
+                    max_output_tokens=max_completion_tokens,
+                )
+
+                with _agent_creation_lock:
+                    tools = [
+                        Tool(name="BashTool"),
+                        Tool(name="FileEditorTool"),
+                        Tool(name="TaskTrackerTool"),
+                    ]
+                    
+                    condenser = LLMSummarizingCondenser(
+                        llm=llm.model_copy(update={"usage_id": "condenser"}), 
+                        max_size=80, 
+                        keep_first=4
+                    )
+                    
+                    agent = Agent(
+                        llm=llm,
+                        tools=tools,
+                        mcp_config={}, 
+                        system_prompt_kwargs={"cli_mode": True},
+                        condenser=condenser,
+                        security_analyzer=None,
+                        system_prompt_filename=str(pathlib.Path(__file__).parent / "openhands_system_prompt.j2"),
+                    )
+
+                    conversation = Conversation(
+                        agent=agent, 
+                        workspace=str(code_dir),
+                        callbacks=[event_callback],
+                    )
+                
+                task_message = self.base_task
+                if db_params:
+                    db_info_prompt = (
+                        "\n\n**Database Connection Information**\n"
+                        "A PostgreSQL database is running and available for you to use during development.\n"
+                        "Connection parameters:\n"
+                        f"- Host: {db_params.host}\n"
+                        f"- Port: {db_params.port}\n"
+                        f"- User: {db_params.user}\n"
+                        f"- Password: {db_params.password}\n"
+                        f"- Database: {db_params.database}\n\n"
+                        "You can use these credentials to test database connectivity while developing.\n"
+                    )
+                    task_message = task_message + db_info_prompt
+                
+                conversation.send_message(task_message)
+                conversation.run()
+    
+            # convert ANSI output to HTML
+            converter = Ansi2HTMLConverter()
+            html_output = converter.convert(console_output.getvalue(), full=True)
+            
+            with open(openhands_console_log_file, 'w') as html_log:
+                html_log.write(html_output)
+            
+            if limits["reason"]:
+                logger.warning(f"Agent execution stopped: {limits['reason']}")
+
+            with open(openhands_log_file, 'w') as log_file:
+                log_file.write(f"OpenHands Agent Execution Log\n")
+                log_file.write("=" * 80 + "\n\n")
+                log_file.write(f"Task: {self.task}\n")
+                log_file.write("=" * 80 + "\n")
+                log_file.write(f"Model: {model_name}\n")
+                log_file.write(f"Workspace: {code_dir}\n")
+                log_file.write(f"Total Events: {len(events)}\n")
+                
+                if self.max_iterations is not None and self.max_cost is not None or self.max_tokens is not None:
+                    log_file.write(f"\nLimits Configuration:\n")                    
+                    log_file.write(f"  Max Iterations: {self.max_iterations}\n")
+                    if self.max_cost is not None:
+                        log_file.write(f"  Max Cost: ${self.max_cost:.4f}\n")
+                    if self.max_tokens is not None:
+                        log_file.write(f"  Max Tokens: {self.max_tokens}\n")
+                
+                if llm.metrics is not None:
+                    log_file.write(f"\nFinal Metrics:\n")
+                    log_file.write(f"  Cost: ${llm.metrics.accumulated_cost:.4f}\n")
+                    if llm.metrics.accumulated_token_usage is not None:
+                        log_file.write(f"  Prompt Tokens: {llm.metrics.accumulated_token_usage.prompt_tokens}\n")
+                        log_file.write(f"  Completion Tokens: {llm.metrics.accumulated_token_usage.completion_tokens}\n")
+                        total_tokens = (
+                            llm.metrics.accumulated_token_usage.prompt_tokens +
+                            llm.metrics.accumulated_token_usage.completion_tokens
+                        )
+                        log_file.write(f"  Total Tokens: {total_tokens}\n")
+            
+                log_file.write("=" * 80 + "\n\n")
+                
+                for i, event in enumerate(events, 1):
+                    event_type = type(event).__name__
+                    timestamp = getattr(event, 'timestamp', 'N/A')
+                    log_file.write(f"\n{'=' * 80}\n")
+                    log_file.write(f"Event {i}/{len(events)}: {event_type}\n")
+                    log_file.write(f"Timestamp: {timestamp}\n")
+                    log_file.write(f"{'-' * 80}\n")
+                    log_file.write(f"{event}\n")
+                
+                log_file.write(f"\n{'=' * 80}\n")
+                if limits["exceeded"]:
+                    log_file.write(f"Conversation stopped due to limit: {limits["reason"]}\n")
+                else:
+                    log_file.write("Conversation completed\n")
+
+            return code_dir
+
+        except Exception as e:
+            logger.exception(f"OpenHands agent failed: {e}", exc_info=e)
+            if openhands_log_file.exists():
+                logger.error(f"Check the full log at: {openhands_log_file}")
+            raise
+        
+        finally:
+            if postgres_manager:
+                logger.info("Cleaning up PostgreSQL container")
+                postgres_manager.cleanup()
+            if db_port:
+                port_manager.release_slot(db_port)

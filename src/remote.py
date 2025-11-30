@@ -28,8 +28,8 @@ class RemoteConfig:
     remote_base_dir: str
     app_port: int | None = None
     max_startup_wait: float | None = None
-    poll_interval: float = 2.0
-    request_timeout: float = 5.0
+    poll_interval: float = 0.5
+    request_timeout: float = 2.0
 
     def __post_init__(self) -> None:
         if not self.app_host:

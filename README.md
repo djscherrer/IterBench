@@ -33,13 +33,13 @@ The scenarios can be found [here](src/scenarios/), while all supported framework
 
 > `python 3.12`: Install it from [here](https://www.python.org/downloads/).<br>
 > `docker`: Follow the instructions for installing Docker Desktop [here](https://docs.docker.com/desktop/) (Windows, MacOS, Linux) or for the Docker engine [here](https://docs.docker.com/engine/install/) (Linux). Make sure that Docker has root privileges on your machine.<br>
-> `pipenv`: The project uses pipenv for package management. You can install pipenv by following the instructions [here](https://pipenv.pypa.io/en/latest/).
+> `uv`: The project uses uv for package management. You can install uv by following the instructions [here](https://docs.astral.sh/uv/getting-started/installation/).
 
 **Setting up the environment and running scripts**
 
-After ensuring that all prerequisites are installed, you can install the environment by running `pipenv install` from the root of the repository. Please ensure that this action does not change `Pipfile.lock`. To run any Python script in the project environment, run from the project root using the command:
+After ensuring that all prerequisites are installed, you can install the environment by running `uv sync` from the root of the repository. To run any Python script in the project environment, run from the project root using the command:
 ```bash
-pipenv run python <path_to_python_script> <args>
+uv run python <path_to_python_script> <args>
 ```
 
 **Setting API keys**
@@ -51,6 +51,7 @@ export OPENAI_API_KEY="<your_API_key>"
 export TOGETHER_API_KEY="<your_API_key>"
 export ANTHROPIC_API_KEY="<your_API_key>"
 export OPENROUTER_API_KEY="<your_API_key>"
+export CSCS_API_KEY="<your_API_key>"
 ```
 
 > **Note:** You may set any API key you do not intend to use simply to an empty or invalid string.
@@ -72,7 +73,7 @@ We welcome contributions from the community. You may contribute by:
     > If you identify any issues or want to share feedback with us, you may either contact us directly or raise an issue on GitHub.
 We are looking forward to working with the community and are extremely thankful for any contributions!
 
-> **Note:** Before contributing code, please run `pipenv run pre-commit install` in the root once to set up the pre-commit hooks.
+> **Note:** Before contributing code, please run `uv run pre-commit install` in the root once to set up the pre-commit hooks.
 
 ## 👨🏻‍💻 Usage
 
@@ -80,7 +81,11 @@ We are looking forward to working with the community and are extremely thankful 
 
 To generate solutions to _all_ scenarios in the `scenarios` list, run the following command:
 
-`pipenv run python src/main.py --models gpt-4o --mode generate --n_samples 10 --temperature 0.4`
+`uv run python src/main.py --models gpt-4o-mini --provider openai --mode generate --n_samples 10 --temperature 0.4`
+
+To use OpenHands agent for code generation:
+
+`uv run python src/main.py --models gpt-4o-mini --provider openai --mode generate --n_samples 10 --temperature 0.4 --use_openhands`
 
 To restrict the generation to a subset of scenarios or environments, see the ["Advanced" section](#advanced) below.
 

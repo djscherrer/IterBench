@@ -1,8 +1,12 @@
 import argparse
 import pathlib
+from dataclasses import replace
 from typing import Any
 
 import docker
+from dotenv import load_dotenv
+
+load_dotenv()
 
 from env import all_envs
 from print import (
@@ -15,15 +19,26 @@ from remote import RemoteConfig
 
 _DEFAULT_SAVE_PATH = pathlib.Path(__file__).parent.parent / "results"
 
+import shlex
+
+from env.templates import prepare_all_templates
+
+class ArgFileParser(argparse.ArgumentParser):
+    def convert_arg_line_to_args(self, arg_line: str):
+        for tok in shlex.split(arg_line, comments=True, posix=True):
+            yield tok
 
 def main(args: Any) -> None:
 
+    print(args)
+
     # ----- Preparation -----#
-    envs = all_envs
+    # Override port for all environments with the value from args, if not provided defaults to 5001
+    envs = [replace(e, port=args.port) for e in all_envs]
     exclude_envs = args.exclude_envs if args.exclude_envs else []
-    envs = [e for e in all_envs if e.id not in exclude_envs]
+    envs = [e for e in envs if e.id not in exclude_envs]
     if args.envs:
-        envs = [e for e in all_envs if e.id in args.envs]
+        envs = [e for e in envs if e.id in args.envs]
     envs = sorted(envs, key=lambda e: e.id)
 
     if not envs:
@@ -68,8 +83,15 @@ def main(args: Any) -> None:
                 spec_type=args.spec_type,
                 safety_prompt=args.safety_prompt,
                 reasoning_effort=args.reasoning_effort,
-                openrouter=args.openrouter,
-                vllm=args.vllm,
+                use_openhands=args.use_openhands,
+                use_claude_agent=args.use_claude_agent,
+                agent_cls=args.agent_cls,
+                agent_max_iterations=args.agent_max_iterations,
+                agent_max_cost=args.agent_max_cost,
+                agent_max_tokens=args.agent_max_tokens,
+                provider=args.provider,
+                use_stubs=args.use_stubs,
+                run_security_tests=args.run_security_tests,
             )
             for env in envs
             for scenario in scenarios
@@ -100,6 +122,11 @@ def main(args: Any) -> None:
         bench_remote_config=bench_remote_config,
     )
 
+    # ----- Prepare environment templates -----#
+    if args.mode == "generate":
+        prepare_all_templates(envs)
+        
+
     # ----- Run tasks -----#
 
     if args.mode == "generate":
@@ -110,9 +137,9 @@ def main(args: Any) -> None:
             max_delay=args.max_delay,
             force=args.force,
             skip_failed=args.skip_failed,
-            openrouter=args.openrouter,
-            vllm=args.vllm,
             vllm_port=args.vllm_port,
+            num_ports=args.num_ports,
+            min_port=args.min_port,
         )
     elif args.mode == "test":
         task_handler.run_tests(
@@ -145,12 +172,18 @@ def main(args: Any) -> None:
         print(tasks_and_results_to_table_averages(r))
         print()
         print(tasks_and_results_to_table(r, verbose=False))
+        task_handler.plot_functional_tests(
+            tasks_and_results=r,
+        )
     else:
         raise Exception(f"Invalid mode: {args.mode}")
 
+    
+    print(args)
+
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
+    parser = ArgFileParser(fromfile_prefix_chars='@')
     parser.add_argument(
         "--models", type=str, nargs="+", required=True, help="List of models"
     )
@@ -158,6 +191,7 @@ if __name__ == "__main__":
         "--mode",
         type=str,
         choices=[
+            "prepare",
             "generate",
             "test",
             "bench",
@@ -165,7 +199,7 @@ if __name__ == "__main__":
             "evaluate"
         ],
         required=True,
-        help="Mode in which to run the code",
+        help="Mode in which to run the code.",
     )
     parser.add_argument(
         "--temperature", type=float, default=0.2, help="Temperature for sampling"
@@ -223,7 +257,7 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--spec_type",
-        choices=["openapi", "text"],
+        choices=["openapi", "text", "json_api"],
         default="openapi",
         type=str,
         help="The type of specifications to use.",
@@ -268,7 +302,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--max_retries",
         type=int,
-        default=20,
+        default=2,
         help="Maximum number of retries for backoff during generation",
     )
     parser.add_argument(
@@ -330,19 +364,68 @@ if __name__ == "__main__":
         help="Prune docker containers after running tests",
     )
     parser.add_argument(
-        "--openrouter",
-        action="store_true",
-        help="Route requests through OpenRouter",
-    )
-    parser.add_argument(
-        "--vllm",
-        action="store_true",
-        help="Use VLLM for generation",
-    )
-    parser.add_argument(
         "--vllm_port",
         type=int,
         default=8000,
         help="Port for VLLM server",
+    )
+    parser.add_argument(
+        "--use_openhands",
+        action="store_true",
+        help="Use OpenHands for code generation instead of single LLM prompting",
+    )
+    parser.add_argument(
+        "--use_claude_agent",
+        action="store_true",
+        help="Use Claude Agent SDK for code generation instead of single LLM prompting",
+    )
+    parser.add_argument(
+        "--agent_cls",
+        type=str,
+        default="CodeActAgent",
+        help="Agent class to use for OpenHands (e.g., CodeActAgent, BrowserAgent). Only used with --use_openhands.",
+    )
+    parser.add_argument(
+        "--agent_max_iterations",
+        type=int,
+        default=50,
+        help="Maximum number of iterations for agent execution.",
+    )
+    parser.add_argument(
+        "--agent_max_cost",
+        type=float,
+        default=None,
+        help="Maximum cost for agent execution. Agent will stop if this limit is exceeded.",
+    )
+    parser.add_argument(
+        "--agent_max_tokens",
+        type=int,
+        default=None,
+        help="Maximum total tokens (input + output) for agent execution. Agent will stop if this limit is exceeded.",
+    )
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=5001,
+        help="Port number for the application to listen on (default: 5001).",
+    )
+    parser.add_argument(
+        "--provider",
+        type=str,
+        default=None,
+        choices=["openai", "anthropic", "together_ai", "openrouter", "swissai", "vllm"],
+        help="Explicitly specify the LLM provider. If not provided, the provider will be inferred from the model name.",
+    )
+    parser.add_argument(
+        "--use_stubs",
+        action="store_true",
+        default=True,
+        help="Whether to use code stubs.",
+    )
+    parser.add_argument(
+        "--run_security_tests",
+        action="store_true",
+        default=False,
+        help="Whether to run security tests. By default, security tests are skipped.",
     )
     main(parser.parse_args())

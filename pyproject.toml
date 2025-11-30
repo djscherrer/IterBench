@@ -1,0 +1,43 @@
+[project]
+name = ""
+version = "0.0.1"
+requires-python = "~=3.12.0"
+dependencies = [
+    "requests",
+    "openai",
+    "docker",
+    "tabulate",
+    "simple-parsing",
+    "tqdm",
+    "termcolor",
+    "pre-commit",
+    "ipython",
+    "mypy==1.14.1",
+    "types-requests",
+    "types-tqdm",
+    "types-tabulate",
+    "docker-stubs",
+    "anthropic",
+    "pdfplumber",
+    "imageio",
+    "types-pyyaml",
+    "matplotlib",
+    "pandas>=2.3.3",
+    "openhands-sdk>=1.0.0a5",
+    "openhands-tools>=1.0.0a5",
+    "ansi2html>=1.9.2",
+    "locust",
+    "faker",
+    "python-dotenv>=1.2.1",
+    "claude-agent-sdk>=0.1.6",
+]
+
+[dependency-groups]
+dev = []
+
+[tool.uv]
+package = false
+
+[[tool.uv.index]]
+name = "pypi"
+url = "https://pypi.org/simple"
