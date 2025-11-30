@@ -589,12 +589,15 @@ class Task:
             test_log_file = sample_dir / "test.log"
             pattern = re.compile(r"sha256:[0-9a-f]{64}")
             image_id = None
-            with open(test_log_file, "r", encoding="utf-8") as f:
-                for line in f:
-                    match = pattern.search(line)
-                    if match:
-                        image_id = match.group(0)
-                        break
+            try:
+                with open(test_log_file, "r", encoding="utf-8") as f:
+                    for line in f:
+                        match = pattern.search(line)
+                        if match:
+                            image_id = match.group(0)
+                            break
+            except FileNotFoundError as _:
+                pass
             if image_id is None:
                 continue
 
@@ -928,6 +931,8 @@ class TaskHandler:
 
                 def run_bench_task(index_and_task: tuple[int, Task]) -> int:
                     i, task = index_and_task
+                    with pbar.get_lock():
+                        pbar.set_description(f"{task.model} - {task.env.language}-{task.env.framework} - {task.scenario.id}")
                     task.bench_code(
                         results_dir=self.results_dir,
                         samples=samples,
