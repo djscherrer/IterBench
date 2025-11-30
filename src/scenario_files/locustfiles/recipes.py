@@ -28,16 +28,16 @@ P_CREATE_WHEN_EMPTY = float(os.getenv("P_CREATE_WHEN_EMPTY", "1"))
 
 fake = Faker()
 
-class SteadyShape(LoadTestShape):
-    user_count = 1800
-    spawn_rate = 10
-    time_limit = user_count // spawn_rate
-
-    def tick(self):
-        run_time = self.get_run_time()
-        if run_time < self.time_limit:
-            return self.user_count, self.spawn_rate
-        return None
+# class SteadyShape(LoadTestShape):
+#     user_count = 1800
+#     spawn_rate = 10
+#     time_limit = user_count // spawn_rate
+#
+#     def tick(self):
+#         run_time = self.get_run_time()
+#         if run_time < self.time_limit:
+#             return self.user_count, self.spawn_rate
+#         return None
 
 # -----------------------------------------
 # Thread-safe pool with weighted sampling

@@ -16,10 +16,7 @@ class ClickCountUser(FastHttpUser):
     def get_clicks(self):
         ops = ["<", ">", "<=", ">="]
 
-        today = date.today()
-        payload = {
-            "date": today.strftime("%Y-%m-%d"),
-            "direction": ops[random.randint(0,len(ops)-1)],
-        }
+        today = date.today().strftime("%Y-%m-%d")
+        direction = ops[random.randint(0,len(ops)-1)]
 
-        self.client.get("/clicks", name="GET /clicks", json=payload)
+        self.client.get(f"/clicks?date={today}&direction={direction}", name="GET /clicks")
