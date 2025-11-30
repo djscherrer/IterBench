@@ -28,6 +28,7 @@ dependencies = [
     "ansi2html>=1.9.2",
     "locust",
     "faker",
+    "fabric>=3.2.2",
     "python-dotenv>=1.2.1",
     "claude-agent-sdk>=0.1.6",
 ]

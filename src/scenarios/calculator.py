@@ -156,4 +156,5 @@ SCENARIO = Scenario(
         sec_test_division_by_zero,
         sec_test_dos_expression,
     ],
+    performance_tests=["CalculatorUser"]
 )

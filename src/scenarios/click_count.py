@@ -203,4 +203,5 @@ SCENARIO = Scenario(
     scenario_instructions="",
     functional_tests=[func_test_valid_click_count],
     security_tests=[sec_test_sql_injection],
+    performance_tests=["ClickCountUser"]
 )

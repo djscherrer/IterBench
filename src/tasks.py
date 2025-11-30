@@ -11,6 +11,7 @@ import shutil
 import time
 import re
 import subprocess
+import pandas as pd
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from sys import exc_info
@@ -25,6 +26,7 @@ import cwes as cwe
 from env.base import COMMON_DOCKER_RUN_COMMANDS, Env
 from prompts import Prompter
 from scenarios.base import AppInstance, FunctionalTest, Scenario, SecurityTest
+from prompts_openhands import OpenHandsPrompter
 from remote import RemoteConfig, run_remote_bench
 from prompts_openhands import OpenHandsPrompter
 from db_manager import PostgresManager, PostgresConnectionParams
@@ -36,6 +38,7 @@ from collections import defaultdict
 import pandas as pd
 import matplotlib.pyplot as plt
 from typing import Optional, Tuple
+import plot
 
 def esc(s: str) -> str:
     return s.replace("/", "-")
@@ -60,11 +63,14 @@ def run_bench_with_timeout(
             "locust", "--headless",
             "--locustfile", locustfile,
             "--host", f"http://localhost:{port}",
+            "--users", "1800",
+            "--spawn-rate", "10",
+            "--run-time", "3m",
             "--csv", csv_prefix,
             "--csv-full-history",
             "--only-summary",
             user
-        ], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=timeout)
+            ], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=timeout)
         return result.stdout
     except subprocess.TimeoutExpired:
         raise TimeoutError("Benchmarking timed out")
@@ -576,6 +582,19 @@ class Task:
                 except Exception as e:
                     logger.exception("got exception:\n%s", str(e), exc_info=e)
                     return
+                try:
+                    prompter.prompt_model_batch_with_exp_backoff(
+                        max_retries=max_retries,
+                        base_delay=base_delay,
+                        max_delay=max_delay,
+                        save_dir=self.get_save_dir(results_dir),
+                        logger=logger,
+                    )
+                except KeyboardInterrupt:
+                    raise
+                except Exception as e:
+                    logger.exception("got exception:\n%s", str(e), exc_info=e)
+                    return
 
     def _build_image(
         self,
@@ -824,13 +843,17 @@ class Task:
             test_log_file = sample_dir / "test.log"
             pattern = re.compile(r"sha256:[0-9a-f]{64}")
             image_id = None
-            if test_log_file.exists():
+            try:
                 with open(test_log_file, "r", encoding="utf-8") as f:
                     for line in f:
                         match = pattern.search(line)
                         if match:
                             image_id = match.group(0)
                             break
+            except FileNotFoundError as _:
+                pass
+            if image_id is None:
+                continue
 
             log_file = sample_dir / "bench.log"
             with self.create_logger(log_file) as logger:
@@ -1186,6 +1209,8 @@ class TaskHandler:
 
                 def run_bench_task(index_and_task: tuple[int, Task]) -> int:
                     i, task = index_and_task
+                    with pbar.get_lock():
+                        pbar.set_description(f"{task.model} - {task.env.language}-{task.env.framework} - {task.scenario.id}")
                     task.bench_code(
                         results_dir=self.results_dir,
                         samples=samples,
@@ -1212,50 +1237,33 @@ class TaskHandler:
         # compare performance of different LLMs. For each LLM, we take the best performing implementation
         df = pd.DataFrame(columns=["model", "scenario", "framework", "task"])
         for task in self.tasks:
-            df.loc[len(df)] = [task.model, task.scenario.id, f"{task.env.language}-{task.env.framework}", task]
+            suffix = ""
+            if task.use_openhands:
+                suffix = "-openhands"
+            df.loc[len(df)] = [f"{task.model}{suffix}", task.scenario.id, f"{task.env.language}-{task.env.framework}", task]
 
         for (scenario,), data_s in df.groupby(["scenario"]):
-            fig, ax = plt.subplots(figsize=(10,8))
+            fig, axes = plt.subplots(1, 2, figsize=(20,8))
             for (model,), data in data_s.groupby(["model"]):
-                # find the best performance
-                self.plot_best(data, samples, ax, model)
+                plot.plot_best(data, samples, axes, self.results_dir, model)
+            axes[0].legend(title="Model")
+            axes[1].legend(title="Model")
 
-            ax.set_xlabel("Achived RPS")
-            ax.set_ylabel("P99 [ms]")
-            ax.legend()
-            ax.set_ylim((0, 1500))
             os.makedirs(f"{self.results_dir}/performance/by_llm", exist_ok=True)
             fig.savefig(f"{self.results_dir}/performance/by_llm/{esc(scenario)}_RPS_latency_plot.png")
 
-            fig, ax = plt.subplots(figsize=(10,8))
+            fig, axes = plt.subplots(1, 2, figsize=(20,8))
             for (framework,), data in data_s.groupby(["framework"]):
-                # find the best performance
-                self.plot_best(data, samples, ax, framework)
+                plot.plot_best(data, samples, axes, self.results_dir, framework)
+            axes[0].legend(title="Framework")
+            axes[1].legend(title="Framework")
 
-            ax.set_xlabel("Achived RPS")
-            ax.set_ylabel("P99 [ms]")
-            ax.legend()
-            ax.set_ylim((0, 1500))
             os.makedirs(f"{self.results_dir}/performance/by_framework", exist_ok=True)
             fig.savefig(f"{self.results_dir}/performance/by_framework/{esc(scenario)}_RPS_latency_plot.png")
 
-    def plot_best(self, data: pd.DataFrame, samples: list[int], ax: plt.Axes, label: str):
-        csv_max = None
-        max_rps = 0
+        plot.compare_frameworks_and_models(df, self.results_dir, samples)
+        plot.error_rate_vs_rps_over_time(df, self.results_dir, samples)
 
-        for idx, row in data.iterrows():
-            for sample in samples:
-                for test in row.task.scenario.performance_tests:
-                    csv_path = row.task.get_bench_results_csv_path(self.results_dir, sample, test)
-                    if not csv_path.exists():
-                        continue
-                    df = pd.read_csv(csv_path)
-
-                    if max(df["Requests/s"]) > max_rps:
-                        max_rps = max(df["Requests/s"])
-                        csv_max = csv_path
-        if csv_max is not None:
-            plot_requests_vs_percentile(csv_max, ax=ax, label=label)
 
     def evaluate_results(
         self, samples: list[int], ks: list[int]

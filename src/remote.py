@@ -3,9 +3,12 @@ import logging
 import pathlib
 import shlex
 import subprocess
+import threading
 import time
 import uuid
 from dataclasses import dataclass
+from typing import Tuple
+from fabric import Connection
 
 import docker
 import requests
@@ -14,7 +17,7 @@ from env.base import Env
 
 _docker_client = docker.from_env()
 
-_REMOTE_LOAD_PACKAGES = ("locust", "faker")
+_REMOTE_LOAD_PACKAGES = ("locust", "faker", "zope.event==5")
 _REMOTE_ENV_MARKER = hashlib.sha256(
     "|".join(_REMOTE_LOAD_PACKAGES).encode("utf-8")
 ).hexdigest()[:12]
@@ -70,10 +73,10 @@ def _ensure_remote_python_env(
         f"python3 -m venv {shlex.quote(str(env_path))}; "
         "fi; "
         f"if [ ! -f {shlex.quote(marker)} ]; then "
-        f". {shlex.quote(activate)}; "
+        # f". {shlex.quote(activate)}; "
         "python -m pip install --upgrade pip; "
         f"python -m pip install {requirements}; "
-        "deactivate >/dev/null 2>&1 || true; "
+        # "deactivate >/dev/null 2>&1 || true; "
         f"touch {shlex.quote(marker)}; "
         "fi"
     )
@@ -165,24 +168,164 @@ def _wait_for_remote_http(
     last_exc: Exception | None = None
     while time.time() - start < wait_budget:
         try:
-            response = requests.get(
-                f"http://{host}:{port}",
-                timeout=config.request_timeout,
+            probe_cmd = (
+                "set -euo pipefail; "
+                f"curl {host}:{port} --max-time 5"
             )
-            logger.info(
-                "Remote server %s:%d responded with %d",
-                host,
-                port,
-                response.status_code,
-            )
+            probe_cmd = f'bash -lc "{probe_cmd}"'
+
+            out = _ssh(config.load_host, probe_cmd, logger)
+            out.check_returncode()
+            logger.info("Remote server %s:%d is ready", host,port)
             return
-        except requests.RequestException as exc:
+        except subprocess.CalledProcessError as exc:
             last_exc = exc
-            logger.debug("Remote server not ready yet: %s", exc)
+            logger.info("Remote server not ready yet: %s", exc)
         time.sleep(config.poll_interval)
     raise TimeoutError(
         f"Remote server {host}:{port} did not respond within {wait_budget} seconds"
     ) from last_exc
+
+
+def _get_cpu_usage(connection: Connection) -> Tuple[int, int]:
+    """
+    Returns the number of overall cycles, and idle cpu cycles. To get cpu usage, record these values repeatedly, and
+    use the delta between the executions to compute actual cpu usage.
+    """
+    cmd = "cat /proc/stat | grep '^cpu '"
+
+    out = connection.run(cmd, hide=True)
+    if not out.ok:
+        return -1, -1
+
+    parts = out.stdout.split()
+    # cpu user nice system idle iowait irq softirq steal guest guest_nice ...
+    nums = list(map(int, parts[1:]))
+    user, nice, system, idle, iowait, irq, softirq, steal, *_ = nums + [0] * (9 - len(nums))
+    idle_all = idle + iowait
+    non_idle = user + nice + system + irq + softirq + steal
+    total = idle_all + non_idle
+
+    return total, idle_all
+
+
+def _get_memory_usage(connection: Connection) -> Tuple[float, float, float]:
+    """
+    Return (used, total, used_percent) memory from /proc/meminfo.
+    """
+    cmd = "cat /proc/meminfo"
+    out = connection.run(cmd, hide=True)
+    if not out.ok:
+        return -1, -1, -1
+
+    meminfo = {}
+    for line in out.stdout.splitlines():
+        if ":" not in line:
+            continue
+        key, value = line.split(":", 1)
+        value = value.strip().split()[0]
+        try:
+            meminfo[key] = int(value)  # in kB
+        except ValueError:
+            pass
+
+    total = meminfo.get("MemTotal", 0)
+    available = meminfo.get("MemAvailable", 0)
+
+    used = total - available
+    used_pct = (used / total * 100.0) if total > 0 else 0.0
+
+    # Convert to MB
+    total_mb = total / 1024.0
+    used_mb = used / 1024.0
+    return used_mb, total_mb, used_pct
+
+
+def _get_disk_usage(connection: Connection, disk: str = "sda") -> Tuple[int, int]:
+    """
+    Read /proc/diskstats for the given device and return read/written sectors. Use deltas of two consecutive runs to
+    get number of reads in the interval.
+    See 'man iostat' or kernel docs for /proc/diskstats format.
+    """
+    cmd = f"cat /proc/diskstats | awk '$3==\"{disk}\" {{print $6, $10}}'"
+    out = connection.run(cmd, hide=True)
+    if not out.ok:
+        return -1, -1
+
+    parts = out.stdout.split()
+    if len(parts) < 2:
+        return -1, -1
+
+    read_sectors = int(parts[0])
+    written_sectors = int(parts[1])
+    return read_sectors, written_sectors
+
+
+def _get_network_usage(connection: Connection) -> Tuple[int, int]:
+    cmd = "cat /proc/net/dev"
+    out = connection.run(cmd, hide=True)
+    if not out.ok:
+        return -1, -1
+
+    lines = out.stdout.strip().splitlines()
+    bytes_rx = 0
+    bytes_tx = 0
+    for line in lines[2:]:
+        iface, data = line.split(":", 1)
+        stats = data.split()
+        bytes_rx += int(stats[0])
+        bytes_tx += int(stats[8])
+
+    return bytes_rx, bytes_tx
+
+
+def capture_host_performance(sample_dir: pathlib.Path, host: str, logger: logging.Logger, stop_event, interval: int=1) -> None:
+    # write the csv header
+    filename = sample_dir / f"server_performance.csv"
+    with open(filename, "w") as f:
+        f.write("timestamp,cpu_usage,mem_used_mbytes,mem_free_mbytes,disk_read_bps,disk_write_bps,network_rx_bytes,network_tx_bytes\n")
+
+    connection = Connection(host)
+
+    last_cpu_stats = None
+    last_disk_stats = None
+    last_net_stats = None
+    while not stop_event.is_set():
+        loop_start = time.time()
+        cpu_stats = _get_cpu_usage(connection)
+        disk_stats = _get_disk_usage(connection)
+        mem_stats = _get_memory_usage(connection)
+        net_stats = _get_network_usage(connection)
+
+        cpu_usage = 0
+        if last_cpu_stats is not None:
+            cpu_usage = 1 - ((cpu_stats[1] - last_cpu_stats[1]) / (cpu_stats[0] - last_cpu_stats[0]))
+
+        disk_reads = 0
+        disk_writes = 0
+        if last_disk_stats is not None:
+            disk_reads = disk_stats[0] - last_disk_stats[0]
+            disk_writes = disk_stats[1] - last_disk_stats[1]
+
+        net_rx = 0
+        net_tx = 0
+        if last_net_stats is not None:
+            net_rx = net_stats[0] - last_net_stats[0]
+            net_tx = net_stats[1] - last_net_stats[1]
+
+        with open(filename, "a") as f:
+            ts = time.strftime("%Y-%m-%d %H:%M:%S")
+            f.write(f"{ts},{cpu_usage},{mem_stats[0]},{mem_stats[1]},{disk_reads},{disk_writes},{net_rx},{net_tx}\n")
+
+        last_cpu_stats = cpu_stats
+        last_disk_stats = disk_stats
+        last_net_stats = net_stats
+
+        time_to_sleep = interval - (time.time() - loop_start)
+        if time_to_sleep > 0:
+            time.sleep(1)
+
+    connection.close()
 
 
 def run_remote_bench(
@@ -202,8 +345,9 @@ def run_remote_bench(
     app_private_addr = config.app_private_addr or app_host
 
     remote_app_dir = config.remote_dir("app", sample_slug)
-    remote_load_dir = config.remote_dir("load", sample_slug)
-    remote_env_dir = config.remote_dir("load", ".venv")
+    remote_load_dir = config.remote_dir("load", sample_slug) 
+    remote_env_dir = '~/.local'
+    # remote_env_dir = config.remote_dir("load", ".venv")
 
     container_name = f"baxbench-{sample_slug}-{uuid.uuid4().hex[:8]}"
 
@@ -219,8 +363,12 @@ def run_remote_bench(
         app_port,
     )
 
-    _ssh(app_host, f"mkdir -p {shlex.quote(remote_app_dir)}", logger)
-    _scp_to_remote(tar_path, app_host, remote_tar, logger)
+    out = _ssh(app_host, f"mkdir -p {shlex.quote(remote_app_dir)}", logger)
+    out.check_returncode()
+
+    out = _ssh(app_host, f"test -f {remote_tar}", logger)
+    if out.returncode != 0:
+        _scp_to_remote(tar_path, app_host, remote_tar, logger)
 
     start_cmd = (
         "set -euo pipefail; "
@@ -241,20 +389,35 @@ def run_remote_bench(
         remote_locustfile = f"{remote_load_dir}/{locustfile.name}"
         _scp_to_remote(locustfile, load_host, remote_locustfile, logger)
 
+        # prepare the performance logging thread
+        metrics_capture_stop_event = threading.Event()
+        metrics_capture_thread = threading.Thread(target=capture_host_performance, args=(sample_dir, app_host, logger, metrics_capture_stop_event), daemon=True)
+        connection = Connection(load_host)
+
         locust_bin = _ensure_remote_python_env(load_host, remote_env_dir, logger)
         remote_csv_prefix = f"{remote_load_dir}/{csv_prefix.name}"
         locust_cmd = (
             "set -euo pipefail; "
             f"cd {shlex.quote(remote_load_dir)}; "
-            f"{shlex.quote(locust_bin)} --headless --locustfile {shlex.quote(locustfile.name)} "
+            f"{locust_bin} --headless --locustfile {shlex.quote(locustfile.name)} "
+            # f"{shlex.quote(locust_bin)} --headless --locustfile {shlex.quote(locustfile.name)} "
             f"--host http://{app_private_addr}:{app_port} "
+            "--users 21600 "
+            "--spawn-rate 120 "
+            "--run-time 3m "
             f"--csv {shlex.quote(csv_prefix.name)} "
             "--csv-full-history "
-            "--only-summary"
+            "--only-summary "
+            "--processes -1"
         )
 
-        locust_proc = _ssh(load_host, locust_cmd, logger, timeout=timeout)
-        logger.info("Locust output:\n%s", locust_proc.stdout.decode(errors="ignore"))
+        metrics_capture_thread.start()
+        locust_proc = connection.run(locust_cmd, hide=True)
+        metrics_capture_stop_event.set()
+        metrics_capture_thread.join()
+
+        logger.info("Locust output:\n%s", locust_proc)
+        connection.close()
 
         for suffix in ("_stats_history.csv", "_stats.csv", "_failures.csv", "_exceptions.csv"):
             remote_csv = f"{remote_csv_prefix}{suffix}"
