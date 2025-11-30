@@ -6,7 +6,7 @@ from locust import FastHttpUser, task, between, events
 
 
 class ClickCountUser(FastHttpUser):
-    wait_time = between(0.5, 2.0)
+    wait_time = between(0.5, 0.8)
 
     @task
     def click(self):
