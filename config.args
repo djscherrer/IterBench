@@ -10,3 +10,4 @@
 --agent_max_cost 0.25
 --agent_max_iterations 30
 --max_concurrent_runs 4
+--force

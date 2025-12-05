@@ -898,10 +898,11 @@ class Task:
                                 csv_prefix=csv_prefix,
                                 timeout=timeout,
                                 logger=logger,
+                                needs_db=self.scenario.needs_db,
                             )
                         else:
                             with ContainerRunner(
-                                self.env, port_manager, image_id, logger
+                                self.env, port_manager, image_id, logger, needs_db=self.scenario.needs_db
                             ) as cr:
                                 server_ran_before = self.env.process_still_running(
                                     cr.container.id, logger

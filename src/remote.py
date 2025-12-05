@@ -14,6 +14,7 @@ import docker
 import requests
 
 from env.base import Env
+from db_manager import PostgresManager
 
 _docker_client = docker.from_env()
 
@@ -339,6 +340,7 @@ def run_remote_bench(
     csv_prefix: pathlib.Path,
     timeout: int,
     logger: logging.Logger,
+    needs_db: bool = False,
 ) -> None:
     app_host = config.app_host
     load_host = config.load_host
@@ -372,12 +374,49 @@ def run_remote_bench(
         _scp_to_remote(tar_path, app_host, remote_tar, logger)
     # return
 
+    env_vars = ""
+    # if needs db, start postgres container
+    if needs_db:
+        db_container_name = container_name + "-db"
+        
+        # Start Postgres
+        start_db_cmd = (
+            "set -euo pipefail; "
+            f"docker run -d --name {shlex.quote(db_container_name)} "
+            f"-e POSTGRES_USER={PostgresManager.DEFAULT_USER} "
+            f"-e POSTGRES_PASSWORD={PostgresManager.DEFAULT_PASSWORD} "
+            f"-e POSTGRES_DB={PostgresManager.DEFAULT_DATABASE} "
+            f"-p 5432:5432 " # Publish 5432 to host port 5432
+            f"postgres:17-alpine"
+        )
+        start_db_cmd = f'bash -lc "{start_db_cmd}"'
+        _ssh(app_host, start_db_cmd, logger)
+
+        assigned_port = 5432
+        logger.info(f"Remote Postgres started on port {assigned_port}")
+        
+        # Wait for DB ready
+        wait_cmd = (
+             f"timeout 30s bash -c 'until docker exec {shlex.quote(db_container_name)} pg_isready -U {PostgresManager.DEFAULT_USER}; do sleep 1; done'"
+        )
+        _ssh(app_host, wait_cmd, logger)
+
+        env_vars += (
+            f"-e DB_HOST=host.docker.internal "
+            f"-e DB_PORT={assigned_port} "
+            f"-e DB_USER={PostgresManager.DEFAULT_USER} "
+            f"-e DB_PASSWORD={PostgresManager.DEFAULT_PASSWORD} "
+            f"-e DB_NAME={PostgresManager.DEFAULT_DATABASE} "
+        )
+
     start_cmd = (
         "set -euo pipefail; "
         f"cd {shlex.quote(remote_app_dir)}; "
         f"docker rm -f {shlex.quote(container_name)} >/dev/null 2>&1 || true; "
         f"docker load -i {shlex.quote(tar_path.name)} >/dev/null; "
         f"docker run -d --name {shlex.quote(container_name)} "
+        f"--add-host=host.docker.internal:host-gateway "
+        f"{env_vars} "
         f"-p {app_port}:{env.port}/tcp {shlex.quote(image_id)}"
     )
     start_cmd = f'bash -lc "{start_cmd}"'
@@ -431,7 +470,12 @@ def run_remote_bench(
                     "Failed to copy remote CSV %s: %s", remote_csv, exc
                 )
     finally:
-        stop_cmd = f"docker rm -f {shlex.quote(container_name)} >/dev/null 2>&1 || true"
+        stop_cmd = (
+            f"docker rm -f {shlex.quote(container_name)} >/dev/null 2>&1 || true; "
+        )
+        if needs_db:
+             stop_cmd += f"docker rm -f {shlex.quote(container_name + '-db')} >/dev/null 2>&1 || true"
+        
         stop_cmd = f'bash -lc "{stop_cmd}"'
         try:
             _ssh(app_host, stop_cmd, logger)
