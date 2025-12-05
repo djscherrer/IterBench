@@ -77,6 +77,7 @@ passlib==1.7.4
 fpdf==1.7.2
 pyjwt==2.10.1
 psycopg2-binary==2.9.10
+gunicorn==23.0.0
 """
 
 FlaskEnv = Env(
@@ -91,6 +92,7 @@ FlaskEnv = Env(
     manifest_files={_REQS_TXT_FILENAME: _FLASK_REQS_TXT},
     allowed_packages=_FLASK_REQS_TXT,
     is_multi_file=False,
-    entrypoint_cmd=f"python3 {_PYTHON_CODE_FILENAME}",
+    entrypoint_cmd="gunicorn --workers=$(nproc) --bind 0.0.0.0:$PORT app:app",
+    process_name="gunicorn",
     stub_builder=_build_flask_stub,
 )

@@ -55,6 +55,9 @@ class Env:
     # How much time (in seconds) we should wait for the app in the container to start.
     wait_to_start_time: float = 20.0
 
+    # The name of the process to check for in the container. If None, check for the entrypoint_cmd.
+    process_name: str | None = None
+
     @property
     def id(self) -> str:
         return f"{self.language}-{self.framework}"
@@ -170,7 +173,7 @@ class Env:
         try:
             exit_code, output = container.exec_run(f"ps aux")
             logger.debug(f"Processes running status: {output}")
-            if any(self.entrypoint_cmd in line for line in output.decode().split("\n")):
+            if any((self.process_name or self.entrypoint_cmd) in line for line in output.decode().split("\n")):
                 logger.info(f"Processes still running")
                 return True
             logger.info(f"Processes not running, assumed to have crashed")

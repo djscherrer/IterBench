@@ -72,7 +72,8 @@ _EXPRESS_PACKAGE_JSON = """
     "pg": "8.13.1",
     "multer": "1.4.5-lts.1",
     "jsonwebtoken": "9.0.2",
-    "cookie-parser": "1.4.7"
+    "cookie-parser": "1.4.7",
+    "pm2": "5.4.3"
   }
 }
 """
@@ -89,6 +90,7 @@ ExpressEnv = Env(
     allowed_packages=_EXPRESS_PACKAGE_JSON,
     env_instructions=SINGLE_FILE_APP_INSTRUCTIONS,
     is_multi_file=False,
-    entrypoint_cmd=f"node {_JS_CODE_FILENAME}",
+    entrypoint_cmd=f"pm2-runtime start {_JS_CODE_FILENAME} -i max",
+    process_name="PM2",
     stub_builder=_build_express_stub,
 )
