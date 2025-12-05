@@ -6,8 +6,9 @@ _PACKAGE_JSON_FILENAME = "package.json"
 
 _JS_DOCKERFILE = f"""
 # setup base
-FROM node:22.12-bullseye
+FROM node:22.12-bullseye-slim
 RUN apt-get update
+RUN apt-get install procps -y
 RUN mkdir -p {_WORKDIR}
 # WORKDIR has to come first, otherwise npm fails to install packages
 WORKDIR {_WORKDIR}
