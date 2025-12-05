@@ -1,5 +1,5 @@
+import os
 import pathlib
-
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -266,6 +266,108 @@ def error_rate_vs_rps_over_time(
     fig.colorbar(lc)
     fig.tight_layout()
     fig.savefig(results_dir / "performance" / "model_perf_comparison.png",dpi=600)
+
+def detailed_single_app_performance(data: pd.DataFrame, results_dir: pathlib.Path, samples: list[int]):
+    for (scenario, ), scenario_data in data.groupby(["scenario"]):
+        # Example data
+        x = np.linspace(0, 10, 100)
+
+        # Grid size
+        rows = scenario_data["framework"].unique()
+        cols = scenario_data["model"].unique()
+
+        fig, axes = plt.subplots(len(rows), len(cols), figsize=(15, 14), sharex=True, sharey=True)
+        fig.suptitle(f"Performance metrics - '{scenario}'", fontsize=14, weight="bold")
+
+        # Add column titles
+        for ax, col_title in zip(axes[0], cols):
+            ax.set_title(col_title, fontsize=11, pad=12)
+
+        # Add row titles
+        for ax, row_title in zip(axes[:, 0], rows):
+            ax.set_ylabel(f"*{row_title}*\nRequests/s", fontsize=11, labelpad=12)
+
+        cmap = colormaps['Set1']
+        colors = [cmap(i) for i in range(7)]
+        y_lim = 0
+
+        # todo: make target dynamic
+        # Fill each subplot with sample data
+        for (framework, ), fw_data in scenario_data.groupby(["framework"]):
+            for idx, row in fw_data.iterrows():
+                csv, rps = _get_best_sample_per_task(row.task, samples, results_dir)
+                if csv is not None:
+                    df = pd.read_csv(csv)
+                    i = np.where(rows == framework)[0][0]
+                    j = np.where(cols == row.model)[0][0]
+                    lines = []
+                    if df["Requests/s"].max() > y_lim:
+                        y_lim = df["Requests/s"].max()
+
+                    df = df[df["Name"] == "Aggregated"]
+
+                    df["Timestamp"] -= df["Timestamp"].min()
+                    df["Throughput"] = df["Requests/s"] - df["Failures/s"]
+                    lines.append(axes[i,j].plot([i for i in range(180)], [i*120/0.65 for i in range(180)], label="Target req/s", color=colors[0])[0])
+                    lines.append(axes[i,j].plot(df["Timestamp"], df["Throughput"], label="Successful req/s", color=colors[1])[0])
+                    lines.append(axes[i,j].plot(df["Timestamp"], df["Requests/s"], label="Served req/s", color=colors[2])[0])
+
+                    y_2 = axes[i,j].twinx()
+                    y_2.set_ylim(0, 100)
+                    perf = _get_performance(csv)
+                    lines.append(y_2.plot(perf["Timestamp"], perf["cpu_usage"], label="CPU usage (%)", color=colors[3])[0])
+                    lines.append(y_2.plot(perf["Timestamp"], perf["mem_usage"], label="Memory usage (%)", color=colors[4])[0])
+                    lines.append(y_2.plot(perf["Timestamp"], perf["network_rx_usage"], label="Network Rx (MB/s)", color=colors[5])[0])
+                    lines.append(y_2.plot(perf["Timestamp"], perf["network_tx_usage"], label="Network Tx (MB/s)",color=colors[6])[0])
+
+                    labels = [line.get_label() for line in lines]
+                    axes[i,j].legend(lines, labels, loc="upper left")
+
+        for i in range(len(rows)):
+            for j in range(len(cols)):
+                axes[i,j].set_xlim(0, 180)
+                axes[i,j].set_ylim(0, y_lim*1.1)
+
+        for i in range(len(cols)):
+            axes[-1, i].set_xlabel("Time (s)")
+        for i in range(len(rows)):
+            ax = axes[i, -1].twinx()
+            ax.set_ylim(0, 100)
+            ax.set_ylabel("Usage (%)\nNetwork speed (MB/s)")
+
+        plt.tight_layout()
+        plt.savefig(results_dir / "performance" / f"detailed_performance_{scenario}.png", dpi=600)
+
+
+def _get_performance(csv: str):
+    perf_csv = os.path.join(os.path.dirname(csv), "server_performance.csv")
+
+    perf = pd.read_csv(perf_csv)
+    perf["cpu_usage"] *= 100
+    perf["mem_usage"] = perf["mem_used_mbytes"] / (perf["mem_used_mbytes"] + perf["mem_free_mbytes"]) * 100
+    perf["Timestamp"] = pd.to_datetime(perf["timestamp"]).astype("int64") // 10**9
+    perf["Timestamp"] -= perf["Timestamp"].min()
+    perf["network_rx_usage"] = perf["network_rx_bytes"] / 2**20
+    perf["network_tx_usage"] = perf["network_tx_bytes"] / 2**20
+
+    return perf
+
+def _get_best_sample_per_task(task, samples: list[int], results_dir: pathlib.Path):
+    max_rps = 0
+    csv_max = None
+
+    for sample in samples:
+        csv_path = task.get_bench_results_csv_path(results_dir, sample, task.scenario.performance_tests[0])
+        if not csv_path.exists():
+            continue
+        df = pd.read_csv(csv_path)
+
+        if max(df["Requests/s"] - df["Failures/s"]) > max_rps:
+            max_rps = max(df["Requests/s"] - df["Failures/s"])
+            csv_max = csv_path
+
+    return csv_max, max_rps
+
 
 def _get_best_sample_by_rps(task, samples: list[int], results_dir: pathlib.Path):
     max_rps = 0

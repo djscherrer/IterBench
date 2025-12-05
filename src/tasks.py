@@ -1263,6 +1263,7 @@ class TaskHandler:
 
         plot.compare_frameworks_and_models(df, self.results_dir, samples)
         plot.error_rate_vs_rps_over_time(df, self.results_dir, samples)
+        plot.detailed_single_app_performance(df, self.results_dir, samples)
 
 
     def evaluate_results(

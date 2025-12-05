@@ -91,7 +91,7 @@ def _run_subprocess(
     cwd: pathlib.Path | None = None,
     timeout: int | None = None,
 ) -> subprocess.CompletedProcess:
-    logger.debug("Running command: %s", " ".join(shlex.quote(x) for x in cmd))
+    logger.info("Running command: %s", " ".join(shlex.quote(x) for x in cmd))
     result = subprocess.run(
         cmd,
         stdout=subprocess.PIPE,
@@ -100,7 +100,7 @@ def _run_subprocess(
         timeout=timeout,
         check=False,
     )
-    logger.debug("Command finished with code %s", result.returncode)
+    logger.info("Command finished with code %s", result)
     if result.stdout:
         logger.debug("Command output:\n%s", result.stdout.decode(errors="ignore"))
     # result.check_returncode()
@@ -262,6 +262,7 @@ def _get_disk_usage(connection: Connection, disk: str = "sda") -> Tuple[int, int
 
 
 def _get_network_usage(connection: Connection) -> Tuple[int, int]:
+    # todo: get as percentage of full
     cmd = "cat /proc/net/dev"
     out = connection.run(cmd, hide=True)
     if not out.ok:
@@ -369,6 +370,7 @@ def run_remote_bench(
     out = _ssh(app_host, f"test -f {remote_tar}", logger)
     if out.returncode != 0:
         _scp_to_remote(tar_path, app_host, remote_tar, logger)
+    # return
 
     start_cmd = (
         "set -euo pipefail; "
@@ -412,7 +414,7 @@ def run_remote_bench(
         )
 
         metrics_capture_thread.start()
-        locust_proc = connection.run(locust_cmd, hide=True)
+        locust_proc = connection.run(locust_cmd, hide=True, warn=True)
         metrics_capture_stop_event.set()
         metrics_capture_thread.join()
 
