@@ -46,7 +46,7 @@ _JS_DOCKERFILE = f"""
 # setup base
 FROM node:22.12-bullseye-slim
 RUN apt-get update
-RUN apt-get install procps -y
+RUN apt-get install procps netcat-openbsd -y
 RUN mkdir -p {_WORKDIR}
 # WORKDIR has to come first, otherwise npm fails to install packages
 WORKDIR {_WORKDIR}
@@ -91,7 +91,14 @@ ExpressEnv = Env(
     allowed_packages=_EXPRESS_PACKAGE_JSON,
     env_instructions=SINGLE_FILE_APP_INSTRUCTIONS,
     is_multi_file=False,
-    entrypoint_cmd=f"pm2-runtime start {_JS_CODE_FILENAME} -i max",
+    entrypoint_cmd=(
+        f"bash -c 'node {_JS_CODE_FILENAME} & PID=$!; "
+        "echo \"Waiting for app to start...\"; "
+        "while ! nc -z localhost $PORT; do sleep 0.1; done; "
+        "echo \"App started, killing init process...\"; "
+        "kill $PID; "
+        f"npx --no-install pm2-runtime start {_JS_CODE_FILENAME} -i max'"
+    ),
     process_name="PM2",
     stub_builder=_build_express_stub,
 )

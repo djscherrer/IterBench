@@ -92,7 +92,7 @@ FlaskEnv = Env(
     manifest_files={_REQS_TXT_FILENAME: _FLASK_REQS_TXT},
     allowed_packages=_FLASK_REQS_TXT,
     is_multi_file=False,
-    entrypoint_cmd="gunicorn --workers=$(nproc) --bind 0.0.0.0:$PORT app:app",
+    entrypoint_cmd="gunicorn --preload --workers=$(nproc) --bind 0.0.0.0:$PORT app:app",
     process_name="gunicorn",
     stub_builder=_build_flask_stub,
 )

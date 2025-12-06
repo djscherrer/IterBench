@@ -1,13 +1,13 @@
 # config.args
---models openrouter/openai/gpt-5
+--models openrouter/anthropic/claude-sonnet-4.5 openrouter/qwen/qwen3-coder-30b-a3b-instruct openrouter/openai/gpt-5
 --mode test
 --n_samples 1
 --temperature 0.2
 --scenarios ClickCount
---envs Python-Flask
+--envs Go-net/http
 --spec_type json_api
 #--use_openhands
---agent_max_cost 0.25
---agent_max_iterations 30
+#--agent_max_cost 0.25
+#--agent_max_iterations 30
 --max_concurrent_runs 4
---force
+#--force
