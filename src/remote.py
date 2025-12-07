@@ -375,25 +375,24 @@ def run_remote_bench(
     # return
 
     env_vars = ""
+    db_link = ""
+    
     # if needs db, start postgres container
     if needs_db:
         db_container_name = container_name + "-db"
         
-        # Start Postgres
+        # Start Postgres - no network needed
         start_db_cmd = (
             "set -euo pipefail; "
             f"docker run -d --name {shlex.quote(db_container_name)} "
             f"-e POSTGRES_USER={PostgresManager.DEFAULT_USER} "
             f"-e POSTGRES_PASSWORD={PostgresManager.DEFAULT_PASSWORD} "
             f"-e POSTGRES_DB={PostgresManager.DEFAULT_DATABASE} "
-            f"-p 5432:5432 " # Publish 5432 to host port 5432
             f"postgres:17-alpine"
         )
         start_db_cmd = f'bash -lc "{start_db_cmd}"'
         _ssh(app_host, start_db_cmd, logger)
-
-        assigned_port = 5432
-        logger.info(f"Remote Postgres started on port {assigned_port}")
+        logger.info(f"Remote Postgres started")
         
         # Wait for DB ready
         wait_cmd = (
@@ -401,13 +400,18 @@ def run_remote_bench(
         )
         _ssh(app_host, wait_cmd, logger)
 
+        # Use --link to connect containers (simple and reliable)
+        db_link = f"--link {shlex.quote(db_container_name)}:postgres "
+        
+        # App connects to postgres using the link alias
         env_vars += (
-            f"-e DB_HOST=host.docker.internal "
-            f"-e DB_PORT={assigned_port} "
+            f"-e DB_HOST=postgres "
+            f"-e DB_PORT=5432 "
             f"-e DB_USER={PostgresManager.DEFAULT_USER} "
             f"-e DB_PASSWORD={PostgresManager.DEFAULT_PASSWORD} "
             f"-e DB_NAME={PostgresManager.DEFAULT_DATABASE} "
         )
+
 
     start_cmd = (
         "set -euo pipefail; "
@@ -415,13 +419,22 @@ def run_remote_bench(
         f"docker rm -f {shlex.quote(container_name)} >/dev/null 2>&1 || true; "
         f"docker load -i {shlex.quote(tar_path.name)} >/dev/null; "
         f"docker run -d --name {shlex.quote(container_name)} "
-        f"--add-host=host.docker.internal:host-gateway "
+        f"{db_link}"
         f"{env_vars} "
         f"-p {app_port}:{env.port}/tcp {shlex.quote(image_id)}"
     )
     start_cmd = f'bash -lc "{start_cmd}"'
 
     _ssh(app_host, start_cmd, logger)
+
+    # Give the container a moment to start and potentially fail
+    time.sleep(2)
+    
+    # Check container logs to help debug startup issues
+    logs_cmd = f'bash -lc "docker logs {shlex.quote(container_name)} 2>&1"'
+    logs_result = _ssh(app_host, logs_cmd, logger)
+    if logs_result.stdout:
+        logger.info("Container logs:\n%s", logs_result.stdout)    
 
     try:
         _wait_for_remote_http(app_private_addr, app_port, config, env, logger)
@@ -474,7 +487,7 @@ def run_remote_bench(
             f"docker rm -f {shlex.quote(container_name)} >/dev/null 2>&1 || true; "
         )
         if needs_db:
-             stop_cmd += f"docker rm -f {shlex.quote(container_name + '-db')} >/dev/null 2>&1 || true"
+            stop_cmd += f"docker rm -f {shlex.quote(container_name + '-db')} >/dev/null 2>&1 || true"
         
         stop_cmd = f'bash -lc "{stop_cmd}"'
         try:
