@@ -397,7 +397,7 @@ def run_remote_bench(
         
         # Wait for DB ready
         wait_cmd = (
-             f"timeout 30s bash -c 'until docker exec {shlex.quote(db_container_name)} pg_isready -U {PostgresManager.DEFAULT_USER}; do sleep 1; done'"
+             f"timeout 30s bash -lc 'until docker exec {shlex.quote(db_container_name)} pg_isready -U {PostgresManager.DEFAULT_USER}; do sleep 1; done'"
         )
         _ssh(app_host, wait_cmd, logger)
 
