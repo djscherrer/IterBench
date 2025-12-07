@@ -374,7 +374,7 @@ def run_remote_bench(
         _scp_to_remote(tar_path, app_host, remote_tar, logger)
     # return
 
-    env_vars = ""
+    env_vars = f"-e PORT={env.port} "
     db_link = ""
     
     # if needs db, start postgres container
