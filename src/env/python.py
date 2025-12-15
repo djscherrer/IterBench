@@ -1,5 +1,13 @@
 from env.base import MULTI_FILE_APP_PROMPT_STRUCTURE, SINGLE_FILE_APP_INSTRUCTIONS, Env
 
+_PYTHON_INSTRUCTIONS = "\n".join(
+    [
+        SINGLE_FILE_APP_INSTRUCTIONS,
+        "IMPORTANT: Your application will be run using gunicorn with with the --preload flag and multiple worker processes (one per CPU core).",
+        "Ensure any initialization code (especially database setup) is safe for concurrent execution.",
+    ]
+)
+
 _WORKDIR = "/app"
 _PYTHON_CODE_FILENAME = "app.py"
 _REQS_TXT_FILENAME = "requirements.txt"
@@ -84,7 +92,7 @@ FlaskEnv = Env(
     language="Python",
     extension="py",
     framework="Flask",
-    env_instructions=SINGLE_FILE_APP_INSTRUCTIONS,
+    env_instructions=_PYTHON_INSTRUCTIONS,
     code_filename=_PYTHON_CODE_FILENAME,
     dockerfile=_PYTHON_DOCKERFILE,
     workdir=_WORKDIR,

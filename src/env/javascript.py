@@ -1,5 +1,13 @@
 from env.base import MULTI_FILE_APP_PROMPT_STRUCTURE, SINGLE_FILE_APP_INSTRUCTIONS, Env
 
+_JS_INSTRUCTIONS = "\n".join(
+    [
+        SINGLE_FILE_APP_INSTRUCTIONS,
+        "IMPORTANT: Your application will be run using PM2 in cluster mode with multiple worker processes (one per CPU core).",
+        "All workers will start simultaneously. Ensure any initialization code (especially database setup) is safe for concurrent execution.",
+    ]
+)
+
 _WORKDIR = "/app"
 _JS_CODE_FILENAME = "app.js"
 _PACKAGE_JSON_FILENAME = "package.json"
@@ -89,16 +97,9 @@ ExpressEnv = Env(
     database_type="postgresql",
     manifest_files={_PACKAGE_JSON_FILENAME: _EXPRESS_PACKAGE_JSON},
     allowed_packages=_EXPRESS_PACKAGE_JSON,
-    env_instructions=SINGLE_FILE_APP_INSTRUCTIONS,
+    env_instructions=_JS_INSTRUCTIONS,
     is_multi_file=False,
-    entrypoint_cmd=(
-        f"bash -c 'node {_JS_CODE_FILENAME} & PID=$!; "
-        "echo \"Waiting for app to start...\"; "
-        "while ! nc -z localhost $PORT; do sleep 0.1; done; "
-        "echo \"App started, killing init process...\"; "
-        "kill $PID; "
-        f"npx --no-install pm2-runtime start {_JS_CODE_FILENAME} -i max'"
-    ),
+    entrypoint_cmd=f"npx --no-install pm2-runtime start {_JS_CODE_FILENAME} -i max",
     process_name="PM2",
     stub_builder=_build_express_stub,
 )
