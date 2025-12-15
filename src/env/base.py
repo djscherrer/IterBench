@@ -144,7 +144,7 @@ class Env:
             raise Exception(f"got a None image id: {r}")
         return r[0].id
 
-    def run_docker_container(self, image_id: str, use_port: int, additional_env: dict[str, str] | None = None) -> Container:
+    def run_docker_container(self, image_id: str, use_port: int, additional_env: dict[str, str] | None = None, link: dict[str, str] | None = None) -> Container:
         uid = uuid.uuid4()
         env_vars = {"PORT": str(self.port)}
         if additional_env:
@@ -161,6 +161,7 @@ class Env:
                 # Set the memory limit to 1GB.
                 mem_limit=2**30,
                 environment=env_vars,
+                links=link,
             ),
         )
 

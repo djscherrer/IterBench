@@ -69,8 +69,8 @@ class PostgresManager:
             self._wait_for_ready()
             
             return PostgresConnectionParams(
-                host="host.docker.internal",
-                port=self.port,
+                host=self.container_id,
+                port=5432,  
                 user=self.DEFAULT_USER,
                 password=self.DEFAULT_PASSWORD,
                 database=self.DEFAULT_DATABASE,

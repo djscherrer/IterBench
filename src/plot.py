@@ -187,6 +187,8 @@ def compare_frameworks_and_models(
     nb_rows = (nb_plots+1) // 2
 
     fig, axes = plt.subplots(nb_rows, 2, figsize=(18, 5*nb_rows))
+    if nb_rows == 1:
+        axes = axes.reshape(1, -1)
     ax_i = 0
 
     for (scenario,), data_s in data.groupby(["scenario"]):
@@ -218,6 +220,8 @@ def error_rate_vs_rps_over_time(
     nb_rows = (nb_plots + 1) // 2
 
     fig, axes = plt.subplots(nb_rows, 2, figsize=(18, 5 * nb_rows))
+    if nb_rows == 1:
+        axes = axes.reshape(1, -1)
     ax_i = 0
 
     cmap = colormaps["gist_rainbow"]

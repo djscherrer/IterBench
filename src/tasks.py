@@ -217,8 +217,10 @@ class ContainerRunner:
             if self.needs_db and self._db_params:
                 env_vars.update(self._db_params.to_env_dict())
             
+            link = {self._postgres_manager.container_id: "postgres"} if self.needs_db and self._postgres_manager else None
+            
             self._container = self.env.run_docker_container(
-                self.image_id, self._port, additional_env=env_vars
+                self.image_id, self._port, additional_env=env_vars, link=link
             )
         except Exception as e:
             self.logger.exception("could not start container %s", e, exc_info=e)
