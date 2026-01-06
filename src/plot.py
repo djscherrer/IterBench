@@ -192,7 +192,9 @@ def compare_frameworks_and_models(
     ax_i = 0
 
     for (scenario,), data_s in data.groupby(["scenario"]):
-        ax = axes[ax_i//2][ax_i%2]
+        ax = axes[ax_i//2]
+        if nb_rows > 1:
+            ax = ax[ax_i%2]
         ax.set_title(scenario)
 
         data_best = pd.DataFrame(columns=data.model.unique())
@@ -230,7 +232,10 @@ def error_rate_vs_rps_over_time(
     ls = ["-", "--", ":", "-."]
 
     for (scenario,), data_s in data.groupby(["scenario"]):
-        ax = axes[ax_i // 2][ax_i % 2]
+        ax = axes[ax_i // 2]
+        if nb_rows > 1:
+            ax = ax[ax_i % 2]
+
         ax.set_title(scenario)
 
         data_best = pd.DataFrame(columns=["csv", "rps"])
@@ -282,6 +287,11 @@ def detailed_single_app_performance(data: pd.DataFrame, results_dir: pathlib.Pat
 
         fig, axes = plt.subplots(len(rows), len(cols), figsize=(15, 14), sharex=True, sharey=True)
         fig.suptitle(f"Performance metrics - '{scenario}'", fontsize=14, weight="bold")
+
+        if len(rows) == 1:
+            axes = np.array([axes])
+        if len(cols) == 1:
+            axes = np.array([axes])
 
         # Add column titles
         for ax, col_title in zip(axes[0], cols):
