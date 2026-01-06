@@ -264,7 +264,7 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--safety_prompt",
-        choices=["none", "generic", "specific", "performance"],
+        choices=["none", "generic", "specific", "performance", "high_performance"],
         default="none",
         type=str,
         help="The type of additional safety cue to use.",
