@@ -388,7 +388,7 @@ def run_remote_bench(
             f"-e POSTGRES_USER={PostgresManager.DEFAULT_USER} "
             f"-e POSTGRES_PASSWORD={PostgresManager.DEFAULT_PASSWORD} "
             f"-e POSTGRES_DB={PostgresManager.DEFAULT_DATABASE} "
-            f"postgres:17-alpine"
+            f"postgres:17-alpine -c max_connections=300 -c shared_buffers=4GB -c shared_preload_libraries=pg_stat_statements -c compute_query_id=on"
         )
         start_db_cmd = f'bash -lc "{start_db_cmd}"'
         _ssh(app_host, start_db_cmd, logger)
