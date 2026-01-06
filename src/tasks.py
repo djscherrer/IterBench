@@ -1174,6 +1174,11 @@ class TaskHandler:
         min_port: int,
         force: bool,
     ) -> list[int]:
+        _docker_client = docker.from_env()
+        existing = [n for n in _docker_client.networks.list() if n.name == "baxbench-net"]
+        if not existing:
+            _docker_client.networks.create(name="baxbench-net", driver="bridge")
+
         with multiprocessing.Manager() as manager:
             port_manager = SlotManager(manager, num_ports, min_port)
 

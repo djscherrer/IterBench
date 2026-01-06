@@ -149,6 +149,7 @@ class Env:
         env_vars = {"PORT": str(self.port)}
         if additional_env:
             env_vars.update(additional_env)
+        env_vars.update({"DB_PORT": "5432"})
         
         return cast(
             Container,
@@ -158,6 +159,7 @@ class Env:
                 detach=True,
                 ports={f"{self.port}/tcp": use_port},
                 auto_remove=False,
+                network="baxbench-net",
                 # Set the memory limit to 1GB.
                 mem_limit=2**30,
                 environment=env_vars,

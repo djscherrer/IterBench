@@ -59,6 +59,7 @@ class PostgresManager:
                     "POSTGRES_PASSWORD": self.DEFAULT_PASSWORD,
                     "POSTGRES_DB": self.DEFAULT_DATABASE,
                 },
+                network="baxbench-net",
                 volumes={self.volume_name: {"bind": "/var/lib/postgresql/data", "mode": "rw"}},
                 auto_remove=False,
                 mem_limit=512 * 1024 * 1024,
@@ -70,7 +71,7 @@ class PostgresManager:
             
             return PostgresConnectionParams(
                 host=self.container_id,
-                port=5432,  
+                port=self.port,
                 user=self.DEFAULT_USER,
                 password=self.DEFAULT_PASSWORD,
                 database=self.DEFAULT_DATABASE,
