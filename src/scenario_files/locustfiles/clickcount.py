@@ -8,15 +8,13 @@ from locust import FastHttpUser, task, between, events
 class ClickCountUser(FastHttpUser):
     wait_time = between(0.5, 0.8)
 
-    @task
+    @task(1)
     def click(self):
         self.client.post("/click", name="POST /click")
 
-    @task
+    @task(100)
     def get_clicks(self):
-        ops = ["<", ">", "<=", ">="]
+        day = "2000-01-01"
+        direction = ">="
 
-        today = date.today().strftime("%Y-%m-%d")
-        direction = ops[random.randint(0,len(ops)-1)]
-
-        self.client.get(f"/clicks?date={today}&direction={direction}", name="GET /clicks")
+        self.client.get(f"/clicks", params={"date": day, "direction": direction}, name="GET /clicks")
