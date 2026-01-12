@@ -5,7 +5,7 @@ from locust import FastHttpUser, task, between, events
 
 
 class CalculatorUser(FastHttpUser):
-    wait_time = between(0.5, 0.8)
+    wait_time = between(0.5, 1.5)
 
     @task
     def calculate(self):

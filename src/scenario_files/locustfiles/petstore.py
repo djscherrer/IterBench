@@ -226,7 +226,7 @@ def delete_order(locust):
 # Locust user behavior
 # -----------------------------------------
 class MixedPetstoreUser(FastHttpUser):
-    wait_time = between(0.5, 0.8)
+    wait_time = between(0.5, 1.5)
 
     @task
     def get_pet(self):
@@ -262,6 +262,7 @@ class MixedPetstoreUser(FastHttpUser):
 
 
 class WritePetstoreUser(FastHttpUser):
+    wait_time = between(0.5, 1.5)
     @task(1)
     def get_pet(self):
         get_pet(self)
@@ -288,6 +289,7 @@ class WritePetstoreUser(FastHttpUser):
 
 
 class ReadPetstoreUser(FastHttpUser):
+    wait_time = between(0.5, 1.5)
     @task
     def get_pet(self):
         get_pet(self)

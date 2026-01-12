@@ -108,7 +108,7 @@ class RecipeUser(FastHttpUser):
       - comment/rate (biased toward last viewed)
       - occasionally upload
     """
-    wait_time = between(0.5, 0.8)
+    wait_time = between(0.5, 1.5)
 
     def on_start(self):
         # global _seed_done
