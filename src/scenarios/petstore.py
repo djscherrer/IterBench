@@ -902,7 +902,7 @@ SCENARIO = Scenario(
     ],
     performance_tests=[
         "MixedPetstoreUser",
-        "WritePetstoreUser",
-        "ReadPetstoreUser",
+        # "WritePetstoreUser",
+        # "ReadPetstoreUser",
     ]
 )

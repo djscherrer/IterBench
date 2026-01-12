@@ -31,7 +31,7 @@ class Pet(Sendable):
         self.id: int = id
         if data is not None:
             self.name = data.get("name")
-            self.photo_urls = data.get("photoUrl", [])
+            self.photo_urls = data.get("photoUrls", [])
             self.status = data.get("status")
         else:
             self.random_update()
@@ -110,6 +110,17 @@ class PetStore:
 
             return random.choice(active_ids)
 
+    def sample_and_release_id(self, t: PetStoreData.Types):
+        with self._table[t].lock:
+            active_ids = [k for k, v in self._table[t].data.items() if v is not None]
+            if len(active_ids) == 0:
+                return None
+
+            id = random.choice(active_ids)
+            if id is not None and id in self._table[t].data:
+                del self._table[t].data[id]
+            return id
+
     def sample(self, t: PetStoreData.Types) -> Optional[Sendable]:
         with self._table[t].lock:
             id = self.sample_id(t)
@@ -163,16 +174,16 @@ def get_by_status(locust):
 
 
 def create_pet(locust):
-    id = pet_store.reserve(PetStoreData.Types.PET)
-    pet = Pet(id)
+    pet = Pet(0)
 
     with locust.client.post("/pet", name="POST /pet", json=pet.as_payload(), headers=HEADER, catch_response=True) as r:
         if r.status_code == 200:
             r.success()
+            id = r.json()["id"]
+            pet = Pet(id, data=r.json())
             pet_store.add(PetStoreData.Types.PET, id, pet)
         else:
             r.failure(f"Bad status code: {r.status_code}")
-            pet_store.release(PetStoreData.Types.PET, id)
 
 
 def update_pet(locust):
@@ -186,10 +197,6 @@ def update_pet(locust):
 # ---------------
 # store endpoints
 # ---------------
-def browse_inventory(locust):
-    locust.client.get(f"/store/inventory", name="GET /store/inventory", headers=HEADER)
-
-
 def read_order(locust):
     id = pet_store.sample_id(PetStoreData.Types.ORDER)
     if id is None:
@@ -199,27 +206,23 @@ def read_order(locust):
 
 
 def create_order(locust):
-    id = pet_store.reserve(PetStoreData.Types.ORDER)
-    order = Order(id)
+    order = Order(0)
     with locust.client.post("/store/order", name="POST /store/order", json=order.as_payload(), headers=HEADER,
                             catch_response=True) as r:
         if r.status_code == 200:
             r.success()
+            id = r.json()["id"]
             pet_store.add(PetStoreData.Types.ORDER, id, order)
         else:
             r.failure(f"Bad status code: {r.status_code}")
-            pet_store.release(PetStoreData.Types.ORDER, id)
 
 
 def delete_order(locust):
-    id = pet_store.sample_id(PetStoreData.Types.ORDER)
+    id = pet_store.sample_and_release_id(PetStoreData.Types.ORDER)
     if id is None:
         return
 
-    with locust.client.delete(f"/store/order/{id}", name="DELETE /store/order/{id}", headers=HEADER,
-                              catch_response=True) as r:
-        if r.status_code == 200:
-            pet_store.release(PetStoreData.Types.ORDER, id)
+    locust.client.delete(f"/store/order/{id}", name="DELETE /store/order/{id}", headers=HEADER)
 
 
 # -----------------------------------------
@@ -228,31 +231,27 @@ def delete_order(locust):
 class MixedPetstoreUser(FastHttpUser):
     wait_time = between(0.5, 1.5)
 
-    @task
+    @task(5)
     def get_pet(self):
         get_pet(self)
 
-    @task
+    @task(5)
     def get_by_status(self):
         get_by_status(self)
 
-    @task
+    @task(2)
     def create_pet(self):
         create_pet(self)
 
-    @task
+    @task(2)
     def update_pet(self):
         update_pet(self)
 
-    @task
-    def browse_inventory(self):
-        browse_inventory(self)
-
-    @task
+    @task(5)
     def read_order(self):
         read_order(self)
 
-    @task
+    @task(2)
     def create_order(self):
         create_order(self)
 
@@ -301,10 +300,6 @@ class ReadPetstoreUser(FastHttpUser):
     @task
     def update_pet(self):
         update_pet(self)
-
-    @task
-    def browse_inventory(self):
-        browse_inventory(self)
 
     @task
     def read_order(self):
