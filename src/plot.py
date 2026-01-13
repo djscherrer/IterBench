@@ -192,9 +192,7 @@ def compare_frameworks_and_models(
     ax_i = 0
 
     for (scenario,), data_s in data.groupby(["scenario"]):
-        ax = axes[ax_i//2]
-        if nb_rows > 1:
-            ax = ax[ax_i%2]
+        ax = axes[ax_i//2][ax_i%2]
         ax.set_title(scenario)
 
         data_best = pd.DataFrame(columns=data.model.unique())
@@ -232,10 +230,7 @@ def error_rate_vs_rps_over_time(
     ls = ["-", "--", ":", "-."]
 
     for (scenario,), data_s in data.groupby(["scenario"]):
-        ax = axes[ax_i // 2]
-        if nb_rows > 1:
-            ax = ax[ax_i % 2]
-
+        ax = axes[ax_i // 2][ax_i % 2]
         ax.set_title(scenario)
 
         data_best = pd.DataFrame(columns=["csv", "rps"])
@@ -284,9 +279,10 @@ def detailed_single_app_performance(data: pd.DataFrame, results_dir: pathlib.Pat
         # Grid size
         rows = scenario_data["framework"].unique()
         cols = scenario_data["model"].unique()
+        sp = scenario_data.task.iloc[0].safety_prompt
 
         fig, axes = plt.subplots(len(rows), len(cols), figsize=(15, 14), sharex=True, sharey=True)
-        fig.suptitle(f"Performance metrics - '{scenario}'", fontsize=14, weight="bold")
+        fig.suptitle(f"Performance metrics - '{scenario}' (safety_prompt: {sp})", fontsize=14, weight="bold")
 
         if len(rows) == 1:
             axes = np.array([axes])
@@ -305,7 +301,6 @@ def detailed_single_app_performance(data: pd.DataFrame, results_dir: pathlib.Pat
         colors = [cmap(i) for i in range(7)]
         y_lim = 0
 
-        # todo: make target dynamic
         # Fill each subplot with sample data
         for (framework, ), fw_data in scenario_data.groupby(["framework"]):
             for idx, row in fw_data.iterrows():
@@ -322,17 +317,18 @@ def detailed_single_app_performance(data: pd.DataFrame, results_dir: pathlib.Pat
 
                     df["Timestamp"] -= df["Timestamp"].min()
                     df["Throughput"] = df["Requests/s"] - df["Failures/s"]
-                    lines.append(axes[i,j].plot([i for i in range(180)], [i*120/0.65 for i in range(180)], label="Target req/s", color=colors[0])[0])
-                    lines.append(axes[i,j].plot(df["Timestamp"], df["Throughput"], label="Successful req/s", color=colors[1])[0])
-                    lines.append(axes[i,j].plot(df["Timestamp"], df["Requests/s"], label="Served req/s", color=colors[2])[0])
+                    lines.append(axes[i,j].plot(df["Timestamp"], df["User Count"], label="Target req/s", color=colors[0])[0])
+                    # apply 2s negative offset - due to how locust computes R/s and F/s
+                    lines.append(axes[i,j].plot(df["Timestamp"]-2, df["Throughput"], label="Successful req/s", color=colors[1])[0])
+                    lines.append(axes[i,j].plot(df["Timestamp"]-2, df["Requests/s"], label="Served req/s", color=colors[2])[0])
 
                     y_2 = axes[i,j].twinx()
                     y_2.set_ylim(0, 100)
                     perf = _get_performance(csv)
-                    lines.append(y_2.plot(perf["Timestamp"], perf["cpu_usage"], label="CPU usage (%)", color=colors[3])[0])
-                    lines.append(y_2.plot(perf["Timestamp"], perf["mem_usage"], label="Memory usage (%)", color=colors[4])[0])
-                    lines.append(y_2.plot(perf["Timestamp"], perf["network_rx_usage"], label="Network Rx (MB/s)", color=colors[5])[0])
-                    lines.append(y_2.plot(perf["Timestamp"], perf["network_tx_usage"], label="Network Tx (MB/s)",color=colors[6])[0])
+                    lines.append(y_2.plot(perf["Timestamp"], perf["cpu_usage"].rolling(window=5, center=True, min_periods=1).mean(), label="CPU usage (%)", color=colors[3])[0])
+                    lines.append(y_2.plot(perf["Timestamp"], perf["mem_usage"].rolling(window=5, center=True, min_periods=1).mean(), label="Memory usage (%)", color=colors[4])[0])
+                    lines.append(y_2.plot(perf["Timestamp"], perf["network_rx_usage"].rolling(window=5, center=True, min_periods=1).mean(), label="Network Rx (MB/s)", color=colors[5])[0])
+                    lines.append(y_2.plot(perf["Timestamp"], perf["network_tx_usage"].rolling(window=5, center=True, min_periods=1).mean(), label="Network Tx (MB/s)",color=colors[6])[0])
 
                     labels = [line.get_label() for line in lines]
                     axes[i,j].legend(lines, labels, loc="upper left")
@@ -350,7 +346,7 @@ def detailed_single_app_performance(data: pd.DataFrame, results_dir: pathlib.Pat
             ax.set_ylabel("Usage (%)\nNetwork speed (MB/s)")
 
         plt.tight_layout()
-        plt.savefig(results_dir / "performance" / f"detailed_performance_{scenario}.png", dpi=600)
+        plt.savefig(results_dir / "performance" / f"detailed_performance_{scenario}_{sp}.png", dpi=300)
 
 
 def _get_performance(csv: str):
