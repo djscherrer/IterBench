@@ -13,7 +13,7 @@ def on_test_start(environment, **kwargs):
 class ClickCountUser(FastHttpUser):
     wait_time = between(0.5, 1.5)
 
-    @task(1)
+    @task(100)
     def click(self):
         self.client.post("/click", name="POST /click")
 
