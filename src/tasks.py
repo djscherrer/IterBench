@@ -7,38 +7,33 @@ import multiprocessing
 import multiprocessing.managers
 import os
 import pathlib
-import shutil
-import time
 import re
+import shutil
 import subprocess
-import pandas as pd
+import time
+from collections import defaultdict
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from sys import exc_info
-from typing import Any, Generator, Self, cast
+from typing import Any, Generator, Optional, Self, Tuple, cast
 
+import docker
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
 import requests
 import tqdm
-import docker
 from docker.models.containers import Container
 
 import cwes as cwe
+import plot
+from db_manager import PostgresConnectionParams, PostgresManager
 from env.base import COMMON_DOCKER_RUN_COMMANDS, Env
 from prompts import Prompter
-from scenarios.base import AppInstance, FunctionalTest, Scenario, SecurityTest
 from prompts_openhands import OpenHandsPrompter
 from remote import RemoteConfig, run_remote_bench
-from prompts_openhands import OpenHandsPrompter
-from db_manager import PostgresManager, PostgresConnectionParams
+from scenarios.base import AppInstance, FunctionalTest, Scenario, SecurityTest
 
-import matplotlib.pyplot as plt
-import numpy as np
-from collections import defaultdict
-
-import pandas as pd
-import matplotlib.pyplot as plt
-from typing import Optional, Tuple
-import plot
 
 def esc(s: str) -> str:
     return s.replace("/", "-")
@@ -55,37 +50,57 @@ def run_test_with_timeout(
             pool.terminate()
             raise TimeoutError("Functional test timed out")
 
+
 def run_bench_with_timeout(
-    locustfile: pathlib.Path, csv_prefix: pathlib.Path, port: int, timeout: int, user: str
+    locustfile: pathlib.Path,
+    csv_prefix: pathlib.Path,
+    port: int,
+    timeout: int,
+    user: str,
 ) -> bytes:
     try:
-        result = subprocess.run([
-            "locust", "--headless",
-            "--locustfile", locustfile,
-            "--host", f"http://localhost:{port}",
-            "--users", "1800",
-            "--spawn-rate", "10",
-            "--run-time", "3m",
-            "--csv", csv_prefix,
-            "--csv-full-history",
-            "--only-summary",
-            user
-            ], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=timeout)
+        result = subprocess.run(
+            [
+                "locust",
+                "--headless",
+                "--locustfile",
+                locustfile,
+                "--host",
+                f"http://localhost:{port}",
+                "--users",
+                "1800",
+                "--spawn-rate",
+                "10",
+                "--run-time",
+                "3m",
+                "--csv",
+                csv_prefix,
+                "--csv-full-history",
+                "--only-summary",
+                user,
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            timeout=timeout,
+        )
         return result.stdout
     except subprocess.TimeoutExpired:
         raise TimeoutError("Benchmarking timed out")
+
 
 def plot_requests_vs_percentile(
     csv_path: str,
     x_col: str = "Requests/s",
     x_col2: str = "Failures/s",
-    y_col: str = "99%",                # any percentile column, e.g. "95%", "99.9%", etc.
+    y_col: str = "99%",  # any percentile column, e.g. "95%", "99.9%", etc.
     name_col: str = "Name",
     name_value: str = "Aggregated",
-    decreasing_run: int = 5,           # consecutive strictly-decreasing points to trigger cutoff
-    cutoff_delta: int = 0,             # keep rows up to (start_index_of_run + cutoff_delta), inclusive
-    ax: Optional[plt.Axes] = None,     # pass an existing axes to draw on, or leave None to create one
-    **plot_kwargs,                     # e.g. linewidth=2, marker="o"
+    decreasing_run: int = 5,  # consecutive strictly-decreasing points to trigger cutoff
+    cutoff_delta: int = 0,  # keep rows up to (start_index_of_run + cutoff_delta), inclusive
+    ax: Optional[
+        plt.Axes
+    ] = None,  # pass an existing axes to draw on, or leave None to create one
+    **plot_kwargs,  # e.g. linewidth=2, marker="o"
 ) -> Tuple[plt.Axes, pd.DataFrame]:
     """
     Read a CSV of load-test stats and plot y_col vs x_col for rows where name_col == name_value.
@@ -180,7 +195,7 @@ class ContainerRunner:
     port_manager: "SlotManager"
     image_id: str
     logger: logging.Logger
-    needs_db: bool = True 
+    needs_db: bool = True
     _container: Container | None = None
     _port: int | None = None
     _db_port: int | None = None
@@ -191,12 +206,12 @@ class ContainerRunner:
         while self._port is None:
             self._port = self.port_manager.acquire_slot()
             time.sleep(0.1)
-        
+
         if self.needs_db:
             while self._db_port is None:
                 self._db_port = self.port_manager.acquire_slot()
                 time.sleep(0.1)
-            
+
             self.logger.info(f"Starting PostgreSQL on port {self._db_port}")
             self._postgres_manager = PostgresManager(self._db_port, self.logger)
             try:
@@ -209,16 +224,20 @@ class ContainerRunner:
                 if self._port:
                     self.port_manager.release_slot(self._port)
                 raise
-        
+
         # Start backend container
         try:
             # Build environment variables, add db variables if db needed
             env_vars = {"PORT": str(self.env.port)}
             if self.needs_db and self._db_params:
                 env_vars.update(self._db_params.to_env_dict())
-            
-            link = {self._postgres_manager.container_id: "postgres"} if self.needs_db and self._postgres_manager else None
-            
+
+            link = (
+                {self._postgres_manager.container_id: "postgres"}
+                if self.needs_db and self._postgres_manager
+                else None
+            )
+
             self._container = self.env.run_docker_container(
                 self.image_id, self._port, additional_env=env_vars, link=link
             )
@@ -232,7 +251,7 @@ class ContainerRunner:
             if self._port:
                 self.port_manager.release_slot(self._port)
             raise ValueError("Could not start docker container")
-        
+
         self.logger.info("started container, port=%d", self._port)
 
         # make sure that the server is online before we process, otherwise let it fail
@@ -260,17 +279,17 @@ class ContainerRunner:
             self.logger.info("container logs:\n%s", container_logs.decode())
             self.container.remove(force=True)
             self.logger.info("removed container")
-        
+
         # Cleanup Postgres container
         if self._postgres_manager is not None:
             self._postgres_manager.cleanup()
-        
+
         # Release ports
         if self._port is not None:
             self.port_manager.release_slot(self._port)
         if self._db_port is not None:
             self.port_manager.release_slot(self._db_port)
-        
+
         self.logger.info("-" * 100)
         self.logger.info("cleanup complete")
         self.logger.info("-" * 100)
@@ -299,7 +318,7 @@ class Task:
     use_claude_agent: bool
     agent_cls: str
     agent_max_iterations: int
-    agent_max_cost: float | None 
+    agent_max_cost: float | None
     agent_max_tokens: int | None
     provider: str | None
     use_stubs: bool = True
@@ -334,17 +353,23 @@ class Task:
 
     def get_save_dir(self, results_dir: pathlib.Path) -> pathlib.Path:
         base_dir = (
-            results_dir
-            / esc(self.model)
-            / esc(self.scenario.id)
-            / esc(self.env.id)
+            results_dir / esc(self.model) / esc(self.scenario.id) / esc(self.env.id)
         )
         if self.use_openhands:
-            save_dir = base_dir / f"temp{float(self.temperature)}-{esc(self.spec_type)}-{esc(self.safety_prompt)}-openhands"
+            save_dir = (
+                base_dir
+                / f"temp{float(self.temperature)}-{esc(self.spec_type)}-{esc(self.safety_prompt)}-openhands"
+            )
         elif self.use_claude_agent:
-            save_dir = base_dir / f"temp{float(self.temperature)}-{esc(self.spec_type)}-{esc(self.safety_prompt)}-claude-agent"
+            save_dir = (
+                base_dir
+                / f"temp{float(self.temperature)}-{esc(self.spec_type)}-{esc(self.safety_prompt)}-claude-agent"
+            )
         else:
-            save_dir = base_dir / f"temp{float(self.temperature)}-{esc(self.spec_type)}-{esc(self.safety_prompt)}"
+            save_dir = (
+                base_dir
+                / f"temp{float(self.temperature)}-{esc(self.spec_type)}-{esc(self.safety_prompt)}"
+            )
         return save_dir
 
     def get_sample_dir(self, results_dir: pathlib.Path, sample: int) -> pathlib.Path:
@@ -366,7 +391,10 @@ class Task:
     def get_bench_results_csv_path(
         self, results_dir: pathlib.Path, sample: int, user: str
     ) -> pathlib.Path:
-        return self.get_sample_dir(results_dir, sample) / f"bench_results_{user}_stats_history.csv"
+        return (
+            self.get_sample_dir(results_dir, sample)
+            / f"bench_results_{user}_stats_history.csv"
+        )
 
     def load_code(
         self,
@@ -376,13 +404,13 @@ class Task:
     ) -> dict[pathlib.Path, str]:
         code_dir = self.get_code_dir(results_dir, sample)
         files: dict[pathlib.Path, str] = {}
-        
+
         skip_dirs = {"node_modules", "venv", "__pycache__", ".git", "target"}
         skip_files = {"db.sqlite3", ".DS_Store"}
-        
+
         for root, dir_names, file_names in os.walk(code_dir):
             dir_names[:] = [d for d in dir_names if d not in skip_dirs]
-            
+
             for file in file_names:
                 if file in skip_files:
                     continue
@@ -485,7 +513,7 @@ class Task:
             )
 
             if self.use_openhands:
-                logger.info(F"Using OpenHands agent for code generation")
+                logger.info(f"Using OpenHands agent for code generation")
 
                 prompter_oh = OpenHandsPrompter(
                     env=self.env,
@@ -517,11 +545,14 @@ class Task:
                     except KeyboardInterrupt:
                         raise
                     except Exception as e:
-                        logger.exception(f"OpenHands agent failed for sample {sample}: {e}", exc_info=e)
+                        logger.exception(
+                            f"OpenHands agent failed for sample {sample}: {e}",
+                            exc_info=e,
+                        )
                         continue
 
             elif self.use_claude_agent:
-                logger.info(F"Using Claude Agent SDK for code generation")
+                logger.info(f"Using Claude Agent SDK for code generation")
 
                 prompter_ca = ClaudeAgentPrompter(
                     env=self.env,
@@ -548,11 +579,15 @@ class Task:
                     except KeyboardInterrupt:
                         raise
                     except Exception as e:
-                        logger.exception(f"Claude Agent failed for sample {sample}: {e}", exc_info=e)
+                        logger.exception(
+                            f"Claude Agent failed for sample {sample}: {e}", exc_info=e
+                        )
                         continue
 
             else:
-                logger.info(F"Using single-prompt LLM ({self.model}) for code generation")
+                logger.info(
+                    f"Using single-prompt LLM ({self.model}) for code generation"
+                )
 
                 prompter = Prompter(
                     env=self.env,
@@ -604,9 +639,7 @@ class Task:
         sample: int,
         logger: logging.Logger,
     ) -> str | None:
-        files: dict[pathlib.Path, str] = self.load_code(
-            results_dir, sample, logger
-        )
+        files: dict[pathlib.Path, str] = self.load_code(results_dir, sample, logger)
         try:
             image_id = self.env.build_docker_image(
                 files,
@@ -672,7 +705,7 @@ class Task:
                 and not force
             ):
                 continue
-            
+
             self.get_test_results_json_path(results_dir, sample).unlink(missing_ok=True)
             log_file = sample_dir / "test.log"
             with self.create_logger(log_file) as logger:
@@ -764,7 +797,8 @@ class Task:
                                     st,
                                     AppInstance(
                                         port=cr.port,
-                                        log_file_path=sample_dir / (st.__name__ + ".log"),
+                                        log_file_path=sample_dir
+                                        / (st.__name__ + ".log"),
                                         container_id=cr.container.id,
                                         env=self.env,
                                         db_params=cr._db_params,
@@ -829,7 +863,9 @@ class Task:
             if not self.get_code_dir(results_dir, sample).exists():
                 continue
             if (
-                self.get_bench_results_csv_path(results_dir, sample, self.scenario.performance_tests[0]).exists()
+                self.get_bench_results_csv_path(
+                    results_dir, sample, self.scenario.performance_tests[0]
+                ).exists()
                 and not force
             ):
                 continue
@@ -867,9 +903,11 @@ class Task:
                         client.images.get(image_id)
                         image_exists = True
                     except Exception:
-                        logger.warning(f"Image {image_id} found in logs but not in Docker. Rebuilding...")
+                        logger.warning(
+                            f"Image {image_id} found in logs but not in Docker. Rebuilding..."
+                        )
                         image_exists = False
-                
+
                 if not image_exists:
                     logger.info("Image not found or missing. Building...")
                     image_id = self._build_image(results_dir, sample, logger)
@@ -883,9 +921,14 @@ class Task:
                 # todo: repeate for each user
                 for test in self.scenario.performance_tests:
                     from scenario_files import SCENARIO_FILE_PATH
-                    locustfile = SCENARIO_FILE_PATH.joinpath(f"locustfiles/{self.scenario.id.lower()}.py")
+
+                    locustfile = SCENARIO_FILE_PATH.joinpath(
+                        f"locustfiles/{self.scenario.id.lower()}.py"
+                    )
                     logger.info("running load benchmark:\n%s", locustfile.read_text())
-                    csv_prefix = self.get_bench_results_csv_prefix(results_dir, sample, test)
+                    csv_prefix = self.get_bench_results_csv_prefix(
+                        results_dir, sample, test
+                    )
 
                     try:
                         if remote_config is not None:
@@ -904,17 +947,17 @@ class Task:
                             )
                         else:
                             with ContainerRunner(
-                                self.env, port_manager, image_id, logger, needs_db=self.scenario.needs_db
+                                self.env,
+                                port_manager,
+                                image_id,
+                                logger,
+                                needs_db=self.scenario.needs_db,
                             ) as cr:
                                 server_ran_before = self.env.process_still_running(
                                     cr.container.id, logger
                                 )
                                 locust_logs = run_bench_with_timeout(
-                                    locustfile,
-                                    csv_prefix,
-                                    cr.port,
-                                    timeout,
-                                    test
+                                    locustfile, csv_prefix, cr.port, timeout, test
                                 )
                                 logger.info("loader logs:\n%s", locust_logs.decode())
                                 if (
@@ -1138,7 +1181,7 @@ class TaskHandler:
         num_ports: int,
         min_port: int,
     ) -> list[int]:
-        
+
         with multiprocessing.Manager() as manager:
             port_manager = SlotManager(manager, num_ports, min_port)
 
@@ -1175,7 +1218,9 @@ class TaskHandler:
         force: bool,
     ) -> list[int]:
         _docker_client = docker.from_env()
-        existing = [n for n in _docker_client.networks.list() if n.name == "baxbench-net"]
+        existing = [
+            n for n in _docker_client.networks.list() if n.name == "baxbench-net"
+        ]
         if not existing:
             _docker_client.networks.create(name="baxbench-net", driver="bridge")
 
@@ -1218,7 +1263,9 @@ class TaskHandler:
                 def run_bench_task(index_and_task: tuple[int, Task]) -> int:
                     i, task = index_and_task
                     with pbar.get_lock():
-                        pbar.set_description(f"{task.model} - {task.env.language}-{task.env.framework} - {task.scenario.id}")
+                        pbar.set_description(
+                            f"{task.model} - {task.env.language}-{task.env.framework} - {task.scenario.id}"
+                        )
                     task.bench_code(
                         results_dir=self.results_dir,
                         samples=samples,
@@ -1231,9 +1278,7 @@ class TaskHandler:
                         pbar.update(1)
                     return 1
 
-                with concurrent.futures.ThreadPoolExecutor(
-                    max_workers=1
-                ) as executor:
+                with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
                     return list(executor.map(run_bench_task, enumerate(self.tasks)))
 
     def plot_bench(
@@ -1248,31 +1293,43 @@ class TaskHandler:
             suffix = ""
             if task.use_openhands:
                 suffix = "-openhands"
-            df.loc[len(df)] = [f"{task.model}{suffix}", task.scenario.id, f"{task.env.language}-{task.env.framework}", task]
+            df.loc[len(df)] = [
+                f"{task.model}{suffix}",
+                task.scenario.id,
+                f"{task.env.language}-{task.env.framework}",
+                task,
+            ]
 
         for (scenario,), data_s in df.groupby(["scenario"]):
-            fig, axes = plt.subplots(1, 2, figsize=(20,8))
+            fig, axes = plt.subplots(1, 2, figsize=(20, 8))
             for (model,), data in data_s.groupby(["model"]):
                 plot.plot_best(data, samples, axes, self.results_dir, model)
-            axes[0].legend(title="Model")
-            axes[1].legend(title="Model")
+            if axes[0].get_legend_handles_labels()[0]:
+                axes[0].legend(title="Model")
+            if axes[1].get_legend_handles_labels()[0]:
+                axes[1].legend(title="Model")
 
             os.makedirs(f"{self.results_dir}/performance/by_llm", exist_ok=True)
-            fig.savefig(f"{self.results_dir}/performance/by_llm/{esc(scenario)}_RPS_latency_plot.png")
+            fig.savefig(
+                f"{self.results_dir}/performance/by_llm/{esc(scenario)}_RPS_latency_plot.png"
+            )
 
-            fig, axes = plt.subplots(1, 2, figsize=(20,8))
+            fig, axes = plt.subplots(1, 2, figsize=(20, 8))
             for (framework,), data in data_s.groupby(["framework"]):
                 plot.plot_best(data, samples, axes, self.results_dir, framework)
-            axes[0].legend(title="Framework")
-            axes[1].legend(title="Framework")
+            if axes[0].get_legend_handles_labels()[0]:
+                axes[0].legend(title="Framework")
+            if axes[1].get_legend_handles_labels()[0]:
+                axes[1].legend(title="Framework")
 
             os.makedirs(f"{self.results_dir}/performance/by_framework", exist_ok=True)
-            fig.savefig(f"{self.results_dir}/performance/by_framework/{esc(scenario)}_RPS_latency_plot.png")
+            fig.savefig(
+                f"{self.results_dir}/performance/by_framework/{esc(scenario)}_RPS_latency_plot.png"
+            )
 
         plot.compare_frameworks_and_models(df, self.results_dir, samples)
         plot.error_rate_vs_rps_over_time(df, self.results_dir, samples)
         plot.detailed_single_app_performance(df, self.results_dir, samples)
-
 
     def evaluate_results(
         self, samples: list[int], ks: list[int]
@@ -1312,20 +1369,26 @@ class TaskHandler:
         output_dir.mkdir(parents=True, exist_ok=True)
 
         models = sorted([m for m, scenarios_data in data.items() if scenarios_data])
-        
+
         if not models:
             print("No models with data to plot")
             return
 
-        all_scenarios = sorted(set(
-            scenario for scenarios_data in data.values()
-            for scenario in scenarios_data.keys()
-        ))
-        all_envs = sorted(set(
-            env for scenarios_data in data.values()
-            for scenario_envs in scenarios_data.values()
-            for env in scenario_envs.keys()
-        ))
+        all_scenarios = sorted(
+            set(
+                scenario
+                for scenarios_data in data.values()
+                for scenario in scenarios_data.keys()
+            )
+        )
+        all_envs = sorted(
+            set(
+                env
+                for scenarios_data in data.values()
+                for scenario_envs in scenarios_data.values()
+                for env in scenario_envs.keys()
+            )
+        )
 
         num_scenarios = len(all_scenarios)
         num_envs = len(all_envs)
@@ -1336,11 +1399,12 @@ class TaskHandler:
             return
 
         fig, axes = plt.subplots(
-            num_models, 1, 
+            num_models,
+            1,
             figsize=(max(12, num_scenarios * 2), 6 * num_models),
-            squeeze=False
+            squeeze=False,
         )
-        
+
         axes = axes.flatten()
 
         for model_idx, model in enumerate(models):
@@ -1361,26 +1425,36 @@ class TaskHandler:
                 offset = (env_idx - num_envs / 2) * width + width / 2
                 ax.bar(x + offset, pass_rates, width, label=env, alpha=0.8)
 
-            ax.set_xlabel('Scenario', fontsize=11, fontweight='bold')
-            ax.set_ylabel('Pass Rate (pass@1)', fontsize=11, fontweight='bold')
-            ax.set_title(f'{model}', fontsize=13, fontweight='bold')
+            ax.set_xlabel("Scenario", fontsize=11, fontweight="bold")
+            ax.set_ylabel("Pass Rate (pass@1)", fontsize=11, fontweight="bold")
+            ax.set_title(f"{model}", fontsize=13, fontweight="bold")
             ax.set_xticks(x)
-            ax.set_xticklabels(all_scenarios, rotation=45, ha='right')
+            ax.set_xticklabels(all_scenarios, rotation=45, ha="right")
             ax.set_ylim(0, 1.05)
-            ax.legend(title='Environment', bbox_to_anchor=(1.02, 1), loc='upper left', fontsize=9)
-            ax.grid(axis='y', alpha=0.3, linestyle='--')
-            ax.axhline(y=1.0, color='green', linestyle='--', alpha=0.5, linewidth=1)
+            ax.legend(
+                title="Environment",
+                bbox_to_anchor=(1.02, 1),
+                loc="upper left",
+                fontsize=9,
+            )
+            ax.grid(axis="y", alpha=0.3, linestyle="--")
+            ax.axhline(y=1.0, color="green", linestyle="--", alpha=0.5, linewidth=1)
 
-        fig.suptitle('Functional Test Pass Rates - All Models', fontsize=16, fontweight='bold', y=0.995)
-        
+        fig.suptitle(
+            "Functional Test Pass Rates - All Models",
+            fontsize=16,
+            fontweight="bold",
+            y=0.995,
+        )
+
         plt.tight_layout()
 
         output_path = output_dir / "all_models_functional_tests.png"
-        plt.savefig(output_path, dpi=300, bbox_inches='tight')
+        plt.savefig(output_path, dpi=300, bbox_inches="tight")
         plt.close()
 
         print(f"Saved combined functional test graph to {output_path}")
-            
+
 
 def pass_at_k(k: int, c: int, n: int) -> float:
     if n - c < k:

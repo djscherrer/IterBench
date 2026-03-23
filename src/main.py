@@ -9,13 +9,10 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from env import all_envs
-from print import (
-    tasks_and_results_to_table,
-    tasks_and_results_to_table_averages,
-)
+from print import tasks_and_results_to_table, tasks_and_results_to_table_averages
+from remote import RemoteConfig
 from scenarios import all_scenarios
 from tasks import Task, TaskHandler
-from remote import RemoteConfig
 
 _DEFAULT_SAVE_PATH = pathlib.Path(__file__).parent.parent / "results"
 
@@ -23,10 +20,11 @@ import shlex
 
 from env.templates import prepare_all_templates
 
+
 class ArgFileParser(argparse.ArgumentParser):
-    def convert_arg_line_to_args(self, arg_line: str):
-        for tok in shlex.split(arg_line, comments=True, posix=True):
-            yield tok
+    def convert_arg_line_to_args(self, arg_line: str) -> list[str]:
+        return shlex.split(arg_line, comments=True, posix=True)
+
 
 def main(args: Any) -> None:
 
@@ -125,7 +123,6 @@ def main(args: Any) -> None:
     # ----- Prepare environment templates -----#
     if args.mode == "generate":
         prepare_all_templates(envs)
-        
 
     # ----- Run tasks -----#
 
@@ -178,26 +175,16 @@ def main(args: Any) -> None:
     else:
         raise Exception(f"Invalid mode: {args.mode}")
 
-    
-    print(args)
-
 
 if __name__ == "__main__":
-    parser = ArgFileParser(fromfile_prefix_chars='@')
+    parser = ArgFileParser(fromfile_prefix_chars="@")
     parser.add_argument(
         "--models", type=str, nargs="+", required=True, help="List of models"
     )
     parser.add_argument(
         "--mode",
         type=str,
-        choices=[
-            "prepare",
-            "generate",
-            "test",
-            "bench",
-            "plot",
-            "evaluate"
-        ],
+        choices=["prepare", "generate", "test", "bench", "plot", "evaluate"],
         required=True,
         help="Mode in which to run the code.",
     )

@@ -12,7 +12,6 @@ results_copy
 secret.sh
 .DS_Store
 .env_templates/
-.devbox/
 # Created by https://www.toptal.com/developers/gitignore/api/python,pycharm+all,visualstudiocode
 # Edit at https://www.toptal.com/developers/gitignore?templates=python,pycharm+all,visualstudiocode
 
