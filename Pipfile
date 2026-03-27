@@ -6,8 +6,32 @@ name = "pypi"
 [packages]
 openhands-sdk = "*"
 openhands-tools = "*"
+python-dotenv = "*"
+docker = "*"
+openai = "*"
+anthropic = "*"
+httpx = "*"
+requests = "*"
+tqdm = "*"
+pyyaml = "*"
+tabulate = "*"
+termcolor = "*"
+numpy = "*"
+pandas = "*"
+matplotlib = "*"
+fabric = "*"
+psycopg2-binary = "*"
+locust = "*"
+faker = "*"
+pydantic = "*"
+ansi2html = "*"
+openhands-ai = "*"
+imageio = "*"
+pdfplumber = "*"
 
 [dev-packages]
+mypy = "*"
+
 
 [requires]
 python_version = "3.12"
