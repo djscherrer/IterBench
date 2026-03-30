@@ -1,3 +1,4 @@
+import logging
 import os
 import pathlib
 from typing import Optional, Tuple
@@ -188,6 +189,7 @@ def plot_best(
     axes[1].set_xlabel("Achieved RPS")
     axes[1].set_ylabel("Success Rate [%]")
     axes[1].set_title("Success Rate vs RPS")
+
 
 def compare_frameworks_and_models(
     data: pd.DataFrame,
@@ -447,6 +449,7 @@ def detailed_single_app_performance(
 def _get_performance(csv: str):
     perf_csv = os.path.join(os.path.dirname(csv), "server_performance.csv")
     if not os.path.exists(perf_csv):
+        logging.warning(f"Path does not exist: {perf_csv}")
         return None
 
     perf = pd.read_csv(perf_csv)
@@ -473,6 +476,7 @@ def _get_best_sample_per_task(task, samples: list[int], results_dir: pathlib.Pat
             results_dir, sample, task.scenario.performance_tests[0]
         )
         if not csv_path.exists():
+            logging.warning(f"Path does not exist: {csv_path}")
             continue
         df = pd.read_csv(csv_path)
 
@@ -491,6 +495,7 @@ def _get_best_sample_by_rps(task, samples: list[int], results_dir: pathlib.Path)
         for test in task.scenario.performance_tests:
             csv_path = task.get_bench_results_csv_path(results_dir, sample, test)
             if not csv_path.exists():
+                logging.warning(f"Path does not exist: {csv_path}")
                 continue
             df = pd.read_csv(csv_path)
 
