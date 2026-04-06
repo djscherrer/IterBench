@@ -4,15 +4,17 @@
 # Use this script to run load tests on your generated code (Locust).
 
 # --- 1. Execution Targets ---
-MODELS="gpt-4o"
+MODELS="anthropic/claude-opus-4.6"
 ONLY_SAMPLES=""         # Specify indices, e.g. "0 1 2"
-N_SAMPLES="5"           # Used if ONLY_SAMPLES is empty
+N_SAMPLES="10"           # Used if ONLY_SAMPLES is empty
 
 # --- 2. Project Scope ---
-ENVS=""                 # e.g. "python-flask javascript-express"
+ENVS="Python-Flask"                 # e.g. "python-flask javascript-express"
 EXCLUDE_ENVS=""
-SCENARIOS=""            # e.g. "Calculator Petstore"
+SCENARIOS="Petstore"            # e.g. "Calculator Petstore"
 EXCLUDE_SCENARIOS=""
+TEMPERATURE="0.4"
+SAFETY_PROMPT="high_performance"    # none, generic, specific, high-performance
 
 # --- 3. Locust / Load Configuration ---
 # Leave empty to use defaults
@@ -25,19 +27,19 @@ BENCH_LOCUSTFILE=""     # Path to custom locustfile
 BENCH_APP_HOST=""       # e.g. user@host
 BENCH_APP_PRIVATE_ADDR="" 
 BENCH_LOADER_HOST=""    # e.g. user@host
-BENCH_REMOTE_DIR="/tmp/baxbench"
+BENCH_REMOTE_DIR=""
 BENCH_REMOTE_PORT=""
 
 # --- 5. Bench Configuration ---
-TIMEOUT="300"
+TIMEOUT=""
 MAX_CONCURRENT_RUNS=""
-NUM_PORTS="10000"
-MIN_PORT="12345"
+NUM_PORTS=""
+MIN_PORT=""
 FORCE=""                # Set to "true" to force test even if results exist
 
 # --- 6. Global Settings ---
 RESULTS_DIR=""          # Override default results directory
-PORT="5001"             # Application port
+PORT=""             # Application port
 
 # --- Execution ---
 ARGS=("--mode" "bench")
@@ -69,11 +71,13 @@ add_arg "--envs" "$ENVS"
 add_arg "--exclude_envs" "$EXCLUDE_ENVS"
 add_arg "--scenarios" "$SCENARIOS"
 add_arg "--exclude_scenarios" "$EXCLUDE_SCENARIOS"
+add_arg "--temperature" "$TEMPERATURE"
+add_arg "--safety_prompt" "$SAFETY_PROMPT"
 
-add_arg "--bench_users" "$BENCH_USERS"
-add_arg "--bench_spawn_rate" "$BENCH_SPAWN_RATE"
-add_arg "--bench_run_time" "$BENCH_RUN_TIME"
-add_arg "--bench_locustfile" "$BENCH_LOCUSTFILE"
+add_arg "--bench-users" "$BENCH_USERS"
+add_arg "--bench-spawn-rate" "$BENCH_SPAWN_RATE"
+add_arg "--bench-run-time" "$BENCH_RUN_TIME"
+add_arg "--bench-locustfile" "$BENCH_LOCUSTFILE"
 
 add_arg "--bench-app-host" "$BENCH_APP_HOST"
 add_arg "--bench-app-private-addr" "$BENCH_APP_PRIVATE_ADDR"

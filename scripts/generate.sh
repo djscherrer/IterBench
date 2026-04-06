@@ -4,40 +4,40 @@
 # Use this script to generate code for your scenarios.
 
 # --- 1. Model Selection ---
-MODELS="gpt-4o"
-TEMPERATURE="0.2"
-REASONING_EFFORT="high" # low, medium, high
-PROVIDER=""              # openai, anthropic, together_ai, openrouter, swissai, vllm
+MODELS="anthropic/claude-opus-4.6"
+TEMPERATURE="0.4"
+REASONING_EFFORT="" # low, medium, high
+PROVIDER="openrouter"              # openai, anthropic, together_ai, openrouter, swissai, vllm
 
 # --- 2. Project Scope ---
-ENVS=""                 # e.g. "python-flask javascript-express"
+ENVS="Python-Flask"                 # e.g. "python-flask javascript-express"
 EXCLUDE_ENVS=""
-SCENARIOS=""            # e.g. "Calculator Petstore"
+SCENARIOS="Petstore"            # e.g. "Calculator Petstore"
 EXCLUDE_SCENARIOS=""
-SPEC_TYPE="openapi"     # openapi, text, json_api
-SAFETY_PROMPT="none"    # none, generic, specific, performance, high_performance
+SPEC_TYPE=""     # openapi, text, json_api
+SAFETY_PROMPT="performance"    # none, generic, specific, performance, high_performance
 
 # --- 3. Generation Configuration ---
-N_SAMPLES="5"
-MAX_RETRIES="2"
-BASE_DELAY="1.0"
-MAX_DELAY="128.0"
+N_SAMPLES="10"
+MAX_RETRIES=""
+BASE_DELAY=""
+MAX_DELAY=""
 FORCE=""                # Set to "true" to force generation
 SKIP_FAILED=""           # Set to "true" to skip failed tasks
-VLLM_PORT="8000"
-USE_STUBS="true"        # Whether to use code stubs
+VLLM_PORT=""
+USE_STUBS=""        # Whether to use code stubs
 
 # --- 4. Agent Configuration (Optional) ---
 USE_OPENHANDS=""        # Set to "true" to use OpenHands
 USE_CLAUDE_AGENT=""      # Set to "true" to use Claude Agent SDK
-AGENT_CLS="CodeActAgent"
-AGENT_MAX_ITERATIONS="50"
+AGENT_CLS=""
+AGENT_MAX_ITERATIONS=""
 AGENT_MAX_COST=""
 AGENT_MAX_TOKENS=""
 
 # --- 5. Global Settings ---
 RESULTS_DIR=""          # Override default results directory
-PORT="5001"             # Application port
+PORT=""             # Application port
 
 # --- Execution ---
 ARGS=("--mode" "generate")

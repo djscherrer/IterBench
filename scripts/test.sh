@@ -4,28 +4,32 @@
 # Use this script to run functional and security tests on your generated code.
 
 # --- 1. Execution Targets ---
-MODELS="gpt-4o"
+MODELS="anthropic/claude-opus-4.6"
+PROVIDER="openrouter"
 ONLY_SAMPLES=""         # Specify indices, e.g. "0 1 2"
-N_SAMPLES="5"           # Used if ONLY_SAMPLES is empty
+N_SAMPLES="10"           # Used if ONLY_SAMPLES is empty
 
 # --- 2. Project Scope ---
-ENVS=""                 # e.g. "python-flask javascript-express"
+ENVS="Python-Flask"                 # e.g. "python-flask javascript-express"
 EXCLUDE_ENVS=""
-SCENARIOS=""            # e.g. "Calculator Petstore"
+SCENARIOS="Petstore"            # e.g. "Calculator Petstore"
 EXCLUDE_SCENARIOS=""
+TEMPERATURE="0.4"
+SAFETY_PROMPT="high_performance"    # none, generic, specific, performance, high_performance
+
 
 # --- 3. Test Configuration ---
-TIMEOUT="300"           # Timeout per test in seconds
+TIMEOUT=""           # Timeout per test in seconds
 MAX_CONCURRENT_RUNS=""
-NUM_PORTS="10000"
-MIN_PORT="12345"
+NUM_PORTS=""
+MIN_PORT=""
 FORCE=""                # Set to "true" to force test even if results exist
 PRUNE_DOCKER=""         # Set to "true" to prune containers after run
 RUN_SECURITY_TESTS=""    # Set to "true" to run security tests
 
 # --- 4. Global Settings ---
 RESULTS_DIR=""          # Override default results directory
-PORT="5001"             # Application port
+PORT=""             # Application port
 
 # --- Execution ---
 ARGS=("--mode" "test")
@@ -50,13 +54,16 @@ add_flag() {
 
 # Mapping variables to flags
 add_arg "--models" "$MODELS"
+add_arg "--provider" "$PROVIDER"
 add_arg "--only_samples" "$ONLY_SAMPLES"
 add_arg "--n_samples" "$N_SAMPLES"
+add_arg "--temperature" "$TEMPERATURE"
 
 add_arg "--envs" "$ENVS"
 add_arg "--exclude_envs" "$EXCLUDE_ENVS"
 add_arg "--scenarios" "$SCENARIOS"
 add_arg "--exclude_scenarios" "$EXCLUDE_SCENARIOS"
+add_arg "--safety_prompt" "$SAFETY_PROMPT"
 
 add_arg "--timeout" "$TIMEOUT"
 add_arg "--max_concurrent_runs" "$MAX_CONCURRENT_RUNS"
