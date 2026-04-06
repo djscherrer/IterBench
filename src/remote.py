@@ -16,7 +16,7 @@ import requests
 from env.base import Env
 from db_manager import PostgresManager
 
-_docker_client = docker.from_env()
+# _docker_client = docker.from_env()
 
 _REMOTE_LOAD_PACKAGES = ("locust", "faker", "zope.event==5")
 _REMOTE_ENV_MARKER = hashlib.sha256(
@@ -150,7 +150,8 @@ def _save_image_tar(
         return tar_path
 
     logger.info("Saving docker image %s to %s", image_id, tar_path)
-    image = _docker_client.images.get(image_id)
+    client = docker.from_env()
+    image = client.images.get(image_id)
     with open(tar_path, "wb") as f:
         for chunk in image.save(named=True):
             f.write(chunk)
@@ -341,7 +342,15 @@ def run_remote_bench(
     timeout: int,
     logger: logging.Logger,
     needs_db: bool = False,
+    bench_users: int | None = None,
+    bench_spawn_rate: int | None = None,
+    bench_run_time: str | None = None,
 ) -> None:
+    # Use current remote defaults if not already provided
+    users = str(bench_users) if bench_users is not None else "7200"
+    spawn_rate = str(bench_spawn_rate) if bench_spawn_rate is not None else "40"
+    run_time = bench_run_time if bench_run_time is not None else "3m"
+
     app_host = config.app_host
     load_host = config.load_host
     app_port = config.app_port or env.port
@@ -456,9 +465,9 @@ def run_remote_bench(
             f"{locust_bin} --headless --locustfile {shlex.quote(locustfile.name)} "
             # f"{shlex.quote(locust_bin)} --headless --locustfile {shlex.quote(locustfile.name)} "
             f"--host http://{app_private_addr}:{app_port} "
-            "--users 7200 "
-            "--spawn-rate 40 "
-            "--run-time 3m "
+            f"--users {users} "
+            f"--spawn-rate {spawn_rate} "
+            f"--run-time {run_time} "
             f"--csv {shlex.quote(csv_prefix.name)} "
             "--csv-full-history "
             "--only-summary "

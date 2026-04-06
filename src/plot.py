@@ -337,6 +337,7 @@ def detailed_single_app_performance(
         y_lim = 0
 
         # Fill each subplot with sample data
+        max_ts = 0
         for (framework,), fw_data in scenario_data.groupby(["framework"]):
             for idx, row in fw_data.iterrows():
                 csv, rps = _get_best_sample_per_task(row.task, samples, results_dir)
@@ -351,6 +352,7 @@ def detailed_single_app_performance(
                     df = df[df["Name"] == "Aggregated"]
 
                     df["Timestamp"] -= df["Timestamp"].min()
+                    max_ts = max(max_ts, df["Timestamp"].max())
                     df["Throughput"] = df["Requests/s"] - df["Failures/s"]
                     lines.append(
                         axes[i, j].plot(
@@ -429,7 +431,7 @@ def detailed_single_app_performance(
         top_y = y_lim * 1.1 if y_lim > 0 else 1.0
         for i in range(len(rows)):
             for j in range(len(cols)):
-                axes[i, j].set_xlim(0, 180)
+                axes[i, j].set_xlim(0, max_ts if max_ts > 0 else 180)
                 axes[i, j].set_ylim(0, top_y)
 
         for i in range(len(cols)):

@@ -156,6 +156,9 @@ def main(args: Any) -> None:
             num_ports=args.num_ports,
             min_port=args.min_port,
             force=args.force,
+            bench_users=args.bench_users,
+            bench_spawn_rate=args.bench_spawn_rate,
+            bench_run_time=args.bench_run_time,
         )
     elif args.mode == "plot":
         task_handler.plot_bench(
@@ -333,6 +336,24 @@ if __name__ == "__main__":
         type=int,
         default=None,
         help="Override application port when running benchmarks on remote hosts",
+    )
+    parser.add_argument(
+        "--bench-users",
+        type=int,
+        default=None,
+        help="Number of concurrent users for benchmarking",
+    )
+    parser.add_argument(
+        "--bench-spawn-rate",
+        type=int,
+        default=None,
+        help="Rate to spawn users (users per second)",
+    )
+    parser.add_argument(
+        "--bench-run-time",
+        type=str,
+        default=None,
+        help="Duration of the benchmark (e.g., 3m, 1h)",
     )
     parser.add_argument(
         "--force",

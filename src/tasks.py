@@ -57,7 +57,15 @@ def run_bench_with_timeout(
     port: int,
     timeout: int,
     user: str,
+    bench_users: int | None = None,
+    bench_spawn_rate: int | None = None,
+    bench_run_time: str | None = None,
 ) -> bytes:
+    # Use current local defaults if not already provided
+    users = str(bench_users) if bench_users is not None else "1800"
+    spawn_rate = str(bench_spawn_rate) if bench_spawn_rate is not None else "10"
+    run_time = bench_run_time if bench_run_time is not None else "3m"
+
     try:
         result = subprocess.run(
             [
@@ -68,11 +76,11 @@ def run_bench_with_timeout(
                 "--host",
                 f"http://localhost:{port}",
                 "--users",
-                "1800",
+                users,
                 "--spawn-rate",
-                "10",
+                spawn_rate,
                 "--run-time",
-                "3m",
+                run_time,
                 "--csv",
                 csv_prefix,
                 "--csv-full-history",
@@ -835,6 +843,9 @@ class Task:
         timeout: int,
         force: bool,
         remote_config: RemoteConfig | None,
+        bench_users: int | None = None,
+        bench_spawn_rate: int | None = None,
+        bench_run_time: str | None = None,
     ) -> None:
         # clean the directory from bench artifacts if entered by force
         if force:
@@ -931,6 +942,9 @@ class Task:
                                 timeout=timeout,
                                 logger=logger,
                                 needs_db=self.scenario.needs_db,
+                                bench_users=bench_users,
+                                bench_spawn_rate=bench_spawn_rate,
+                                bench_run_time=bench_run_time,
                             )
                         else:
                             with ContainerRunner(
@@ -944,7 +958,14 @@ class Task:
                                     cr.container.id, logger
                                 )
                                 locust_logs = run_bench_with_timeout(
-                                    locustfile, csv_prefix, cr.port, timeout, test
+                                    locustfile,
+                                    csv_prefix,
+                                    cr.port,
+                                    timeout,
+                                    test,
+                                    bench_users=bench_users,
+                                    bench_spawn_rate=bench_spawn_rate,
+                                    bench_run_time=bench_run_time,
                                 )
                                 logger.info("loader logs:\n%s", locust_logs.decode())
                                 if (
@@ -1241,6 +1262,9 @@ class TaskHandler:
         num_ports: int,
         min_port: int,
         force: bool,
+        bench_users: int | None = None,
+        bench_spawn_rate: int | None = None,
+        bench_run_time: str | None = None,
     ) -> list[int]:
         with multiprocessing.Manager() as manager:
             port_manager = SlotManager(manager, num_ports, min_port)
@@ -1260,6 +1284,9 @@ class TaskHandler:
                         timeout=timeout,
                         force=force,
                         remote_config=self.bench_remote_config,
+                        bench_users=bench_users,
+                        bench_spawn_rate=bench_spawn_rate,
+                        bench_run_time=bench_run_time,
                     )
                     with pbar.get_lock():  # type: ignore[no-untyped-call]
                         pbar.update(1)
