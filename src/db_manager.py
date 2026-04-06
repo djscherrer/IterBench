@@ -54,6 +54,17 @@ class PostgresManager:
                 name=self.container_id,
                 detach=True,
                 ports={"5432/tcp": self.port},
+                # Enable query-level timing so we can attribute latency to DB work during benchmarks.
+                # NOTE: Requires restart (hence set at process start).
+                command=[
+                    "postgres",
+                    "-c",
+                    "shared_preload_libraries=pg_stat_statements",
+                    "-c",
+                    "pg_stat_statements.track=all",
+                    "-c",
+                    "track_io_timing=on",
+                ],
                 environment={
                     "POSTGRES_USER": self.DEFAULT_USER,
                     "POSTGRES_PASSWORD": self.DEFAULT_PASSWORD,
@@ -68,6 +79,7 @@ class PostgresManager:
             self.logger.info(f"Postgres container started: {self._container.id}")
             
             self._wait_for_ready()
+            self._ensure_stats_extensions()
             
             return PostgresConnectionParams(
                 host=self.container_id,
@@ -106,6 +118,40 @@ class PostgresManager:
         raise TimeoutError(
             f"Postgres container {self.container_id} did not become ready within {timeout}s"
         )
+
+    def _ensure_stats_extensions(self) -> None:
+        """
+        Enable pg_stat_statements inside the database (best-effort).
+        This is used for DB attribution during load benchmarking.
+        """
+        if self._container is None:
+            return
+        try:
+            exit_code, output = self._container.exec_run(
+                [
+                    "psql",
+                    "-U",
+                    self.DEFAULT_USER,
+                    "-d",
+                    self.DEFAULT_DATABASE,
+                    "-v",
+                    "ON_ERROR_STOP=1",
+                    "-c",
+                    "CREATE EXTENSION IF NOT EXISTS pg_stat_statements;",
+                ]
+            )
+            if exit_code != 0:
+                self.logger.warning(
+                    "Failed to create pg_stat_statements extension: %s",
+                    output.decode(errors="replace"),
+                )
+        except Exception as e:
+            self.logger.warning("Failed to enable pg_stat_statements: %s", e)
+
+    @property
+    def container(self) -> Container:
+        assert self._container is not None
+        return self._container
     
     def cleanup(self) -> None:
         if self._container is not None:

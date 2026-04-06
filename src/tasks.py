@@ -27,6 +27,7 @@ from docker.models.containers import Container
 
 import cwes as cwe
 import plot
+from db_metrics import PostgresSampler
 from db_manager import PostgresConnectionParams, PostgresManager
 from env.base import COMMON_DOCKER_RUN_COMMANDS, Env
 from prompts import Prompter
@@ -957,6 +958,17 @@ class Task:
                                 server_ran_before = self.env.process_still_running(
                                     cr.container.id, logger
                                 )
+                                sampler: PostgresSampler | None = None
+                                if self.scenario.needs_db and cr._postgres_manager is not None:
+                                    db_csv = str(sample_dir / "db_performance.csv")
+                                    sampler = PostgresSampler(
+                                        container=cr._postgres_manager.container,
+                                        out_csv_path=db_csv,
+                                        interval_s=1.0,
+                                        user=PostgresManager.DEFAULT_USER,
+                                        database=PostgresManager.DEFAULT_DATABASE,
+                                    )
+                                    sampler.start()
                                 locust_logs = run_bench_with_timeout(
                                     locustfile,
                                     csv_prefix,
@@ -967,6 +979,8 @@ class Task:
                                     bench_spawn_rate=bench_spawn_rate,
                                     bench_run_time=bench_run_time,
                                 )
+                                if sampler is not None:
+                                    sampler.stop()
                                 logger.info("loader logs:\n%s", locust_logs.decode())
                                 if (
                                     not self.env.process_still_running(
@@ -1344,6 +1358,21 @@ class TaskHandler:
         plot.compare_frameworks_and_models(df, self.results_dir, samples)
         plot.error_rate_vs_rps_over_time(df, self.results_dir, samples)
         plot.detailed_single_app_performance(df, self.results_dir, samples)
+
+        # Additional aggregate plot: backend vs DB latency distribution by achieved RPS.
+        out_dir = self.results_dir / "performance" / "backend_vs_db_latency"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        for task in self.tasks:
+            safe_name = (
+                f"{esc(task.scenario.id)}_{esc(task.env.id)}_{esc(task.model)}"
+            )
+            out_path = out_dir / f"{safe_name}_latency_by_rps.png"
+            plot.plot_backend_vs_db_latency_by_rps(
+                task=task,
+                samples=samples,
+                results_dir=self.results_dir,
+                out_path=str(out_path),
+            )
 
     def evaluate_results(
         self, samples: list[int], ks: list[int]

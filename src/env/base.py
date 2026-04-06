@@ -129,7 +129,7 @@ class Env:
         tag = f"baxbench_{lang}_{frw}".lower()
         logger.info("Files copied, building the image")
         logger.info("-" * 100)
-        r = _get_docker_client().images.build(
+        r = _docker_client.images.build(
                 fileobj=tar_stream,
                 nocache=no_cache,
                 custom_context=True,
@@ -153,7 +153,7 @@ class Env:
         
         return cast(
             Container,
-            _get_docker_client().containers.run(
+            _docker_client.containers.run(
                 image_id,
                 name=f"baxbench-{uid}",
                 detach=True,
@@ -169,7 +169,7 @@ class Env:
 
     def process_still_running(self, container_id: str, logger: logging.Logger) -> bool:
         # extract command that started container process
-        client = _get_docker_client()
+        client = _docker_client
         container: Container = client.containers.get(container_id)
         logger.info(f"Checking if process is still running: {self.entrypoint_cmd}")
         # log into container and check if process is still running
