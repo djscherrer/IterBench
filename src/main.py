@@ -406,7 +406,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--use_stubs",
         action="store_true",
-        default=True,
+        default=False,
         help="Whether to use code stubs.",
     )
     parser.add_argument(
