@@ -99,17 +99,24 @@ def main(args: Any) -> None:
     )
 
     bench_remote_config = None
-    if args.bench_app_host or args.bench_loader_host:
-        if not args.bench_app_host or not args.bench_loader_host:
+    if args.bench_app_host or args.bench_app_hosts or args.bench_loader_host:
+        if not args.bench_loader_host:
             raise ValueError(
-                "Both --bench-app-host and --bench-loader-host must be provided for remote benchmarking"
+                "--bench-loader-host must be provided for remote benchmarking"
+            )
+        if not args.bench_app_host and not args.bench_app_hosts:
+            raise ValueError(
+                "Either --bench-app-host or --bench-app-hosts must be provided for remote benchmarking"
             )
         remote_kwargs: dict[str, Any] = {
             "app_host": args.bench_app_host,
+            "app_hosts": args.bench_app_hosts,
             "app_private_addr": args.bench_app_private_addr,
             "load_host": args.bench_loader_host,
             "remote_base_dir": args.bench_remote_dir,
             "app_port": args.bench_remote_port,
+            "lb_host": args.bench_lb_host,
+            "db_host": args.bench_db_host,
         }
         bench_remote_config = RemoteConfig(**remote_kwargs)
 
@@ -161,9 +168,21 @@ def main(args: Any) -> None:
             bench_run_time=args.bench_run_time,
         )
     elif args.mode == "plot":
-        task_handler.plot_bench(
-            samples=samples,
-        )
+        # If a specific per-run directory is provided, plot directly from it.
+        # Otherwise, run the standard "plot across tasks/samples" workflow.
+        if getattr(args, "plot_run_dir", None):
+            import plot as plot_mod
+
+            plot_mod.plot_backend_vs_db_latency_for_run_dir(
+                run_dir=pathlib.Path(args.plot_run_dir),
+                out_dir=pathlib.Path(args.plot_run_out_dir)
+                if getattr(args, "plot_run_out_dir", None)
+                else None,
+            )
+        else:
+            task_handler.plot_bench(
+                samples=samples,
+            )
     elif args.mode == "evaluate":
         r = task_handler.evaluate_results(
             ks=ks,
@@ -190,6 +209,18 @@ if __name__ == "__main__":
         choices=["generate", "test", "bench", "plot", "evaluate"],
         required=True,
         help="Mode in which to run the code.",
+    )
+    parser.add_argument(
+        "--plot-run-dir",
+        type=str,
+        default=None,
+        help="Plot directly from a specific per-run directory (e.g. sample0/perf-u200-n5-180s-...).",
+    )
+    parser.add_argument(
+        "--plot-run-out-dir",
+        type=str,
+        default=None,
+        help="Optional output directory for --plot-run-dir plots. Defaults to <run_dir>/plots.",
     )
     parser.add_argument(
         "--temperature", type=float, default=0.2, help="Temperature for sampling"
@@ -314,6 +345,13 @@ if __name__ == "__main__":
         help="SSH host (e.g. user@host) where the application container should run",
     )
     parser.add_argument(
+        "--bench-app-hosts",
+        type=str,
+        default=None,
+        nargs="+",
+        help="List of SSH hosts (e.g. user@host) where backend containers should run (one per host).",
+    )
+    parser.add_argument(
         "--bench-app-private-addr",
         type=str,
         default=None,
@@ -324,6 +362,18 @@ if __name__ == "__main__":
         type=str,
         default=None,
         help="Host (e.g. user@host) where the load generator should run",
+    )
+    parser.add_argument(
+        "--bench-lb-host",
+        type=str,
+        default=None,
+        help="SSH host where the load balancer (nginx) should run. Defaults to --bench-loader-host.",
+    )
+    parser.add_argument(
+        "--bench-db-host",
+        type=str,
+        default=None,
+        help="SSH host where the database should run. Defaults to the first backend host.",
     )
     parser.add_argument(
         "--bench-remote-dir",
@@ -351,9 +401,9 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--bench-run-time",
-        type=str,
+        type=int,
         default=None,
-        help="Duration of the benchmark (e.g., 3m, 1h)",
+        help="Duration of the benchmark in seconds (integer).",
     )
     parser.add_argument(
         "--force",

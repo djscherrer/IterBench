@@ -5,10 +5,10 @@
 
 # --- 1. Execution Targets ---
 MODELS="anthropic/claude-opus-4.6"
-ONLY_SAMPLES=""         # Specify indices, e.g. "0 1 2"
+ONLY_SAMPLES="9"        # Specify indices, e.g. "0 1 2"; leave empty to use N_SAMPLES
 N_SAMPLES="10"           # Used if ONLY_SAMPLES is empty
 TEMPERATURE="0.4"
-SAFETY_PROMPT="performance"    # none, generic, specific, performance, high_performance
+SAFETY_PROMPT="high_performance"    # none, generic, specific, performance, high_performance
 
 # --- 2. Scope ---
 ENVS="Python-Flask"

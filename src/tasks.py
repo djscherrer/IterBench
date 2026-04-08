@@ -13,6 +13,7 @@ import subprocess
 import time
 from collections import defaultdict
 from contextlib import contextmanager
+import datetime
 from dataclasses import dataclass, field
 from sys import exc_info
 from typing import Any, Generator, Optional, Self, Tuple, cast
@@ -60,12 +61,13 @@ def run_bench_with_timeout(
     user: str,
     bench_users: int | None = None,
     bench_spawn_rate: int | None = None,
-    bench_run_time: str | None = None,
+    bench_run_time: int | None = None,
 ) -> bytes:
     # Use current local defaults if not already provided
     users = str(bench_users) if bench_users is not None else "1800"
     spawn_rate = str(bench_spawn_rate) if bench_spawn_rate is not None else "10"
-    run_time = bench_run_time if bench_run_time is not None else "3m"
+    run_time_s = int(bench_run_time) if bench_run_time is not None else 180
+    run_time = f"{run_time_s}s"
 
     try:
         result = subprocess.run(
@@ -404,6 +406,33 @@ class Task:
             self.get_sample_dir(results_dir, sample)
             / f"bench_results_{user}_stats_history.csv"
         )
+
+    def get_bench_run_dir(
+        self,
+        results_dir: pathlib.Path,
+        sample: int,
+        bench_users: int | None,
+        bench_spawn_rate: int | None,
+        bench_run_time: int | None,
+    ) -> pathlib.Path:
+        """
+        Per-run output directory within the sample folder.
+        Example: sample9/perf-u200-n5-180s-20260408-071239
+        """
+        users = bench_users if bench_users is not None else 1800
+        spawn = bench_spawn_rate if bench_spawn_rate is not None else 10
+        rt_s = int(bench_run_time) if bench_run_time is not None else 180
+        rt_part = f"{rt_s}s"
+        ts = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+        name = f"perf-u{users}-n{spawn}-{rt_part}-{ts}"
+        return self.get_sample_dir(results_dir, sample) / name
+
+    def has_any_bench_results(self, sample_dir: pathlib.Path, user: str) -> bool:
+        """
+        Whether any previous bench results exist for this sample (supports per-run subdirs).
+        """
+        pattern = f"bench_results_{user}_stats_history.csv"
+        return any(sample_dir.glob(f"**/{pattern}"))
 
     def load_code(
         self,
@@ -846,13 +875,14 @@ class Task:
         remote_config: RemoteConfig | None,
         bench_users: int | None = None,
         bench_spawn_rate: int | None = None,
-        bench_run_time: str | None = None,
+        bench_run_time: int | None = None,
     ) -> None:
         # clean the directory from bench artifacts if entered by force
         if force:
             for sample in samples:
                 sample_dir = self.get_sample_dir(results_dir, sample)
                 if sample_dir.exists():
+                    # Old layout cleanup
                     for extension in ("bench.log", "*.csv"):
                         for file_path in sample_dir.glob(extension):
                             if file_path.is_file():
@@ -862,9 +892,7 @@ class Task:
             if not self.get_code_dir(results_dir, sample).exists():
                 continue
             if (
-                self.get_bench_results_csv_path(
-                    results_dir, sample, self.scenario.performance_tests[0]
-                ).exists()
+                self.has_any_bench_results(sample_dir, self.scenario.performance_tests[0])
                 and not force
             ):
                 continue
@@ -892,7 +920,15 @@ class Task:
             if image_id is None:
                 continue
 
-            log_file = sample_dir / "bench.log"
+            run_dir = self.get_bench_run_dir(
+                results_dir=results_dir,
+                sample=sample,
+                bench_users=bench_users,
+                bench_spawn_rate=bench_spawn_rate,
+                bench_run_time=bench_run_time,
+            )
+            run_dir.mkdir(parents=True, exist_ok=True)
+            log_file = run_dir / "bench.log"
             with self.create_logger(log_file) as logger:
                 # Check if image exists in docker
                 image_exists = False
@@ -928,6 +964,8 @@ class Task:
                     csv_prefix = self.get_bench_results_csv_prefix(
                         results_dir, sample, test
                     )
+                    # Put locust CSVs into the per-run directory
+                    csv_prefix = run_dir / csv_prefix.name
 
                     try:
                         if remote_config is not None:
@@ -936,7 +974,7 @@ class Task:
                                 config=remote_config,
                                 env=self.env,
                                 sample_slug=sample_slug,
-                                sample_dir=sample_dir,
+                                sample_dir=run_dir,
                                 image_id=image_id,
                                 locustfile=locustfile,
                                 csv_prefix=csv_prefix,
@@ -960,7 +998,7 @@ class Task:
                                 )
                                 sampler: PostgresSampler | None = None
                                 if self.scenario.needs_db and cr._postgres_manager is not None:
-                                    db_csv = str(sample_dir / "db_performance.csv")
+                                    db_csv = str(run_dir / "db_performance.csv")
                                     sampler = PostgresSampler(
                                         container=cr._postgres_manager.container,
                                         out_csv_path=db_csv,
@@ -1278,7 +1316,7 @@ class TaskHandler:
         force: bool,
         bench_users: int | None = None,
         bench_spawn_rate: int | None = None,
-        bench_run_time: str | None = None,
+        bench_run_time: int | None = None,
     ) -> list[int]:
         with multiprocessing.Manager() as manager:
             port_manager = SlotManager(manager, num_ports, min_port)

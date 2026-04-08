@@ -11,7 +11,29 @@ import docker
 import docker.errors
 from docker.models.containers import Container
 
-_docker_client = docker.from_env()
+_docker_client: docker.DockerClient | None = None
+
+
+def _get_docker_client() -> docker.DockerClient:
+    """
+    Lazily create the Docker client.
+
+    Plotting and other read-only modes import `env` but do not require Docker.
+    Initializing the Docker client at import time breaks these workflows when the
+    Docker socket is unavailable (e.g. rootless docker not running, or in restricted
+    environments).
+    """
+    global _docker_client
+    if _docker_client is None:
+        try:
+            _docker_client = docker.from_env()
+        except docker.errors.DockerException as exc:
+            raise RuntimeError(
+                "Docker client initialization failed. "
+                "If you are running a bench/build, ensure Docker is running and "
+                "DOCKER_HOST is set correctly for rootless Docker (if applicable)."
+            ) from exc
+    return _docker_client
 
 
 type DatabaseTest = Callable[[str], bool]
@@ -129,7 +151,8 @@ class Env:
         tag = f"baxbench_{lang}_{frw}".lower()
         logger.info("Files copied, building the image")
         logger.info("-" * 100)
-        r = _docker_client.images.build(
+        client = _get_docker_client()
+        r = client.images.build(
                 fileobj=tar_stream,
                 nocache=no_cache,
                 custom_context=True,
@@ -151,9 +174,10 @@ class Env:
             env_vars.update(additional_env)
         env_vars.update({"DB_PORT": "5432"})
         
+        client = _get_docker_client()
         return cast(
             Container,
-            _docker_client.containers.run(
+            client.containers.run(
                 image_id,
                 name=f"baxbench-{uid}",
                 detach=True,
@@ -169,7 +193,7 @@ class Env:
 
     def process_still_running(self, container_id: str, logger: logging.Logger) -> bool:
         # extract command that started container process
-        client = _docker_client
+        client = _get_docker_client()
         container: Container = client.containers.get(container_id)
         logger.info(f"Checking if process is still running: {self.entrypoint_cmd}")
         # log into container and check if process is still running

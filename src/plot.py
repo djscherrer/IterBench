@@ -655,7 +655,27 @@ def plot_backend_vs_db_latency_by_rps(
         rows.append(merged)
 
     if not rows:
-        return False
+        # Most common cause: the run had 100% failures, so achieved_rps == 0 for all rows.
+        # Create a small placeholder image so it's obvious why the plot is missing.
+        fig, ax = plt.subplots(figsize=(10, 5))
+        ax.axis("off")
+        ax.text(
+            0.5,
+            0.5,
+            "No successful requests to plot.\n"
+            "This plot requires achieved_rps > 0 (Requests/s - Failures/s).\n"
+            "If you saw many HTTP 502s, fix the load balancer / upstream first, then re-run.",
+            ha="center",
+            va="center",
+            fontsize=12,
+        )
+        out_dir = os.path.dirname(out_path)
+        if out_dir:
+            os.makedirs(out_dir, exist_ok=True)
+        fig.tight_layout()
+        fig.savefig(out_path, dpi=200, bbox_inches="tight")
+        plt.close(fig)
+        return True
 
     all_rows = pd.concat(rows, ignore_index=True)
     rps_min = float(all_rows["achieved_rps"].min())
@@ -700,37 +720,27 @@ def plot_backend_vs_db_latency_by_rps(
 
     fig, ax = plt.subplots(figsize=(12, 7))
 
-    # Backend in blue shades
+    # Backend in blue shades (left axis)
     ax.plot(mids, bmean, color="#1f77b4", linewidth=2.2, label="Backend mean")
     ax.plot(mids, bp95, color="#4f9ddf", linewidth=2.0, label="Backend p95")
     ax.plot(mids, bp99, color="#9ac4ee", linewidth=2.0, label="Backend p99")
 
-    # DB in red shades
-    ax.plot(mids, dmean, color="#d62728", linewidth=2.2, label="DB mean")
-    ax.plot(mids, dp95, color="#ef6a6a", linewidth=2.0, label="DB p95")
-    ax.plot(mids, dp99, color="#f6aaaa", linewidth=2.0, label="DB p99")
-
-    # RPS coverage/density in green on secondary axis
-    ax2 = ax.twinx()
-    ax2.plot(
-        mids,
-        counts,
-        color="#2ca02c",
-        linewidth=1.8,
-        linestyle="--",
-        label="RPS observations",
-    )
+    # DB in red shades (right axis)
+    ax_db = ax.twinx()
+    ax_db.plot(mids, dmean, color="#d62728", linewidth=2.2, label="DB mean")
+    ax_db.plot(mids, dp95, color="#ef6a6a", linewidth=2.0, label="DB p95")
+    ax_db.plot(mids, dp99, color="#f6aaaa", linewidth=2.0, label="DB p99")
 
     ax.set_xlabel("Achieved RPS")
-    ax.set_ylabel("Latency (ms)")
-    ax2.set_ylabel("Observation count")
+    ax.set_ylabel("Backend latency (ms)")
+    ax_db.set_ylabel("DB latency (ms)")
     ax.set_title(
         f"Latency distribution by RPS: backend vs database\n{task.model} | {task.scenario.id} | {task.env.id}"
     )
     ax.grid(alpha=0.25, linestyle="--")
 
     lines1, labels1 = ax.get_legend_handles_labels()
-    lines2, labels2 = ax2.get_legend_handles_labels()
+    lines2, labels2 = ax_db.get_legend_handles_labels()
     ax.legend(lines1 + lines2, labels1 + labels2, loc="upper left")
 
     out_dir = os.path.dirname(out_path)
@@ -740,3 +750,174 @@ def plot_backend_vs_db_latency_by_rps(
     fig.savefig(out_path, dpi=300, bbox_inches="tight")
     plt.close(fig)
     return True
+
+
+def plot_backend_vs_db_latency_for_run_dir(
+    run_dir: pathlib.Path,
+    out_dir: pathlib.Path | None = None,
+    rolling_window: int = 3,
+    n_bins: int = 35,
+) -> pathlib.Path:
+    """
+    Plot backend vs DB latency for a single per-run directory.
+
+    Expected files inside run_dir:
+      - bench_results_*_stats_history.csv (Locust stats history)
+      - db_performance.csv
+    Optional:
+      - server_performance.csv (not required for this plot)
+    """
+    run_dir = pathlib.Path(run_dir)
+    if not run_dir.exists() or not run_dir.is_dir():
+        raise FileNotFoundError(f"run_dir does not exist or is not a directory: {run_dir}")
+
+    stats_candidates = sorted(run_dir.glob("bench_results_*_stats_history.csv"))
+    if not stats_candidates:
+        raise FileNotFoundError(
+            f"No locust stats_history CSV found in {run_dir} (expected bench_results_*_stats_history.csv)"
+        )
+    stats_path = stats_candidates[0]
+
+    db_path = run_dir / "db_performance.csv"
+    if not db_path.exists():
+        raise FileNotFoundError(f"Missing db_performance.csv in {run_dir}")
+
+    db = _prepare_db_timeseries(str(db_path))
+    if db.empty:
+        raise ValueError(f"db_performance.csv in {run_dir} is empty or unparsable")
+
+    loc = pd.read_csv(stats_path)
+    loc = loc[loc["Name"] == "Aggregated"].copy()
+    if loc.empty:
+        raise ValueError(f"No Aggregated rows in {stats_path}")
+
+    loc["Timestamp"] = pd.to_numeric(loc["Timestamp"], errors="coerce")
+    loc["Requests/s"] = pd.to_numeric(loc["Requests/s"], errors="coerce")
+    loc["Failures/s"] = pd.to_numeric(loc["Failures/s"], errors="coerce")
+    loc["95%"] = pd.to_numeric(loc["95%"], errors="coerce")
+    loc["99%"] = pd.to_numeric(loc["99%"], errors="coerce")
+    loc["Total Average Response Time"] = pd.to_numeric(
+        loc["Total Average Response Time"], errors="coerce"
+    )
+    loc = loc.dropna(
+        subset=[
+            "Timestamp",
+            "Requests/s",
+            "Failures/s",
+            "95%",
+            "99%",
+            "Total Average Response Time",
+        ]
+    )
+    if loc.empty:
+        raise ValueError(f"Stats history in {stats_path} is empty after numeric coercion")
+
+    loc["achieved_rps"] = loc["Requests/s"] - loc["Failures/s"]
+    loc = loc[loc["achieved_rps"] > 0].copy()
+    if loc.empty:
+        raise ValueError(
+            f"No successful requests to plot (achieved_rps <= 0) in {stats_path}"
+        )
+
+    rw = max(1, int(rolling_window))
+    loc = loc.sort_values("Timestamp")
+    db = db.sort_values("ts")
+    loc["Timestamp"] = loc["Timestamp"].astype(float)
+    db["ts"] = db["ts"].astype(float)
+    loc["backend_mean_ms"] = (
+        loc["Total Average Response Time"].rolling(window=rw, min_periods=1).mean()
+    )
+    loc["backend_p95_ms"] = loc["95%"].rolling(window=rw, min_periods=1).mean()
+    loc["backend_p99_ms"] = loc["99%"].rolling(window=rw, min_periods=1).mean()
+    db["db_mean_ms"] = db["avg_db_stmt_ms"].rolling(window=rw, min_periods=1).mean()
+
+    merged = pd.merge_asof(
+        loc[
+            [
+                "Timestamp",
+                "achieved_rps",
+                "backend_mean_ms",
+                "backend_p95_ms",
+                "backend_p99_ms",
+            ]
+        ],
+        db[["ts", "db_mean_ms"]],
+        left_on="Timestamp",
+        right_on="ts",
+        direction="nearest",
+    ).dropna(
+        subset=[
+            "achieved_rps",
+            "backend_mean_ms",
+            "backend_p95_ms",
+            "backend_p99_ms",
+            "db_mean_ms",
+        ]
+    )
+    if merged.empty:
+        raise ValueError(f"Failed to align locust stats with db metrics for {run_dir}")
+
+    rps_min = float(merged["achieved_rps"].min())
+    rps_max = float(merged["achieved_rps"].max())
+    if rps_max <= rps_min:
+        raise ValueError(f"Not enough RPS variation to plot for {run_dir}")
+
+    bin_edges = np.linspace(rps_min, rps_max, max(6, int(n_bins)))
+    merged["rps_bin"] = pd.cut(merged["achieved_rps"], bins=bin_edges, include_lowest=True)
+    grouped = merged.groupby("rps_bin", observed=True)
+
+    bmean = grouped["backend_mean_ms"].mean()
+    bp95 = grouped["backend_p95_ms"].mean()
+    bp99 = grouped["backend_p99_ms"].mean()
+
+    dmean = grouped["db_mean_ms"].mean()
+    dp95 = grouped["db_mean_ms"].quantile(0.95)
+    dp99 = grouped["db_mean_ms"].quantile(0.99)
+    counts = grouped["achieved_rps"].count()
+
+    mids = np.array(
+        [
+            (idx.left + idx.right) / 2
+            for idx in bmean.index
+            if pd.notna(idx.left) and pd.notna(idx.right)
+        ]
+    )
+    if len(mids) == 0:
+        raise ValueError(f"No bins produced midpoints for {run_dir}")
+
+    valid_idx = bmean.index[: len(mids)]
+    bmean = bmean.loc[valid_idx].to_numpy()
+    bp95 = bp95.loc[valid_idx].to_numpy()
+    bp99 = bp99.loc[valid_idx].to_numpy()
+    dmean = dmean.loc[valid_idx].to_numpy()
+    dp95 = dp95.loc[valid_idx].to_numpy()
+    dp99 = dp99.loc[valid_idx].to_numpy()
+    counts = counts.loc[valid_idx].to_numpy()
+
+    fig, ax = plt.subplots(figsize=(12, 7))
+    ax.plot(mids, bmean, color="#1f77b4", linewidth=2.2, label="Backend mean")
+    ax.plot(mids, bp95, color="#4f9ddf", linewidth=2.0, label="Backend p95")
+    ax.plot(mids, bp99, color="#9ac4ee", linewidth=2.0, label="Backend p99")
+
+    ax_db = ax.twinx()
+    ax_db.plot(mids, dmean, color="#d62728", linewidth=2.2, label="DB mean")
+    ax_db.plot(mids, dp95, color="#ef6a6a", linewidth=2.0, label="DB p95")
+    ax_db.plot(mids, dp99, color="#f6aaaa", linewidth=2.0, label="DB p99")
+
+    ax.set_xlabel("Achieved RPS")
+    ax.set_ylabel("Backend latency (ms)")
+    ax_db.set_ylabel("DB latency (ms)")
+    ax.set_title(f"Backend vs DB latency by RPS\n{run_dir}")
+    ax.grid(alpha=0.25, linestyle="--")
+
+    lines1, labels1 = ax.get_legend_handles_labels()
+    lines2, labels2 = ax_db.get_legend_handles_labels()
+    ax.legend(lines1 + lines2, labels1 + labels2, loc="upper left")
+
+    out_dir = out_dir or (run_dir / "plots")
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_path = out_dir / "backend_vs_db_latency_by_rps.png"
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=300, bbox_inches="tight")
+    plt.close(fig)
+    return out_path
