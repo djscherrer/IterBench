@@ -195,6 +195,7 @@ def compare_frameworks_and_models(
     data: pd.DataFrame,
     results_dir: pathlib.Path,
     samples: list[int],
+    output_dir: pathlib.Path | None = None,
 ):
     nb_plots = len(data.scenario.unique())
     if nb_plots == 0:
@@ -222,13 +223,16 @@ def compare_frameworks_and_models(
         ax_i += 1
 
     fig.tight_layout()
-    fig.savefig(results_dir / "performance" / "framework_performance_comparison.png")
+    out_dir = output_dir or (results_dir / "performance")
+    out_dir.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out_dir / "framework_performance_comparison.png")
 
 
 def error_rate_vs_rps_over_time(
     data: pd.DataFrame,
     results_dir: pathlib.Path,
     samples: list[int],
+    output_dir: pathlib.Path | None = None,
 ):
     nb_plots = len(data.scenario.unique())
     if nb_plots == 0:
@@ -295,11 +299,16 @@ def error_rate_vs_rps_over_time(
         cbar = fig.colorbar(lc)
         cbar.set_label("Success Rate")
     fig.tight_layout()
-    fig.savefig(results_dir / "performance" / "model_perf_comparison.png", dpi=600)
+    out_dir = output_dir or (results_dir / "performance")
+    out_dir.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out_dir / "model_perf_comparison.png", dpi=600)
 
 
 def detailed_single_app_performance(
-    data: pd.DataFrame, results_dir: pathlib.Path, samples: list[int]
+    data: pd.DataFrame,
+    results_dir: pathlib.Path,
+    samples: list[int],
+    output_dir: pathlib.Path | None = None,
 ):
     for (scenario,), scenario_data in data.groupby(["scenario"]):
         # Example data
@@ -442,10 +451,9 @@ def detailed_single_app_performance(
             ax.set_ylabel("Usage (%)\nNetwork speed (MB/s)")
 
         plt.tight_layout()
-        plt.savefig(
-            results_dir / "performance" / f"detailed_performance_{scenario}_{sp}.png",
-            dpi=300,
-        )
+        out_dir = output_dir or (results_dir / "performance")
+        out_dir.mkdir(parents=True, exist_ok=True)
+        plt.savefig(out_dir / f"detailed_performance_{scenario}_{sp}.png", dpi=300)
 
 
 def _get_performance(csv: str):
@@ -555,6 +563,100 @@ def _prepare_db_timeseries(db_csv_path: str) -> pd.DataFrame:
     return db
 
 
+def _prepare_locust_timeseries(stats_csv_path: str, rolling_window: int) -> pd.DataFrame:
+    loc = pd.read_csv(stats_csv_path)
+    loc = loc[loc["Name"] == "Aggregated"].copy()
+    if loc.empty:
+        return loc
+
+    loc["Timestamp"] = pd.to_numeric(loc["Timestamp"], errors="coerce")
+    loc["Requests/s"] = pd.to_numeric(loc["Requests/s"], errors="coerce")
+    loc["Failures/s"] = pd.to_numeric(loc["Failures/s"], errors="coerce")
+    loc["95%"] = pd.to_numeric(loc["95%"], errors="coerce")
+    loc["99%"] = pd.to_numeric(loc["99%"], errors="coerce")
+    loc["Total Average Response Time"] = pd.to_numeric(
+        loc["Total Average Response Time"], errors="coerce"
+    )
+    loc = loc.dropna(
+        subset=[
+            "Timestamp",
+            "Requests/s",
+            "Failures/s",
+            "95%",
+            "99%",
+            "Total Average Response Time",
+        ]
+    )
+    if loc.empty:
+        return loc
+
+    loc["achieved_rps"] = loc["Requests/s"] - loc["Failures/s"]
+    loc = loc[loc["achieved_rps"] > 0].copy()
+    if loc.empty:
+        return loc
+
+    rw = max(1, int(rolling_window))
+    loc = loc.sort_values("Timestamp")
+    loc["Timestamp"] = loc["Timestamp"].astype(float)
+    loc["backend_mean_ms"] = (
+        loc["Total Average Response Time"].rolling(window=rw, min_periods=1).mean()
+    )
+    loc["backend_p95_ms"] = loc["95%"].rolling(window=rw, min_periods=1).mean()
+    loc["backend_p99_ms"] = loc["99%"].rolling(window=rw, min_periods=1).mean()
+
+    return loc
+
+
+def _prepare_backend_db_merged(
+    *,
+    stats_csv_path: str,
+    db_csv_path: str,
+    rolling_window: int,
+) -> pd.DataFrame:
+    """
+    Common core used by both:
+      - plot_backend_vs_db_latency_by_rps (across many runs)
+      - plot_backend_vs_db_latency_for_run_dir (single run)
+    """
+    loc = _prepare_locust_timeseries(stats_csv_path, rolling_window=rolling_window)
+    if loc.empty:
+        return loc
+
+    db = _prepare_db_timeseries(db_csv_path)
+    if db.empty:
+        return db
+
+    rw = max(1, int(rolling_window))
+    db = db.sort_values("ts")
+    db["ts"] = db["ts"].astype(float)
+    db["db_mean_ms"] = db["avg_db_stmt_ms"].rolling(window=rw, min_periods=1).mean()
+
+    merged = pd.merge_asof(
+        loc[
+            [
+                "Timestamp",
+                "achieved_rps",
+                "backend_mean_ms",
+                "backend_p95_ms",
+                "backend_p99_ms",
+            ]
+        ],
+        db[["ts", "db_mean_ms"]],
+        left_on="Timestamp",
+        right_on="ts",
+        direction="nearest",
+    ).dropna(
+        subset=[
+            "achieved_rps",
+            "backend_mean_ms",
+            "backend_p95_ms",
+            "backend_p99_ms",
+            "db_mean_ms",
+        ]
+    )
+    return merged
+
+
 def plot_backend_vs_db_latency_by_rps(
     task,
     samples: list[int],
@@ -581,78 +683,13 @@ def plot_backend_vs_db_latency_by_rps(
         db_path = stats_path.parent / "db_performance.csv"
         if not stats_path.exists() or not db_path.exists():
             continue
-
-        loc = pd.read_csv(stats_path)
-        loc = loc[loc["Name"] == "Aggregated"].copy()
-        if loc.empty:
-            continue
-
-        loc["Timestamp"] = pd.to_numeric(loc["Timestamp"], errors="coerce")
-        loc["Requests/s"] = pd.to_numeric(loc["Requests/s"], errors="coerce")
-        loc["Failures/s"] = pd.to_numeric(loc["Failures/s"], errors="coerce")
-        loc["95%"] = pd.to_numeric(loc["95%"], errors="coerce")
-        loc["99%"] = pd.to_numeric(loc["99%"], errors="coerce")
-        loc["Total Average Response Time"] = pd.to_numeric(
-            loc["Total Average Response Time"], errors="coerce"
+        merged = _prepare_backend_db_merged(
+            stats_csv_path=str(stats_path),
+            db_csv_path=str(db_path),
+            rolling_window=rw,
         )
-        loc = loc.dropna(
-            subset=[
-                "Timestamp",
-                "Requests/s",
-                "Failures/s",
-                "95%",
-                "99%",
-                "Total Average Response Time",
-            ]
-        )
-        if loc.empty:
-            continue
-        loc["achieved_rps"] = loc["Requests/s"] - loc["Failures/s"]
-        loc = loc[loc["achieved_rps"] > 0].copy()
-        if loc.empty:
-            continue
-
-        db = _prepare_db_timeseries(str(db_path))
-        if db.empty:
-            continue
-
-        loc = loc.sort_values("Timestamp")
-        db = db.sort_values("ts")
-        loc["Timestamp"] = loc["Timestamp"].astype(float)
-        db["ts"] = db["ts"].astype(float)
-        loc["backend_mean_ms"] = (
-            loc["Total Average Response Time"].rolling(window=rw, min_periods=1).mean()
-        )
-        loc["backend_p95_ms"] = loc["95%"].rolling(window=rw, min_periods=1).mean()
-        loc["backend_p99_ms"] = loc["99%"].rolling(window=rw, min_periods=1).mean()
-        db["db_mean_ms"] = db["avg_db_stmt_ms"].rolling(window=rw, min_periods=1).mean()
-
-        merged = pd.merge_asof(
-            loc[
-                [
-                    "Timestamp",
-                    "achieved_rps",
-                    "backend_mean_ms",
-                    "backend_p95_ms",
-                    "backend_p99_ms",
-                ]
-            ],
-            db[["ts", "db_mean_ms"]],
-            left_on="Timestamp",
-            right_on="ts",
-            direction="nearest",
-        ).dropna(
-            subset=[
-                "achieved_rps",
-                "backend_mean_ms",
-                "backend_p95_ms",
-                "backend_p99_ms",
-                "db_mean_ms",
-            ]
-        )
-        if merged.empty:
-            continue
-        rows.append(merged)
+        if not merged.empty:
+            rows.append(merged)
 
     if not rows:
         # Most common cause: the run had 100% failures, so achieved_rps == 0 for all rows.
@@ -782,77 +819,11 @@ def plot_backend_vs_db_latency_for_run_dir(
     if not db_path.exists():
         raise FileNotFoundError(f"Missing db_performance.csv in {run_dir}")
 
-    db = _prepare_db_timeseries(str(db_path))
-    if db.empty:
-        raise ValueError(f"db_performance.csv in {run_dir} is empty or unparsable")
-
-    loc = pd.read_csv(stats_path)
-    loc = loc[loc["Name"] == "Aggregated"].copy()
-    if loc.empty:
-        raise ValueError(f"No Aggregated rows in {stats_path}")
-
-    loc["Timestamp"] = pd.to_numeric(loc["Timestamp"], errors="coerce")
-    loc["Requests/s"] = pd.to_numeric(loc["Requests/s"], errors="coerce")
-    loc["Failures/s"] = pd.to_numeric(loc["Failures/s"], errors="coerce")
-    loc["95%"] = pd.to_numeric(loc["95%"], errors="coerce")
-    loc["99%"] = pd.to_numeric(loc["99%"], errors="coerce")
-    loc["Total Average Response Time"] = pd.to_numeric(
-        loc["Total Average Response Time"], errors="coerce"
-    )
-    loc = loc.dropna(
-        subset=[
-            "Timestamp",
-            "Requests/s",
-            "Failures/s",
-            "95%",
-            "99%",
-            "Total Average Response Time",
-        ]
-    )
-    if loc.empty:
-        raise ValueError(f"Stats history in {stats_path} is empty after numeric coercion")
-
-    loc["achieved_rps"] = loc["Requests/s"] - loc["Failures/s"]
-    loc = loc[loc["achieved_rps"] > 0].copy()
-    if loc.empty:
-        raise ValueError(
-            f"No successful requests to plot (achieved_rps <= 0) in {stats_path}"
-        )
-
     rw = max(1, int(rolling_window))
-    loc = loc.sort_values("Timestamp")
-    db = db.sort_values("ts")
-    loc["Timestamp"] = loc["Timestamp"].astype(float)
-    db["ts"] = db["ts"].astype(float)
-    loc["backend_mean_ms"] = (
-        loc["Total Average Response Time"].rolling(window=rw, min_periods=1).mean()
-    )
-    loc["backend_p95_ms"] = loc["95%"].rolling(window=rw, min_periods=1).mean()
-    loc["backend_p99_ms"] = loc["99%"].rolling(window=rw, min_periods=1).mean()
-    db["db_mean_ms"] = db["avg_db_stmt_ms"].rolling(window=rw, min_periods=1).mean()
-
-    merged = pd.merge_asof(
-        loc[
-            [
-                "Timestamp",
-                "achieved_rps",
-                "backend_mean_ms",
-                "backend_p95_ms",
-                "backend_p99_ms",
-            ]
-        ],
-        db[["ts", "db_mean_ms"]],
-        left_on="Timestamp",
-        right_on="ts",
-        direction="nearest",
-    ).dropna(
-        subset=[
-            "achieved_rps",
-            "backend_mean_ms",
-            "backend_p95_ms",
-            "backend_p99_ms",
-            "db_mean_ms",
-        ]
+    merged = _prepare_backend_db_merged(
+        stats_csv_path=str(stats_path),
+        db_csv_path=str(db_path),
+        rolling_window=rw,
     )
     if merged.empty:
         raise ValueError(f"Failed to align locust stats with db metrics for {run_dir}")
@@ -917,6 +888,88 @@ def plot_backend_vs_db_latency_for_run_dir(
     out_dir = out_dir or (run_dir / "plots")
     out_dir.mkdir(parents=True, exist_ok=True)
     out_path = out_dir / "backend_vs_db_latency_by_rps.png"
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=300, bbox_inches="tight")
+    plt.close(fig)
+    return out_path
+
+
+def plot_throughput_over_time_for_run_dir(
+    run_dir: pathlib.Path,
+    out_dir: pathlib.Path | None = None,
+    rolling_window: int = 5,
+) -> pathlib.Path:
+    """
+    Plot served vs successful throughput over time for a single per-run directory.
+
+    Uses the first bench_results_*_stats_history.csv found in run_dir.
+    """
+    run_dir = pathlib.Path(run_dir)
+    if not run_dir.exists() or not run_dir.is_dir():
+        raise FileNotFoundError(f"run_dir does not exist or is not a directory: {run_dir}")
+
+    stats_candidates = sorted(run_dir.glob("bench_results_*_stats_history.csv"))
+    if not stats_candidates:
+        raise FileNotFoundError(
+            f"No locust stats_history CSV found in {run_dir} (expected bench_results_*_stats_history.csv)"
+        )
+    stats_path = stats_candidates[0]
+
+    df = pd.read_csv(stats_path)
+    df = df[df["Name"] == "Aggregated"].copy()
+    if df.empty:
+        raise ValueError(f"No Aggregated rows in {stats_path}")
+
+    df["Timestamp"] = pd.to_numeric(df["Timestamp"], errors="coerce")
+    df["User Count"] = pd.to_numeric(df.get("User Count"), errors="coerce")
+    df["Requests/s"] = pd.to_numeric(df["Requests/s"], errors="coerce")
+    df["Failures/s"] = pd.to_numeric(df["Failures/s"], errors="coerce")
+    df = df.dropna(subset=["Timestamp", "Requests/s", "Failures/s"])
+    if df.empty:
+        raise ValueError(f"Stats history in {stats_path} is empty after numeric coercion")
+
+    # Locust timestamps are already relative seconds in stats_history; normalize anyway.
+    df = df.sort_values("Timestamp").reset_index(drop=True)
+    df["t"] = df["Timestamp"] - df["Timestamp"].min()
+    df["successful_rps"] = df["Requests/s"] - df["Failures/s"]
+    df["served_rps"] = df["Requests/s"]
+    df["failures_rps"] = df["Failures/s"]
+
+    rw = max(1, int(rolling_window))
+    df["successful_rps_smooth"] = df["successful_rps"].rolling(window=rw, min_periods=1).mean()
+    df["served_rps_smooth"] = df["served_rps"].rolling(window=rw, min_periods=1).mean()
+    df["failures_rps_smooth"] = df["failures_rps"].rolling(window=rw, min_periods=1).mean()
+
+    fig, ax = plt.subplots(figsize=(12, 6))
+    ax.plot(df["t"], df["served_rps_smooth"], color="#ff7f0e", linewidth=2.0, label="Served req/s")
+    ax.plot(df["t"], df["successful_rps_smooth"], color="#2ca02c", linewidth=2.2, label="Successful req/s")
+    ax.plot(df["t"], df["failures_rps_smooth"], color="#d62728", linewidth=1.8, linestyle="--", label="Failures/s")
+
+    ax.set_xlabel("Time (s)")
+    ax.set_ylabel("Requests/s")
+    ax.set_title(f"Throughput over time\n{run_dir}")
+    ax.grid(alpha=0.25, linestyle="--")
+
+    if "User Count" in df.columns and df["User Count"].notna().any():
+        ax_u = ax.twinx()
+        ax_u.plot(
+            df["t"],
+            df["User Count"].rolling(window=rw, min_periods=1).mean(),
+            color="#1f77b4",
+            linewidth=1.8,
+            alpha=0.7,
+            label="User count",
+        )
+        ax_u.set_ylabel("Users")
+        lines1, labels1 = ax.get_legend_handles_labels()
+        lines2, labels2 = ax_u.get_legend_handles_labels()
+        ax.legend(lines1 + lines2, labels1 + labels2, loc="upper left")
+    else:
+        ax.legend(loc="upper left")
+
+    out_dir = out_dir or (run_dir / "plots")
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_path = out_dir / "throughput_over_time.png"
     fig.tight_layout()
     fig.savefig(out_path, dpi=300, bbox_inches="tight")
     plt.close(fig)

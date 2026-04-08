@@ -179,6 +179,12 @@ def main(args: Any) -> None:
                 if getattr(args, "plot_run_out_dir", None)
                 else None,
             )
+            plot_mod.plot_throughput_over_time_for_run_dir(
+                run_dir=pathlib.Path(args.plot_run_dir),
+                out_dir=pathlib.Path(args.plot_run_out_dir)
+                if getattr(args, "plot_run_out_dir", None)
+                else None,
+            )
         else:
             task_handler.plot_bench(
                 samples=samples,
