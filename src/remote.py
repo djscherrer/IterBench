@@ -610,6 +610,7 @@ def run_remote_bench(
     env: Env,
     sample_slug: str,
     sample_dir: pathlib.Path,
+    image_cache_dir: pathlib.Path | None,
     image_id: str,
     locustfile: pathlib.Path,
     csv_prefix: pathlib.Path,
@@ -665,7 +666,10 @@ def run_remote_bench(
     # - make it easier to find logs on the LB host after a run
     lb_container_name = f"baxbench-{sample_slug}-lb"
 
-    tar_path = _save_image_tar(image_id, sample_dir, logger)
+    # Cache docker image tar at the sample-level directory (stable across perf-* runs).
+    # All other run artifacts still go to sample_dir (which is typically the perf-* run directory).
+    tar_root = image_cache_dir if image_cache_dir is not None else sample_dir
+    tar_path = _save_image_tar(image_id, tar_root, logger)
     remote_tars: dict[str, str] = {
         h: f"{remote_app_dirs[h]}/{tar_path.name}" for h in backend_hosts
     }

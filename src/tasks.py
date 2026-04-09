@@ -386,13 +386,18 @@ class Task:
     def get_sample_dir(self, results_dir: pathlib.Path, sample: int) -> pathlib.Path:
         return self.get_save_dir(results_dir) / f"sample{sample}"
 
+    def get_functional_tests_dir(
+        self, results_dir: pathlib.Path, sample: int
+    ) -> pathlib.Path:
+        return self.get_sample_dir(results_dir, sample) / "functional_tests"
+
     def get_code_dir(self, results_dir: pathlib.Path, sample: int) -> pathlib.Path:
         return self.get_sample_dir(results_dir, sample) / "code"
 
     def get_test_results_json_path(
         self, results_dir: pathlib.Path, sample: int
     ) -> pathlib.Path:
-        return self.get_sample_dir(results_dir, sample) / "test_results.json"
+        return self.get_functional_tests_dir(results_dir, sample) / "test_results.json"
 
     def get_bench_results_csv_prefix(
         self, results_dir: pathlib.Path, sample: int, user: str
@@ -485,6 +490,7 @@ class Task:
     ) -> None:
         sample_dir = self.get_sample_dir(results_dir, sample)
         sample_dir.mkdir(parents=True, exist_ok=True)
+        self.get_functional_tests_dir(results_dir, sample).mkdir(parents=True, exist_ok=True)
         test_result_path = self.get_test_results_json_path(results_dir, sample)
         with open(test_result_path, "w") as f:
             json.dump(results.to_dict(), f)
@@ -711,10 +717,10 @@ class Task:
             for sample in samples:
                 sample_dir = self.get_sample_dir(results_dir, sample)
                 if sample_dir.exists():
-                    for extension in ("*.log", "*.json"):
-                        for file_path in sample_dir.glob(extension):
-                            if file_path.is_file():
-                                file_path.unlink()
+                    # New layout: functional test artifacts live under functional_tests/.
+                    ft_dir = self.get_functional_tests_dir(results_dir, sample)
+                    if ft_dir.exists():
+                        shutil.rmtree(ft_dir, ignore_errors=True)
 
         # for each sample
         for sample in samples:
@@ -732,7 +738,9 @@ class Task:
                 continue
 
             self.get_test_results_json_path(results_dir, sample).unlink(missing_ok=True)
-            log_file = sample_dir / "test.log"
+            ft_dir = self.get_functional_tests_dir(results_dir, sample)
+            ft_dir.mkdir(parents=True, exist_ok=True)
+            log_file = ft_dir / "test.log"
             with self.create_logger(log_file) as logger:
                 image_id = self._build_image(results_dir, sample, logger)
 
@@ -775,7 +783,7 @@ class Task:
                                 ft,
                                 AppInstance(
                                     port=cr.port,
-                                    log_file_path=sample_dir / (ft.__name__ + ".log"),
+                                    log_file_path=ft_dir / (ft.__name__ + ".log"),
                                     container_id=cr.container.id,
                                     env=self.env,
                                     db_params=cr._db_params,
@@ -975,6 +983,7 @@ class Task:
                                 env=self.env,
                                 sample_slug=sample_slug,
                                 sample_dir=run_dir,
+                                image_cache_dir=self.get_sample_dir(results_dir, sample),
                                 image_id=image_id,
                                 locustfile=locustfile,
                                 csv_prefix=csv_prefix,
@@ -1366,51 +1375,59 @@ class TaskHandler:
                 task,
             ]
 
-        for (scenario,), data_s in df.groupby(["scenario"]):
-            fig, axes = plt.subplots(1, 2, figsize=(20, 8))
-            for (model,), data in data_s.groupby(["model"]):
-                plot.plot_best(data, samples, axes, self.results_dir, model)
-            if axes[0].get_legend_handles_labels()[0]:
-                axes[0].legend(title="Model")
-            if axes[1].get_legend_handles_labels()[0]:
-                axes[1].legend(title="Model")
+        # Write aggregate plots into each save_dir/aggregate_plots/ so they live next to sample*/.
+        for save_dir, df_save in df.groupby(
+            df["task"].apply(lambda t: t.get_save_dir(self.results_dir))
+        ):
+            save_dir = pathlib.Path(save_dir)
+            out_root = save_dir / "aggregate_plots"
+            out_root.mkdir(parents=True, exist_ok=True)
 
-            os.makedirs(f"{self.results_dir}/performance/by_llm", exist_ok=True)
-            fig.savefig(
-                f"{self.results_dir}/performance/by_llm/{esc(scenario)}_RPS_latency_plot.png"
+            for (scenario,), data_s in df_save.groupby(["scenario"]):
+                fig, axes = plt.subplots(1, 2, figsize=(20, 8))
+                for (model,), data in data_s.groupby(["model"]):
+                    plot.plot_best(data, samples, axes, self.results_dir, model)
+                if axes[0].get_legend_handles_labels()[0]:
+                    axes[0].legend(title="Model")
+                if axes[1].get_legend_handles_labels()[0]:
+                    axes[1].legend(title="Model")
+                by_llm = out_root / "by_llm"
+                by_llm.mkdir(parents=True, exist_ok=True)
+                fig.savefig(by_llm / f"{esc(scenario)}_RPS_latency_plot.png")
+
+                fig, axes = plt.subplots(1, 2, figsize=(20, 8))
+                for (framework,), data in data_s.groupby(["framework"]):
+                    plot.plot_best(data, samples, axes, self.results_dir, framework)
+                if axes[0].get_legend_handles_labels()[0]:
+                    axes[0].legend(title="Framework")
+                if axes[1].get_legend_handles_labels()[0]:
+                    axes[1].legend(title="Framework")
+                by_fw = out_root / "by_framework"
+                by_fw.mkdir(parents=True, exist_ok=True)
+                fig.savefig(by_fw / f"{esc(scenario)}_RPS_latency_plot.png")
+
+            plot.compare_frameworks_and_models(
+                df_save, self.results_dir, samples, output_dir=out_root
+            )
+            plot.error_rate_vs_rps_over_time(
+                df_save, self.results_dir, samples, output_dir=out_root
+            )
+            plot.detailed_single_app_performance(
+                df_save, self.results_dir, samples, output_dir=out_root
             )
 
-            fig, axes = plt.subplots(1, 2, figsize=(20, 8))
-            for (framework,), data in data_s.groupby(["framework"]):
-                plot.plot_best(data, samples, axes, self.results_dir, framework)
-            if axes[0].get_legend_handles_labels()[0]:
-                axes[0].legend(title="Framework")
-            if axes[1].get_legend_handles_labels()[0]:
-                axes[1].legend(title="Framework")
-
-            os.makedirs(f"{self.results_dir}/performance/by_framework", exist_ok=True)
-            fig.savefig(
-                f"{self.results_dir}/performance/by_framework/{esc(scenario)}_RPS_latency_plot.png"
-            )
-
-        plot.compare_frameworks_and_models(df, self.results_dir, samples)
-        plot.error_rate_vs_rps_over_time(df, self.results_dir, samples)
-        plot.detailed_single_app_performance(df, self.results_dir, samples)
-
-        # Additional aggregate plot: backend vs DB latency distribution by achieved RPS.
-        out_dir = self.results_dir / "performance" / "backend_vs_db_latency"
-        out_dir.mkdir(parents=True, exist_ok=True)
-        for task in self.tasks:
-            safe_name = (
-                f"{esc(task.scenario.id)}_{esc(task.env.id)}_{esc(task.model)}"
-            )
-            out_path = out_dir / f"{safe_name}_latency_by_rps.png"
-            plot.plot_backend_vs_db_latency_by_rps(
-                task=task,
-                samples=samples,
-                results_dir=self.results_dir,
-                out_path=str(out_path),
-            )
+            # Additional aggregate plot: backend vs DB latency distribution by achieved RPS.
+            out_dir = out_root / "backend_vs_db_latency"
+            out_dir.mkdir(parents=True, exist_ok=True)
+            for task in df_save["task"].tolist():
+                safe_name = f"{esc(task.scenario.id)}_{esc(task.env.id)}_{esc(task.model)}"
+                out_path = out_dir / f"{safe_name}_latency_by_rps.png"
+                plot.plot_backend_vs_db_latency_by_rps(
+                    task=task,
+                    samples=samples,
+                    results_dir=self.results_dir,
+                    out_path=str(out_path),
+                )
 
     def evaluate_results(
         self, samples: list[int], ks: list[int]
