@@ -10,7 +10,7 @@ load_dotenv()
 
 from env import all_envs
 from print import tasks_and_results_to_table, tasks_and_results_to_table_averages
-from remote import RemoteConfig
+from bench_models import RemoteConfig
 from scenarios import all_scenarios
 from tasks import Task, TaskHandler
 

@@ -33,7 +33,8 @@ from db_manager import PostgresConnectionParams, PostgresManager
 from env.base import COMMON_DOCKER_RUN_COMMANDS, Env
 from prompts import Prompter
 from prompts_openhands import OpenHandsPrompter
-from remote import RemoteConfig, run_remote_bench
+from bench_models import RemoteConfig
+from distributed_bench import run_remote_bench
 from scenarios.base import AppInstance, FunctionalTest, Scenario, SecurityTest
 
 
@@ -899,11 +900,6 @@ class Task:
             sample_dir = self.get_sample_dir(results_dir, sample)
             if not self.get_code_dir(results_dir, sample).exists():
                 continue
-            if (
-                self.has_any_bench_results(sample_dir, self.scenario.performance_tests[0])
-                and not force
-            ):
-                continue
 
             test_result_path = self.get_test_results_json_path(results_dir, sample)
             if not test_result_path.exists():
@@ -913,7 +909,10 @@ class Task:
                     test_result = TestResult.from_dict(json.load(f))
                     if test_result.num_passed_ft < test_result.num_total_ft:
                         continue
-            test_log_file = sample_dir / "test.log"
+            # Image id is recorded during the functional test stage.
+            # Newer layout stores it under functional_tests/test.log; keep a fallback to the old path.
+            test_log_file = self.get_functional_tests_dir(results_dir, sample) / "test.log"
+                
             pattern = re.compile(r"sha256:[0-9a-f]{64}")
             image_id = None
             try:
@@ -923,7 +922,7 @@ class Task:
                         if match:
                             image_id = match.group(0)
                             break
-            except FileNotFoundError as _:
+            except FileNotFoundError:
                 pass
             if image_id is None:
                 continue
