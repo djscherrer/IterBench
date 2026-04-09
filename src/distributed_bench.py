@@ -8,6 +8,8 @@ import subprocess
 import threading
 import time
 
+from fabric import Connection
+
 from db_manager import PostgresManager
 from env.base import Env
 from bench_models import RemoteConfig
@@ -361,6 +363,7 @@ def run_remote_bench(
         if plan.needs_db:
             remote_db_dir = config.remote_dir("db", sample_slug)
             remote_db_csv = f"{remote_db_dir}/db_performance.csv"
+            remote_db_wait_csv = f"{remote_db_dir}/db_queue.csv"
             remote_db_stop = f"{remote_db_dir}/STOP"
             remote_db_pid = f"{remote_db_dir}/sampler.pid"
             remote_exec.ssh(plan.db_host, f"mkdir -p {shlex.quote(remote_db_dir)}", logger).check_returncode()
@@ -368,12 +371,15 @@ def run_remote_bench(
                 "set -euo pipefail; "
                 f"rm -f {shlex.quote(remote_db_stop)} {shlex.quote(remote_db_pid)}; "
                 f"echo \"ts,numbackends,xact_commit,xact_rollback,tup_returned,tup_fetched,tup_inserted,tup_updated,tup_deleted,blks_read,blks_hit,blk_read_time_ms,blk_write_time_ms,stmt_calls,stmt_total_exec_time_ms\" > {shlex.quote(remote_db_csv)}; "
+                f"echo \"ts,total_conns,active_conns,waiting_conns,lock_waiting_conns,idle_in_tx_conns\" > {shlex.quote(remote_db_wait_csv)}; "
                 "(\n"
                 f"  while [ ! -f {shlex.quote(remote_db_stop)} ]; do\n"
                 "    ts=$(date +%s);\n"
                 f"    dbrow=$(docker exec {shlex.quote(ctx.db_container_name)} psql -U {PostgresManager.DEFAULT_USER} -d {PostgresManager.DEFAULT_DATABASE} -q -t -A -F ',' -c \"SELECT numbackends,xact_commit,xact_rollback,tup_returned,tup_fetched,tup_inserted,tup_updated,tup_deleted,blks_read,blks_hit,blk_read_time,blk_write_time FROM pg_stat_database WHERE datname = current_database();\" | tail -n 1 | tr -d '\\r');\n"
                 f"    stmtrow=$(docker exec {shlex.quote(ctx.db_container_name)} psql -U {PostgresManager.DEFAULT_USER} -d {PostgresManager.DEFAULT_DATABASE} -q -t -A -F ',' -c \"SELECT COALESCE(SUM(calls),0),COALESCE(SUM(total_exec_time),0) FROM pg_stat_statements;\" | tail -n 1 | tr -d '\\r');\n"
+                f"    qrow=$(docker exec {shlex.quote(ctx.db_container_name)} psql -U {PostgresManager.DEFAULT_USER} -d {PostgresManager.DEFAULT_DATABASE} -q -t -A -F ',' -c \"SELECT COUNT(*) AS total, COUNT(*) FILTER (WHERE state='active') AS active, COUNT(*) FILTER (WHERE wait_event_type IS NOT NULL) AS waiting, COUNT(*) FILTER (WHERE wait_event_type='Lock') AS lock_waiting, COUNT(*) FILTER (WHERE state='idle in transaction') AS idle_in_tx FROM pg_stat_activity WHERE datname=current_database();\" | tail -n 1 | tr -d '\\r');\n"
                 f"    echo \"${{ts}}.${{RANDOM}},${{dbrow}},${{stmtrow}}\" >> {shlex.quote(remote_db_csv)};\n"
+                f"    echo \"${{ts}}.${{RANDOM}},${{qrow}}\" >> {shlex.quote(remote_db_wait_csv)};\n"
                 "    sleep 1;\n"
                 "  done\n"
                 ") >/dev/null 2>&1 & echo $! > "
@@ -385,14 +391,41 @@ def run_remote_bench(
         remote_locustfile = f"{ctx.remote_load_dir}/{locustfile.name}"
         remote_exec.scp_to_remote(locustfile, plan.load_host, remote_locustfile, logger)
 
-        # prepare the performance logging thread
+        # Prepare performance + queue logging threads (LB + each backend + DB host).
         metrics_capture_stop_event = threading.Event()
-        # Capture performance on the LB host (default == load host), since this machine now fronts all requests.
-        metrics_capture_thread = threading.Thread(
-            target=remote_exec.capture_host_performance,
-            args=(sample_dir, plan.lb_host, logger, metrics_capture_stop_event),
-            daemon=True,
-        )
+        perf_threads: list[threading.Thread] = []
+        queue_threads: list[threading.Thread] = []
+        perf_hosts = list(plan.backend_hosts) + ([plan.db_host] if plan.needs_db else []) + [plan.lb_host]
+        # De-dupe while preserving order
+        seen: set[str] = set()
+        perf_hosts = [h for h in perf_hosts if not (h in seen or seen.add(h))]
+
+        for h in perf_hosts:
+            host_stats_dir = sample_dir / "stats" / host_slug(h)
+            host_stats_dir.mkdir(parents=True, exist_ok=True)
+            out_csv = host_stats_dir / "host_performance.csv"
+            t = threading.Thread(
+                target=remote_exec.capture_host_performance,
+                args=(sample_dir, h, logger, metrics_capture_stop_event),
+                kwargs={"out_csv": out_csv, "interval": 5},
+                daemon=True,
+            )
+            perf_threads.append(t)
+
+            ports: list[int] = []
+            if h in plan.backend_hosts or h == plan.lb_host:
+                ports.append(int(plan.app_port))
+            if plan.needs_db and h == plan.db_host:
+                ports.append(5432)
+            if ports:
+                q_csv = host_stats_dir / "socket_queue.csv"
+                qt = threading.Thread(
+                    target=remote_exec.capture_socket_queues,
+                    args=(sample_dir, h, logger, metrics_capture_stop_event),
+                    kwargs={"ports": ports, "out_csv": q_csv, "interval": 5},
+                    daemon=True,
+                )
+                queue_threads.append(qt)
         connection = Connection(plan.load_host)
 
         locust_bin = remote_exec.ensure_remote_python_env(plan.load_host, ctx.remote_env_dir, logger)
@@ -410,10 +443,16 @@ def run_remote_bench(
             "--only-summary "
         )
 
-        metrics_capture_thread.start()
+        for t in perf_threads:
+            t.start()
+        for t in queue_threads:
+            t.start()
         locust_proc = connection.run(locust_cmd, hide=True, warn=True)
         metrics_capture_stop_event.set()
-        metrics_capture_thread.join()
+        for t in perf_threads:
+            t.join()
+        for t in queue_threads:
+            t.join()
 
         logger.info("Locust output:\n%s", locust_proc)
         connection.close()
@@ -426,9 +465,11 @@ def run_remote_bench(
             except subprocess.CalledProcessError as exc:
                 logger.warning("Failed to copy remote CSV %s: %s", remote_csv, exc)
 
-        # Stop DB sampler and fetch db_performance.csv
+        # Stop DB sampler and fetch db_performance.csv + db_queue.csv
         if plan.needs_db and remote_db_csv:
             try:
+                db_stats_dir = sample_dir / "stats" / host_slug(plan.db_host)
+                db_stats_dir.mkdir(parents=True, exist_ok=True)
                 remote_exec.ssh(plan.db_host, f"bash -lc \"touch {shlex.quote(remote_db_stop)} || true\"", logger)
                 # Best-effort wait
                 remote_exec.ssh(
@@ -439,11 +480,18 @@ def run_remote_bench(
                 remote_exec.scp_from_remote(
                     plan.db_host,
                     remote_db_csv,
-                    sample_dir / "db_performance.csv",
+                    (db_stats_dir / "db_performance.csv"),
                     logger,
                 )
+                if remote_db_wait_csv:
+                    remote_exec.scp_from_remote(
+                        plan.db_host,
+                        remote_db_wait_csv,
+                        (db_stats_dir / "db_queue.csv"),
+                        logger,
+                    )
             except subprocess.CalledProcessError as exc:
-                logger.warning("Failed to fetch db_performance.csv: %s", exc)
+                logger.warning("Failed to fetch DB metrics CSVs: %s", exc)
     finally:
         # Collect container logs into sample_dir/logs (best-effort).
         # This runs even if teardown is skipped to preserve debugging evidence.

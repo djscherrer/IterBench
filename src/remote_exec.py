@@ -356,18 +356,26 @@ def stop_remote_ssh_tunnel(host: str, pidfile: str, logger: logging.Logger) -> N
     ssh(host, f"bash -lc {shlex.quote(cmd)}", logger)
 
 
-def get_cpu_usage(connection: Connection) -> Tuple[int, int]:
+def get_cpu_times(connection: Connection) -> tuple[int, int, int, int, int, int, int, int]:
     cmd = "cat /proc/stat | grep '^cpu '"
     out = connection.run(cmd, hide=True)
     if not out.ok:
-        return -1, -1
+        return (-1, -1, -1, -1, -1, -1, -1, -1)
     parts = out.stdout.split()
     nums = list(map(int, parts[1:]))
     user, nice, system, idle, iowait, irq, softirq, steal, *_ = nums + [0] * (9 - len(nums))
-    idle_all = idle + iowait
-    non_idle = user + nice + system + irq + softirq + steal
-    total = idle_all + non_idle
-    return total, idle_all
+    return (user, nice, system, idle, iowait, irq, softirq, steal)
+
+
+def get_loadavg(connection: Connection) -> tuple[float, float, float]:
+    out = connection.run("cat /proc/loadavg", hide=True)
+    if not out.ok:
+        return (-1.0, -1.0, -1.0)
+    parts = out.stdout.strip().split()
+    try:
+        return (float(parts[0]), float(parts[1]), float(parts[2]))
+    except Exception:
+        return (-1.0, -1.0, -1.0)
 
 
 def get_memory_usage(connection: Connection) -> Tuple[float, float, float]:
@@ -392,6 +400,29 @@ def get_memory_usage(connection: Connection) -> Tuple[float, float, float]:
     total_mb = total / 1024.0
     used_mb = used / 1024.0
     return used_mb, total_mb, used_pct
+
+
+def get_swap_usage(connection: Connection) -> Tuple[float, float, float]:
+    out = connection.run("cat /proc/meminfo", hide=True)
+    if not out.ok:
+        return (-1.0, -1.0, -1.0)
+    meminfo: dict[str, int] = {}
+    for line in out.stdout.splitlines():
+        if ":" not in line:
+            continue
+        key, value = line.split(":", 1)
+        value = value.strip().split()[0]
+        try:
+            meminfo[key] = int(value)
+        except ValueError:
+            pass
+    total = meminfo.get("SwapTotal", 0)
+    free = meminfo.get("SwapFree", 0)
+    used = total - free
+    used_pct = (used / total * 100.0) if total > 0 else 0.0
+    total_mb = total / 1024.0
+    used_mb = used / 1024.0
+    return (used_mb, total_mb, used_pct)
 
 
 def get_disk_usage(connection: Connection, disk: str = "sda") -> Tuple[int, int]:
@@ -427,11 +458,16 @@ def capture_host_performance(
     logger: logging.Logger,
     stop_event,
     interval: int = 10,
+    out_csv: pathlib.Path | None = None,
 ) -> None:
-    filename = sample_dir / "server_performance.csv"
+    filename = out_csv or (sample_dir / "server_performance.csv")
     with open(filename, "w") as f:
         f.write(
-            "timestamp,cpu_usage,mem_used_mbytes,mem_free_mbytes,disk_read_bps,disk_write_bps,network_rx_bytes,network_tx_bytes\n"
+            "ts_epoch_s,ts,cpu_usage_ratio,mem_used_mbytes,mem_total_mbytes,mem_used_pct,"
+            "swap_used_mbytes,swap_total_mbytes,swap_used_pct,"
+            "loadavg_1,loadavg_5,loadavg_15,"
+            "cpu_user_ratio,cpu_system_ratio,cpu_iowait_ratio,cpu_steal_ratio,"
+            "disk_read_sectors_delta,disk_write_sectors_delta,network_rx_bytes_delta,network_tx_bytes_delta\n"
         )
     connection = Connection(host)
     last_cpu_stats = None
@@ -439,14 +475,28 @@ def capture_host_performance(
     last_net_stats = None
     while not stop_event.is_set():
         loop_start = time.time()
-        cpu_stats = get_cpu_usage(connection)
+        cpu_stats = get_cpu_times(connection)
         disk_stats = get_disk_usage(connection)
         mem_stats = get_memory_usage(connection)
+        swap_stats = get_swap_usage(connection)
+        loadavg = get_loadavg(connection)
         net_stats = get_network_usage(connection)
 
-        cpu_usage = 0
+        cpu_usage = 0.0
+        cpu_user = 0.0
+        cpu_system = 0.0
+        cpu_iowait = 0.0
+        cpu_steal = 0.0
         if last_cpu_stats is not None:
-            cpu_usage = 1 - ((cpu_stats[1] - last_cpu_stats[1]) / (cpu_stats[0] - last_cpu_stats[0]))
+            # cpu_stats: user,nice,system,idle,iowait,irq,softirq,steal
+            dt = sum(cpu_stats) - sum(last_cpu_stats)
+            if dt > 0:
+                didle = (cpu_stats[3] + cpu_stats[4]) - (last_cpu_stats[3] + last_cpu_stats[4])
+                cpu_usage = 1.0 - (didle / dt)
+                cpu_user = ((cpu_stats[0] + cpu_stats[1]) - (last_cpu_stats[0] + last_cpu_stats[1])) / dt
+                cpu_system = ((cpu_stats[2] + cpu_stats[5] + cpu_stats[6]) - (last_cpu_stats[2] + last_cpu_stats[5] + last_cpu_stats[6])) / dt
+                cpu_iowait = (cpu_stats[4] - last_cpu_stats[4]) / dt
+                cpu_steal = (cpu_stats[7] - last_cpu_stats[7]) / dt
 
         disk_reads = 0
         disk_writes = 0
@@ -461,8 +511,15 @@ def capture_host_performance(
             net_tx = net_stats[1] - last_net_stats[1]
 
         with open(filename, "a") as f:
+            ts_epoch = time.time()
             ts = time.strftime("%Y-%m-%d %H:%M:%S")
-            f.write(f"{ts},{cpu_usage},{mem_stats[0]},{mem_stats[1]},{disk_reads},{disk_writes},{net_rx},{net_tx}\n")
+            f.write(
+                f"{ts_epoch:.3f},{ts},{cpu_usage},{mem_stats[0]},{mem_stats[1]},{mem_stats[2]},"
+                f"{swap_stats[0]},{swap_stats[1]},{swap_stats[2]},"
+                f"{loadavg[0]},{loadavg[1]},{loadavg[2]},"
+                f"{cpu_user},{cpu_system},{cpu_iowait},{cpu_steal},"
+                f"{disk_reads},{disk_writes},{net_rx},{net_tx}\n"
+            )
 
         last_cpu_stats = cpu_stats
         last_disk_stats = disk_stats
@@ -471,6 +528,56 @@ def capture_host_performance(
         time_to_sleep = interval - (time.time() - loop_start)
         if time_to_sleep > 0:
             time.sleep(time_to_sleep)
+    connection.close()
+
+
+def capture_socket_queues(
+    sample_dir: pathlib.Path,
+    host: str,
+    logger: logging.Logger,
+    stop_event,
+    *,
+    ports: list[int],
+    interval: int = 5,
+    out_csv: pathlib.Path | None = None,
+) -> None:
+    """
+    Capture OS-level TCP listen queue depths (Recv-Q/Send-Q) for the given ports.
+
+    This approximates "queued requests" at each tier when the bottleneck is accept/backlog.
+    """
+    filename = out_csv or (sample_dir / "socket_queues.csv")
+    with open(filename, "w") as f:
+        f.write("ts_epoch_s,ts,port,recv_q,send_q\n")
+
+    connection = Connection(host)
+    while not stop_event.is_set():
+        loop_start = time.time()
+        ts_epoch = time.time()
+        ts = time.strftime("%Y-%m-%d %H:%M:%S")
+
+        for port in ports:
+            recv_q = -1
+            send_q = -1
+            try:
+                # Example output columns: State Recv-Q Send-Q Local:Port Peer:Port
+                out = connection.run(f"ss -ltnH 'sport = :{int(port)}' || true", hide=True, warn=True)
+                line = out.stdout.strip().splitlines()[0] if out.stdout.strip() else ""
+                if line:
+                    parts = line.split()
+                    if len(parts) >= 3:
+                        recv_q = int(parts[1])
+                        send_q = int(parts[2])
+            except Exception:
+                pass
+
+            with open(filename, "a") as f:
+                f.write(f"{ts_epoch:.3f},{ts},{int(port)},{recv_q},{send_q}\n")
+
+        time_to_sleep = interval - (time.time() - loop_start)
+        if time_to_sleep > 0:
+            time.sleep(time_to_sleep)
+
     connection.close()
 
 
@@ -491,5 +598,9 @@ __all__ = [
     "stop_remote_ssh_tunnel",
     "wait_for_remote_http",
     "capture_host_performance",
+    "capture_socket_queues",
+    "get_cpu_times",
+    "get_loadavg",
+    "get_swap_usage",
 ]
 
