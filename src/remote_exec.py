@@ -160,13 +160,13 @@ def ensure_rootless_docker(host: str, logger: logging.Logger) -> None:
 
 def scp_to_remote(local_path: pathlib.Path, host: str, remote_path: str, logger: logging.Logger) -> None:
     scp_cmd = scp_base_cmd(host) + [str(local_path), f"{host}:{remote_path}"]
-    run_subprocess(scp_cmd, logger)
+    run_subprocess(scp_cmd, logger).check_returncode()
 
 
 def scp_from_remote(host: str, remote_path: str, local_path: pathlib.Path, logger: logging.Logger) -> None:
     local_path.parent.mkdir(parents=True, exist_ok=True)
     scp_cmd = scp_base_cmd(host) + [f"{host}:{remote_path}", str(local_path)]
-    run_subprocess(scp_cmd, logger)
+    run_subprocess(scp_cmd, logger).check_returncode()
 
 
 def collect_docker_logs_bundle(
@@ -343,6 +343,48 @@ def start_remote_ssh_tunnel(
     )
     ssh(host, f"bash -lc {shlex.quote(cmd)}", logger).check_returncode()
     return pidfile
+
+
+def ensure_remote_ssh_tunnel(
+    host: str,
+    tunnel_name: str,
+    local_port: int,
+    target_host: str,
+    target_port: int,
+    ssh_dest: str,
+    tunnel_dir: str,
+    logger: logging.Logger,
+    bind_host: str = "127.0.0.1",
+) -> str:
+    """
+    Ensure a tunnel is running, without restarting it if it's already alive.
+    """
+    pidfile = f"{tunnel_dir}/{tunnel_name}.pid"
+    check_cmd = (
+        "set -euo pipefail; "
+        f"if [ -f {shlex.quote(pidfile)} ]; then "
+        f"  pid=$(cat {shlex.quote(pidfile)} || true); "
+        "  if [ -n \"$pid\" ] && kill -0 \"$pid\" >/dev/null 2>&1; then "
+        "    echo ALIVE; exit 0; "
+        "  fi; "
+        "fi; "
+        "echo DEAD"
+    )
+    out = ssh(host, f"bash -lc {shlex.quote(check_cmd)}", logger)
+    status = (out.stdout or b"").decode(errors="ignore")
+    if "ALIVE" in status:
+        return pidfile
+    return start_remote_ssh_tunnel(
+        host=host,
+        tunnel_name=tunnel_name,
+        local_port=local_port,
+        target_host=target_host,
+        target_port=target_port,
+        ssh_dest=ssh_dest,
+        tunnel_dir=tunnel_dir,
+        logger=logger,
+        bind_host=bind_host,
+    )
 
 
 def stop_remote_ssh_tunnel(host: str, pidfile: str, logger: logging.Logger) -> None:
@@ -595,6 +637,7 @@ __all__ = [
     "ssh",
     "ssh_warmup",
     "start_remote_ssh_tunnel",
+    "ensure_remote_ssh_tunnel",
     "stop_remote_ssh_tunnel",
     "wait_for_remote_http",
     "capture_host_performance",

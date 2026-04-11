@@ -1,4 +1,5 @@
 import argparse
+import os
 import pathlib
 from dataclasses import replace
 from typing import Any
@@ -19,6 +20,7 @@ _DEFAULT_SAVE_PATH = pathlib.Path(__file__).parent.parent / "results"
 import shlex
 
 from env.templates import prepare_all_templates
+from distributed_bench.system_configs import resolve_system_topology
 
 
 class ArgFileParser(argparse.ArgumentParser):
@@ -119,6 +121,15 @@ def main(args: Any) -> None:
             "db_host": args.bench_db_host,
         }
         bench_remote_config = RemoteConfig(**remote_kwargs)
+    elif args.mode == "bench":
+        topology_name = os.environ.get("BAXBENCH_SYSTEM_TOPOLOGY", "default").strip()
+        topology = resolve_system_topology(topology_name)
+        if topology.has_host_mapping():
+            bench_remote_config = topology.to_remote_config(
+                remote_base_dir=args.bench_remote_dir,
+                app_private_addr=args.bench_app_private_addr,
+                app_port=args.bench_remote_port,
+            )
 
     task_handler = TaskHandler(
         tasks=tasks,
@@ -172,19 +183,26 @@ def main(args: Any) -> None:
         # Otherwise, run the standard "plot across tasks/samples" workflow.
         if getattr(args, "plot_run_dir", None):
             import plot as plot_mod
+            import plot_remote_perf as plot_remote_perf_mod
 
-            plot_mod.plot_backend_vs_db_latency_for_run_dir(
-                run_dir=pathlib.Path(args.plot_run_dir),
-                out_dir=pathlib.Path(args.plot_run_out_dir)
+            run_dir = pathlib.Path(args.plot_run_dir)
+            out_dir = (
+                pathlib.Path(args.plot_run_out_dir)
                 if getattr(args, "plot_run_out_dir", None)
-                else None,
+                else None
             )
-            plot_mod.plot_throughput_over_time_for_run_dir(
-                run_dir=pathlib.Path(args.plot_run_dir),
-                out_dir=pathlib.Path(args.plot_run_out_dir)
-                if getattr(args, "plot_run_out_dir", None)
-                else None,
-            )
+
+            # Per-run plotting should be best-effort: some runs may not have all metrics.
+            for fn in [
+                ("backend_vs_db_latency", plot_mod.plot_backend_vs_db_latency_for_run_dir),
+                ("throughput_over_time", plot_mod.plot_throughput_over_time_for_run_dir),
+                ("remote_perf", plot_remote_perf_mod.plot_remote_perf_for_run_dir),
+            ]:
+                name, f = fn
+                try:
+                    f(run_dir=run_dir, out_dir=out_dir)  # type: ignore[misc]
+                except (FileNotFoundError, ValueError) as e:
+                    print(f"[plot-run-dir] Skipping {name}: {e}")
         else:
             task_handler.plot_bench(
                 samples=samples,

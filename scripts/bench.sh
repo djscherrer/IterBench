@@ -18,9 +18,9 @@ SAFETY_PROMPT="high_performance"    # none, generic, specific, high-performance
 
 # --- 3. Locust / Load Configuration ---
 # Leave empty to use defaults
-BENCH_USERS="1000"          # Number of concurrent users
-BENCH_SPAWN_RATE="20"     # Users spawned per second
-BENCH_RUN_TIME="180"      # Duration in seconds (integer)
+BENCH_USERS="20000"          # Number of concurrent users
+BENCH_SPAWN_RATE="1000"     # Users spawned per second
+BENCH_RUN_TIME="60"      # Duration in seconds (integer)
 
 # --- 4. Remote Benchmarking (Optional) ---
 # Single-backend legacy mode (optional)
@@ -60,6 +60,15 @@ PORT=""             # Application port
 # Keep all remote artifacts (containers + ssh tunnels) after a run for debugging.
 # Values: "true" to enable, anything else disables.
 BAXBENCH_SKIP_TEARDOWN="false"
+
+# Fine-grained keep/reuse toggles for faster iteration across perf runs.
+# Values: "true" to enable, anything else disables.
+BAXBENCH_KEEP_BACKENDS="true"
+BAXBENCH_KEEP_DB="true"
+BAXBENCH_KEEP_LB="true"
+BAXBENCH_KEEP_TUNNELS="true"
+# When reusing an existing DB container, wipe the DB before the run.
+BAXBENCH_WIPE_DB_ON_REUSE="true"
 
 # --- 8. Speed / Logging Controls ---
 # Reuse SSH connections (ControlMaster) to reduce setup overhead.
@@ -141,6 +150,24 @@ if [ "$BAXBENCH_COLLECT_DOCKER_LOGS" == "true" ]; then
     EXTRA_ENV+=("BAXBENCH_COLLECT_DOCKER_LOGS=1")
 else
     EXTRA_ENV+=("BAXBENCH_COLLECT_DOCKER_LOGS=0")
+fi
+
+if [ "$BAXBENCH_KEEP_BACKENDS" == "true" ]; then
+    EXTRA_ENV+=("BAXBENCH_KEEP_BACKENDS=1")
+fi
+if [ "$BAXBENCH_KEEP_DB" == "true" ]; then
+    EXTRA_ENV+=("BAXBENCH_KEEP_DB=1")
+fi
+if [ "$BAXBENCH_KEEP_LB" == "true" ]; then
+    EXTRA_ENV+=("BAXBENCH_KEEP_LB=1")
+fi
+if [ "$BAXBENCH_KEEP_TUNNELS" == "true" ]; then
+    EXTRA_ENV+=("BAXBENCH_KEEP_TUNNELS=1")
+fi
+if [ "$BAXBENCH_WIPE_DB_ON_REUSE" == "true" ]; then
+    EXTRA_ENV+=("BAXBENCH_WIPE_DB_ON_REUSE=1")
+else
+    EXTRA_ENV+=("BAXBENCH_WIPE_DB_ON_REUSE=0")
 fi
 
 echo "Extra env: ${EXTRA_ENV[*]}"

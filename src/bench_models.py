@@ -206,7 +206,10 @@ class DistributedBenchContext:
         remote_env_dir = plan.config.remote_dir("load", ".venv")
 
         container_name = f"baxbench-{sample_slug}-{uuid.uuid4().hex[:8]}"
-        db_container_name = container_name + "-db"
+        # DB container name must be stable across runs when we reuse the DB.
+        # Otherwise `BAXBENCH_KEEP_DB=1` would keep an existing container but subsequent
+        # `docker exec <name> ...` calls would target a non-existent name.
+        db_container_name = f"baxbench-{sample_slug}-db"
         lb_container_name = f"baxbench-{sample_slug}-lb"
 
         tar_root = image_cache_dir if image_cache_dir is not None else sample_dir
