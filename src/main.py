@@ -23,6 +23,26 @@ from env.templates import prepare_all_templates
 from distributed_bench.system_configs import resolve_system_topology
 
 
+def _plot_per_run_dir_best_effort(
+    run_dir: pathlib.Path,
+    out_dir: pathlib.Path | None,
+) -> None:
+    """Per-run plots matching ``--mode plot --plot-run-dir`` (skips missing metrics)."""
+    import plot as plot_mod
+    import plot_remote_perf as plot_remote_perf_mod
+
+    run_dir = pathlib.Path(run_dir)
+    for name, fn in (
+        ("backend_vs_db_latency", plot_mod.plot_backend_vs_db_latency_for_run_dir),
+        ("throughput_over_time", plot_mod.plot_throughput_over_time_for_run_dir),
+        ("remote_perf", plot_remote_perf_mod.plot_remote_perf_for_run_dir),
+    ):
+        try:
+            fn(run_dir=run_dir, out_dir=out_dir)  # type: ignore[misc]
+        except (FileNotFoundError, ValueError) as e:
+            print(f"[plot-run-dir] Skipping {name}: {e}")
+
+
 class ArgFileParser(argparse.ArgumentParser):
     def convert_arg_line_to_args(self, arg_line: str) -> list[str]:
         return shlex.split(arg_line, comments=True, posix=True)
@@ -144,6 +164,15 @@ def main(args: Any) -> None:
 
     # ----- Run tasks -----#
 
+    def _run_plotting(*, plot_run_dir: pathlib.Path | None) -> None:
+        """Shared plotting logic for --mode plot and post-bench plotting."""
+        if plot_run_dir is not None:
+            _plot_per_run_dir_best_effort(plot_run_dir, None)
+        else:
+            task_handler.plot_bench(
+                samples=samples,
+            )
+
     if args.mode == "generate":
         task_handler.run_generation(
             batch_size=args.n_samples,
@@ -168,7 +197,7 @@ def main(args: Any) -> None:
             docker.from_env().containers.prune()
 
     elif args.mode == "bench":
-        task_handler.run_bench(
+        bench_run_dirs = task_handler.run_bench(
             samples=samples,
             timeout=args.timeout,
             num_ports=args.num_ports,
@@ -178,35 +207,13 @@ def main(args: Any) -> None:
             bench_spawn_rate=args.bench_spawn_rate,
             bench_run_time=args.bench_run_time,
         )
+        if getattr(args, "plot_after_bench", False) and bench_run_dirs:
+            for rd in bench_run_dirs:
+                print(f"[bench] Post-bench plots for {rd}")
+                _run_plotting(plot_run_dir=pathlib.Path(rd))
     elif args.mode == "plot":
-        # If a specific per-run directory is provided, plot directly from it.
-        # Otherwise, run the standard "plot across tasks/samples" workflow.
-        if getattr(args, "plot_run_dir", None):
-            import plot as plot_mod
-            import plot_remote_perf as plot_remote_perf_mod
-
-            run_dir = pathlib.Path(args.plot_run_dir)
-            out_dir = (
-                pathlib.Path(args.plot_run_out_dir)
-                if getattr(args, "plot_run_out_dir", None)
-                else None
-            )
-
-            # Per-run plotting should be best-effort: some runs may not have all metrics.
-            for fn in [
-                ("backend_vs_db_latency", plot_mod.plot_backend_vs_db_latency_for_run_dir),
-                ("throughput_over_time", plot_mod.plot_throughput_over_time_for_run_dir),
-                ("remote_perf", plot_remote_perf_mod.plot_remote_perf_for_run_dir),
-            ]:
-                name, f = fn
-                try:
-                    f(run_dir=run_dir, out_dir=out_dir)  # type: ignore[misc]
-                except (FileNotFoundError, ValueError) as e:
-                    print(f"[plot-run-dir] Skipping {name}: {e}")
-        else:
-            task_handler.plot_bench(
-                samples=samples,
-            )
+        run_dir = pathlib.Path(args.plot_run_dir) if getattr(args, "plot_run_dir", None) else None
+        _run_plotting(plot_run_dir=run_dir)
     elif args.mode == "evaluate":
         r = task_handler.evaluate_results(
             ks=ks,
@@ -238,13 +245,15 @@ if __name__ == "__main__":
         "--plot-run-dir",
         type=str,
         default=None,
-        help="Plot directly from a specific per-run directory (e.g. sample0/perf-u200-n5-180s-...).",
+        help="Plot directly from a specific per-run directory (e.g. sample0/perf-default-db-pressure-...).",
     )
     parser.add_argument(
-        "--plot-run-out-dir",
-        type=str,
-        default=None,
-        help="Optional output directory for --plot-run-dir plots. Defaults to <run_dir>/plots.",
+        "--plot-after-bench",
+        action="store_true",
+        help=(
+            "After bench mode completes, run the same per-run plots as "
+            "--plot-run-dir for each benched perf directory (best-effort)."
+        ),
     )
     parser.add_argument(
         "--temperature", type=float, default=0.2, help="Temperature for sampling"

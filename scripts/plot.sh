@@ -14,6 +14,10 @@ SAFETY_PROMPT="high_performance"    # none, generic, specific, performance, high
 ENVS="Python-Flask"
 SCENARIOS="Petstore"            
 
+# --- 2b. Per-run plotting target (optional) ---
+# If set, runs the per-run plotting path (remote perf plots, throughput-over-time, etc.)
+PLOT_RUN_DIR="results/anthropic-claude-opus-4.6/Petstore/Python-Flask/temp0.4-openapi-high_performance/sample0/perf-db-restricted-strong-db-pressure-20260411-122415"
+
 # --- 3. Global Settings ---
 RESULTS_DIR=""          # Override default results directory
 
@@ -41,6 +45,15 @@ add_arg "--safety_prompt" "$SAFETY_PROMPT"
 add_arg "--envs" "$ENVS"
 add_arg "--scenarios" "$SCENARIOS"
 add_arg "--results_dir" "$RESULTS_DIR"
+add_arg "--plot-run-dir" "$PLOT_RUN_DIR"
 
-echo "Executing: pipenv run python src/main.py ${ARGS[@]}"
-pipenv run python src/main.py "${ARGS[@]}"
+
+# Print as a single end-to-end command line (easy to copy/paste)
+CMD="pipenv run python src/main.py"
+for a in "${ARGS[@]}"; do
+  CMD+=" $(printf "%q" "$a")"
+done
+echo "Executing: $CMD"
+MPLCONFIGDIR="${MPLCONFIGDIR:-/tmp/matplotlib-${USER}}"
+export MPLCONFIGDIR
+eval "$CMD"

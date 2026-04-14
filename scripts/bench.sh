@@ -16,28 +16,20 @@ EXCLUDE_SCENARIOS=""
 TEMPERATURE="0.4"
 SAFETY_PROMPT="high_performance"    # none, generic, specific, high-performance
 
-# --- 3. Locust / Load Configuration ---
-# Leave empty to use defaults
-BENCH_USERS="20000"          # Number of concurrent users
-BENCH_SPAWN_RATE="1000"     # Users spawned per second
-BENCH_RUN_TIME="60"      # Duration in seconds (integer)
+# --- 3. Benchmark Profile ---
+# Named load profile from src/distributed_bench/load_profiles/registry.py
+# Example values currently available: default, quick-check, stress-heavy
+BAXBENCH_LOAD_PROFILE="default"
 
-# --- 4. Remote Benchmarking (Optional) ---
-# Single-backend legacy mode (optional)
-BENCH_APP_HOST=""       # e.g. user@host
-BENCH_APP_PRIVATE_ADDR=""
+# Optional one-off overrides (leave empty to use selected load profile).
+BENCH_USERS=""
+BENCH_SPAWN_RATE=""
+BENCH_RUN_TIME=""
 
-# Multi-backend mode (Option A: nginx load balancer)
-# - One backend per host (max one backend per server)
-# - DB runs on BENCH_DB_HOST (defaults to first backend host if empty)
-# - LB runs on BENCH_LB_HOST (defaults to BENCH_LOADER_HOST if empty)
-BENCH_APP_HOSTS="r630-02 r630-03 r630-04"
+# --- 4. Remote Benchmarking / Topology ---
+# Named system topology profile from src/distributed_bench/system_configs/registry.py
+BAXBENCH_SYSTEM_TOPOLOGY="default"
 
-# Load generator host (Locust client)
-BENCH_LOADER_HOST="r630-08"
-# Optional overrides
-BENCH_LB_HOST="$BENCH_LOADER_HOST"
-BENCH_DB_HOST="r630-05"
 
 # Use a stable per-user directory that is always writable, even if /tmp/baxbench
 # was created by root/another user on some machines.
@@ -46,7 +38,7 @@ BENCH_REMOTE_DIR='$HOME/.cache/baxbench'
 BENCH_REMOTE_PORT="5001"
 
 # --- 5. Bench Configuration ---
-TIMEOUT=""
+TIMEOUT="20"
 MAX_CONCURRENT_RUNS=""
 NUM_PORTS=""
 MIN_PORT=""
@@ -63,11 +55,15 @@ BAXBENCH_SKIP_TEARDOWN="false"
 
 # Fine-grained keep/reuse toggles for faster iteration across perf runs.
 # Values: "true" to enable, anything else disables.
-BAXBENCH_KEEP_BACKENDS="true"
-BAXBENCH_KEEP_DB="true"
-BAXBENCH_KEEP_LB="true"
-BAXBENCH_KEEP_TUNNELS="true"
-# When reusing an existing DB container, wipe the DB before the run.
+BAXBENCH_KEEP_BACKENDS="false"
+BAXBENCH_KEEP_DB="false"
+BAXBENCH_KEEP_LB="false"
+BAXBENCH_KEEP_TUNNELS="false"
+# Named topology profile from src/distributed_bench/system_configs/registry.py
+
+# When reusing an existing DB container (see BAXBENCH_KEEP_DB), reset application
+# data before the run: TRUNCATE public app tables (keeps schema + migration tables),
+# reset pg_stat_statements. Does not DROP SCHEMA.
 BAXBENCH_WIPE_DB_ON_REUSE="true"
 
 # --- 8. Speed / Logging Controls ---
@@ -77,6 +73,11 @@ BAXBENCH_SSH_MULTIPLEX="true"
 BAXBENCH_LOG_COMMANDS="false"
 # Collect docker logs from LB/backends/DB into results folder.
 BAXBENCH_COLLECT_DOCKER_LOGS="true"
+
+# --- Post-bench plotting (same workflow as scripts/plot.sh --plot-run-dir) ---
+# When "true", after bench finishes, generates per-run plots (backend vs DB, throughput,
+# remote perf) for each perf-* directory created in this invocation.
+PLOT_AFTER_BENCH="true"
 
 # --- Execution ---
 ARGS=("--mode" "bench")
@@ -114,13 +115,6 @@ add_arg "--safety_prompt" "$SAFETY_PROMPT"
 add_arg "--bench-users" "$BENCH_USERS"
 add_arg "--bench-spawn-rate" "$BENCH_SPAWN_RATE"
 add_arg "--bench-run-time" "$BENCH_RUN_TIME"
-
-add_arg "--bench-app-host" "$BENCH_APP_HOST"
-add_arg "--bench-app-hosts" "$BENCH_APP_HOSTS"
-add_arg "--bench-app-private-addr" "$BENCH_APP_PRIVATE_ADDR"
-add_arg "--bench-loader-host" "$BENCH_LOADER_HOST"
-add_arg "--bench-lb-host" "$BENCH_LB_HOST"
-add_arg "--bench-db-host" "$BENCH_DB_HOST"
 add_arg "--bench-remote-dir" "$BENCH_REMOTE_DIR"
 add_arg "--bench-remote-port" "$BENCH_REMOTE_PORT"
 
@@ -132,6 +126,10 @@ add_flag "--force" "$FORCE"
 
 add_arg "--results_dir" "$RESULTS_DIR"
 add_arg "--port" "$PORT"
+
+if [ "$PLOT_AFTER_BENCH" == "true" ]; then
+    ARGS+=("--plot-after-bench")
+fi
 
 echo "Executing: pipenv run python src/main.py ${ARGS[@]}"
 EXTRA_ENV=()
@@ -169,6 +167,14 @@ if [ "$BAXBENCH_WIPE_DB_ON_REUSE" == "true" ]; then
 else
     EXTRA_ENV+=("BAXBENCH_WIPE_DB_ON_REUSE=0")
 fi
+if [ -n "$BAXBENCH_SYSTEM_TOPOLOGY" ]; then
+    EXTRA_ENV+=("BAXBENCH_SYSTEM_TOPOLOGY=$BAXBENCH_SYSTEM_TOPOLOGY")
+fi
+if [ -n "$BAXBENCH_LOAD_PROFILE" ]; then
+    EXTRA_ENV+=("BAXBENCH_LOAD_PROFILE=$BAXBENCH_LOAD_PROFILE")
+fi
 
 echo "Extra env: ${EXTRA_ENV[*]}"
+MPLCONFIGDIR="${MPLCONFIGDIR:-/tmp/matplotlib-${USER}}"
+export MPLCONFIGDIR
 env "${EXTRA_ENV[@]}" pipenv run python src/main.py "${ARGS[@]}"
