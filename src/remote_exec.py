@@ -494,6 +494,29 @@ def get_network_usage(connection: Connection) -> Tuple[int, int]:
     return bytes_rx, bytes_tx
 
 
+def get_docker_stats_cpu_pct(connection: Connection, container: str) -> float | None:
+    """
+    Return Docker's CPUPerc for a single container (same scale as `docker stats`: 100% ≈ one core).
+
+    This is cgroup-aware and reflects `--cpus` / CPU quota, unlike machine-wide /proc/stat ratios.
+    """
+    name = (container or "").strip()
+    if not name:
+        return None
+    quoted = shlex.quote(name)
+    cmd = f"docker stats {quoted} --no-stream --format '{{{{.CPUPerc}}}}' 2>/dev/null"
+    result = connection.run(cmd, hide=True, warn=True)
+    if not getattr(result, "ok", False):
+        return None
+    txt = (result.stdout or "").strip().replace("%", "")
+    if not txt or txt.upper() == "N/A":
+        return None
+    try:
+        return float(txt)
+    except ValueError:
+        return None
+
+
 def capture_host_performance(
     sample_dir: pathlib.Path,
     host: str,
@@ -501,7 +524,12 @@ def capture_host_performance(
     stop_event,
     interval: int = 10,
     out_csv: pathlib.Path | None = None,
+    docker_container: str | None = None,
 ) -> None:
+    # cpu_usage_ratio is from the first line of /proc/stat (cpu): aggregate across
+    # *all* logical CPUs on the host. It is not Docker cgroup CPU and does not
+    # reflect --cpus limits on a single container. Compare container limits with
+    # `docker stats`, not this series.
     filename = out_csv or (sample_dir / "server_performance.csv")
     with open(filename, "w") as f:
         f.write(
@@ -509,7 +537,8 @@ def capture_host_performance(
             "swap_used_mbytes,swap_total_mbytes,swap_used_pct,"
             "loadavg_1,loadavg_5,loadavg_15,"
             "cpu_user_ratio,cpu_system_ratio,cpu_iowait_ratio,cpu_steal_ratio,"
-            "disk_read_sectors_delta,disk_write_sectors_delta,network_rx_bytes_delta,network_tx_bytes_delta\n"
+            "disk_read_sectors_delta,disk_write_sectors_delta,network_rx_bytes_delta,network_tx_bytes_delta,"
+            "container_cpu_pct\n"
         )
     connection = Connection(host)
     last_cpu_stats = None
@@ -552,6 +581,12 @@ def capture_host_performance(
             net_rx = net_stats[0] - last_net_stats[0]
             net_tx = net_stats[1] - last_net_stats[1]
 
+        container_pct: str = ""
+        if docker_container:
+            pct = get_docker_stats_cpu_pct(connection, docker_container)
+            if pct is not None:
+                container_pct = f"{pct:.6f}"
+
         with open(filename, "a") as f:
             ts_epoch = time.time()
             ts = time.strftime("%Y-%m-%d %H:%M:%S")
@@ -560,7 +595,7 @@ def capture_host_performance(
                 f"{swap_stats[0]},{swap_stats[1]},{swap_stats[2]},"
                 f"{loadavg[0]},{loadavg[1]},{loadavg[2]},"
                 f"{cpu_user},{cpu_system},{cpu_iowait},{cpu_steal},"
-                f"{disk_reads},{disk_writes},{net_rx},{net_tx}\n"
+                f"{disk_reads},{disk_writes},{net_rx},{net_tx},{container_pct}\n"
             )
 
         last_cpu_stats = cpu_stats

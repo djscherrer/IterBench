@@ -42,6 +42,10 @@ def esc(s: str) -> str:
     return s.replace("/", "-")
 
 
+def _slugify_run_part(s: str) -> str:
+    return "".join(ch if ch.isalnum() or ch in ("-", "_") else "-" for ch in s.strip()) or "default"
+
+
 def run_test_with_timeout(
     f: SecurityTest | FunctionalTest, app_instance: AppInstance, timeout: int
 ) -> Any:
@@ -423,14 +427,13 @@ class Task:
     ) -> pathlib.Path:
         """
         Per-run output directory within the sample folder.
-        Example: sample9/perf-u200-n5-180s-20260408-071239
+        Example: sample9/perf-default-db-pressure-20260408-071239
         """
-        users = bench_users if bench_users is not None else 1800
-        spawn = bench_spawn_rate if bench_spawn_rate is not None else 10
-        rt_s = int(bench_run_time) if bench_run_time is not None else 180
-        rt_part = f"{rt_s}s"
+        _ = (bench_users, bench_spawn_rate, bench_run_time)
+        topology = _slugify_run_part(os.environ.get("BAXBENCH_SYSTEM_TOPOLOGY", "default"))
+        load_profile = _slugify_run_part(os.environ.get("BAXBENCH_LOAD_PROFILE", "default"))
         ts = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
-        name = f"perf-u{users}-n{spawn}-{rt_part}-{ts}"
+        name = f"perf-{topology}-{load_profile}-{ts}"
         return self.get_sample_dir(results_dir, sample) / name
 
     def has_any_bench_results(self, sample_dir: pathlib.Path, user: str) -> bool:
@@ -885,7 +888,7 @@ class Task:
         bench_users: int | None = None,
         bench_spawn_rate: int | None = None,
         bench_run_time: int | None = None,
-    ) -> None:
+    ) -> list[pathlib.Path]:
         # clean the directory from bench artifacts if entered by force
         if force:
             for sample in samples:
@@ -896,6 +899,7 @@ class Task:
                         for file_path in sample_dir.glob(extension):
                             if file_path.is_file():
                                 file_path.unlink()
+        run_dirs_created: list[pathlib.Path] = []
         for sample in samples:
             sample_dir = self.get_sample_dir(results_dir, sample)
             if not self.get_code_dir(results_dir, sample).exists():
@@ -935,6 +939,7 @@ class Task:
                 bench_run_time=bench_run_time,
             )
             run_dir.mkdir(parents=True, exist_ok=True)
+            run_dirs_created.append(run_dir)
             log_file = run_dir / "bench.log"
             with self.create_logger(log_file) as logger:
                 # Check if image exists in docker
@@ -1044,6 +1049,8 @@ class Task:
 
                     logger.info("finished benchmarking sample %d", sample)
                     logger.info("-" * 100)
+
+        return run_dirs_created
 
     def evaluate_results(
         self, results_dir: pathlib.Path, samples: list[int], ks: list[int]
@@ -1325,19 +1332,19 @@ class TaskHandler:
         bench_users: int | None = None,
         bench_spawn_rate: int | None = None,
         bench_run_time: int | None = None,
-    ) -> list[int]:
+    ) -> list[pathlib.Path]:
         with multiprocessing.Manager() as manager:
             port_manager = SlotManager(manager, num_ports, min_port)
 
             with tqdm.tqdm(total=len(self.tasks)) as pbar:
 
-                def run_bench_task(index_and_task: tuple[int, Task]) -> int:
+                def run_bench_task(index_and_task: tuple[int, Task]) -> list[pathlib.Path]:
                     i, task = index_and_task
                     with pbar.get_lock():
                         pbar.set_description(
                             f"{task.model} - {task.env.language}-{task.env.framework} - {task.scenario.id}"
                         )
-                    task.bench_code(
+                    paths = task.bench_code(
                         results_dir=self.results_dir,
                         samples=samples,
                         port_manager=port_manager,
@@ -1350,10 +1357,11 @@ class TaskHandler:
                     )
                     with pbar.get_lock():  # type: ignore[no-untyped-call]
                         pbar.update(1)
-                    return 1
+                    return paths
 
                 with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-                    return list(executor.map(run_bench_task, enumerate(self.tasks)))
+                    nested = list(executor.map(run_bench_task, enumerate(self.tasks)))
+                return [p for row in nested for p in row]
 
     def plot_bench(
         self,
