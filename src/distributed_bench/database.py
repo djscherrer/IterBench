@@ -68,6 +68,7 @@ $truncate_public$;
 class DbSamplerState:
     remote_db_csv: str = ""
     remote_db_wait_csv: str = ""
+    remote_db_wait_events_csv: str = ""
     remote_db_stop: str = ""
     remote_db_pid: str = ""
 
@@ -193,6 +194,7 @@ class DatabaseManager:
         remote_db_dir = self.plan.config.remote_dir("db", self.ctx.sample_slug)
         self.sampler.remote_db_csv = f"{remote_db_dir}/db_performance.csv"
         self.sampler.remote_db_wait_csv = f"{remote_db_dir}/db_queue.csv"
+        self.sampler.remote_db_wait_events_csv = f"{remote_db_dir}/db_wait_events.csv"
         self.sampler.remote_db_stop = f"{remote_db_dir}/STOP"
         self.sampler.remote_db_pid = f"{remote_db_dir}/sampler.pid"
         remote_exec.ssh(self.plan.db_host, f"mkdir -p {shlex.quote(remote_db_dir)}", self.logger).check_returncode()
@@ -201,17 +203,24 @@ class DatabaseManager:
             f"rm -f {shlex.quote(self.sampler.remote_db_stop)} {shlex.quote(self.sampler.remote_db_pid)}; "
             f"echo \"ts,numbackends,xact_commit,xact_rollback,tup_returned,tup_fetched,tup_inserted,tup_updated,tup_deleted,blks_read,blks_hit,blk_read_time_ms,blk_write_time_ms,stmt_calls,stmt_total_exec_time_ms\" > {shlex.quote(self.sampler.remote_db_csv)}; "
             f"echo \"ts,total_conns,active_conns,waiting_conns,lock_waiting_conns,idle_in_tx_conns\" > {shlex.quote(self.sampler.remote_db_wait_csv)}; "
+            f"echo \"ts,wait_event_type,wait_event,count\" > {shlex.quote(self.sampler.remote_db_wait_events_csv)}; "
             "(\n"
             f"  while [ ! -f {shlex.quote(self.sampler.remote_db_stop)} ]; do\n"
             "    ts=$(date +%s);\n"
             f"    dbrow=$(docker exec {shlex.quote(self.ctx.db_container_name)} psql -U {PostgresManager.DEFAULT_USER} -d {PostgresManager.DEFAULT_DATABASE} -q -t -A -F ',' -c \"SELECT numbackends,xact_commit,xact_rollback,tup_returned,tup_fetched,tup_inserted,tup_updated,tup_deleted,blks_read,blks_hit,blk_read_time,blk_write_time FROM pg_stat_database WHERE datname = current_database();\" 2>/dev/null | tail -n 1 | tr -d '\\r' || true);\n"
             f"    stmtrow=$(docker exec {shlex.quote(self.ctx.db_container_name)} psql -U {PostgresManager.DEFAULT_USER} -d {PostgresManager.DEFAULT_DATABASE} -q -t -A -F ',' -c \"SELECT COALESCE(SUM(calls),0),COALESCE(SUM(total_exec_time),0) FROM pg_stat_statements;\" 2>/dev/null | tail -n 1 | tr -d '\\r' || true);\n"
             f"    qrow=$(docker exec {shlex.quote(self.ctx.db_container_name)} psql -U {PostgresManager.DEFAULT_USER} -d {PostgresManager.DEFAULT_DATABASE} -q -t -A -F ',' -c \"SELECT COUNT(*) AS total, COUNT(*) FILTER (WHERE state='active') AS active, COUNT(*) FILTER (WHERE wait_event_type IS NOT NULL) AS waiting, COUNT(*) FILTER (WHERE wait_event_type='Lock') AS lock_waiting, COUNT(*) FILTER (WHERE state='idle in transaction') AS idle_in_tx FROM pg_stat_activity WHERE datname=current_database();\" 2>/dev/null | tail -n 1 | tr -d '\\r' || true);\n"
+            f"    waitrows=$(docker exec {shlex.quote(self.ctx.db_container_name)} psql -U {PostgresManager.DEFAULT_USER} -d {PostgresManager.DEFAULT_DATABASE} -q -t -A -F ',' -c \"SELECT COALESCE(wait_event_type,'NONE') AS wait_event_type, COALESCE(wait_event,'NONE') AS wait_event, COUNT(*)::int AS count FROM pg_stat_activity WHERE datname=current_database() AND wait_event_type IS NOT NULL GROUP BY 1,2 ORDER BY 3 DESC LIMIT 20;\" 2>/dev/null | tr -d '\\r' || true);\n"
             "    if [ -z \"${dbrow}\" ]; then dbrow=\",,,,,,,,,,,\"; fi;\n"
             "    if [ -z \"${stmtrow}\" ]; then stmtrow=\"0,0\"; fi;\n"
             "    if [ -z \"${qrow}\" ]; then qrow=\"0,0,0,0,0\"; fi;\n"
             f"    echo \"${{ts}}.${{RANDOM}},${{dbrow}},${{stmtrow}}\" >> {shlex.quote(self.sampler.remote_db_csv)};\n"
             f"    echo \"${{ts}}.${{RANDOM}},${{qrow}}\" >> {shlex.quote(self.sampler.remote_db_wait_csv)};\n"
+            "    if [ -n \"${waitrows}\" ]; then\n"
+            "      if [ $((ts % 5)) -eq 0 ]; then\n"
+            f"        while IFS= read -r line; do echo \"${{ts}}.${{RANDOM}},${{line}}\" >> {shlex.quote(self.sampler.remote_db_wait_events_csv)}; done <<< \"${{waitrows}}\";\n"
+            "      fi\n"
+            "    fi\n"
             "    sleep 1;\n"
             "  done\n"
             ") >/dev/null 2>&1 & echo $! > "
@@ -245,6 +254,13 @@ class DatabaseManager:
                 self.plan.db_host,
                 self.sampler.remote_db_wait_csv,
                 (db_stats_dir / "db_queue.csv"),
+                self.logger,
+            )
+        if self.sampler.remote_db_wait_events_csv:
+            remote_exec.scp_from_remote(
+                self.plan.db_host,
+                self.sampler.remote_db_wait_events_csv,
+                (db_stats_dir / "db_wait_events.csv"),
                 self.logger,
             )
 
