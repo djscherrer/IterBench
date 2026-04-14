@@ -800,7 +800,7 @@ def plot_backend_vs_db_latency_for_run_dir(
 
     Expected files inside run_dir:
       - bench_results_*_stats_history.csv (Locust stats history)
-      - db_performance.csv
+      - stats/*/db_performance.csv (distributed bench layout)
     Optional:
       - server_performance.csv (not required for this plot)
     """
@@ -815,9 +815,10 @@ def plot_backend_vs_db_latency_for_run_dir(
         )
     stats_path = stats_candidates[0]
 
-    db_path = run_dir / "db_performance.csv"
-    if not db_path.exists():
-        raise FileNotFoundError(f"Missing db_performance.csv in {run_dir}")
+    db_paths = sorted((run_dir / "stats").glob("*/db_performance.csv"))
+    if not db_paths:
+        raise FileNotFoundError(f"Missing {run_dir}/stats/*/db_performance.csv")
+    db_path = db_paths[0]
 
     rw = max(1, int(rolling_window))
     merged = _prepare_backend_db_merged(

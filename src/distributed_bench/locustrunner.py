@@ -44,6 +44,15 @@ class LocustRunner:
         seen: set[str] = set()
         perf_hosts = [h for h in perf_hosts if not (h in seen or seen.add(h))]
 
+        def _docker_container_for_host(h: str) -> str | None:
+            if h in self.ctx.backend_container_names:
+                return self.ctx.backend_container_names[h]
+            if self.plan.needs_db and h == self.plan.db_host:
+                return self.ctx.db_container_name
+            if h == self.plan.lb_host:
+                return self.ctx.lb_container_name
+            return None
+
         for host in perf_hosts:
             host_stats_dir = self.ctx.sample_dir / "stats" / host_slug(host)
             host_stats_dir.mkdir(parents=True, exist_ok=True)
@@ -51,7 +60,11 @@ class LocustRunner:
             t = threading.Thread(
                 target=remote_exec.capture_host_performance,
                 args=(self.ctx.sample_dir, host, self.logger, metrics_capture_stop_event),
-                kwargs={"out_csv": out_csv, "interval": 5},
+                kwargs={
+                    "out_csv": out_csv,
+                    "interval": 5,
+                    "docker_container": _docker_container_for_host(host),
+                },
                 daemon=True,
             )
             perf_threads.append(t)
