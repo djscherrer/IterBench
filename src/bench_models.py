@@ -161,7 +161,6 @@ class DistributedBenchContext:
     remote_app_dirs: dict[str, str]
     remote_load_dir: str
     remote_env_dir: str
-    remote_tunnel_dir: str
 
     tar_path: pathlib.Path
     remote_tars: dict[str, str]
@@ -171,9 +170,6 @@ class DistributedBenchContext:
     db_net_host: str
 
     involved_hosts: list[str]
-
-    active_tunnels: list[tuple[str, str]]
-    active_lb_tunnels: list[tuple[str, str]]
     backend_container_names: dict[str, str]
     db_host_for_backend: dict[str, str]
     db_port_for_backend: dict[str, int]
@@ -216,11 +212,17 @@ class DistributedBenchContext:
         tar_path = remote_exec.save_image_tar(image_id, tar_root, logger)
         remote_tars: dict[str, str] = {h: f"{remote_app_dirs[h]}/{tar_path.name}" for h in plan.backend_hosts}
 
-        backend_net_hosts: dict[str, str] = {h: remote_exec.resolve_ipv4(h) for h in plan.backend_hosts}
-        lb_net_host = remote_exec.resolve_ipv4(plan.lb_host)
-        db_net_host = remote_exec.resolve_ipv4(plan.db_host) if plan.needs_db else ""
+        def _resolve_net_ip(host: str) -> str:
+            # Prefer the 10.233.* namespace in this cluster setup.
+            try:
+                return remote_exec.resolve_remote_preferred_ipv4(host, logger, preferred_prefixes=("10.233.",))
+            except Exception:
+                logger.warning("Failed to resolve preferred net IP for %s; falling back to remote primary", host)
+                return remote_exec.resolve_remote_primary_ipv4(host, logger)
 
-        remote_tunnel_dir = plan.config.remote_dir("tunnels", sample_slug)
+        resolved_backend_net_hosts = {h: _resolve_net_ip(h) for h in plan.backend_hosts}
+        resolved_lb_net_host = _resolve_net_ip(plan.lb_host)
+        resolved_db_net_host = _resolve_net_ip(plan.db_host) if plan.needs_db else ""
         involved_hosts = sorted(
             set([*plan.backend_hosts, plan.lb_host] + ([plan.db_host] if plan.needs_db else []))
         )
@@ -245,15 +247,12 @@ class DistributedBenchContext:
             remote_app_dirs=remote_app_dirs,
             remote_load_dir=remote_load_dir,
             remote_env_dir=remote_env_dir,
-            remote_tunnel_dir=remote_tunnel_dir,
             tar_path=tar_path,
             remote_tars=remote_tars,
-            backend_net_hosts=backend_net_hosts,
-            lb_net_host=lb_net_host,
-            db_net_host=db_net_host,
+            backend_net_hosts=resolved_backend_net_hosts,
+            lb_net_host=resolved_lb_net_host,
+            db_net_host=resolved_db_net_host,
             involved_hosts=involved_hosts,
-            active_tunnels=[],
-            active_lb_tunnels=[],
             backend_container_names=backend_container_names,
             db_host_for_backend={},
             db_port_for_backend={},

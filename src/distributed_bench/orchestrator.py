@@ -112,17 +112,6 @@ def _collect_docker_logs(ctx: DistributedBenchContext) -> None:
                 ctx.logger.warning("Failed to collect docker logs bundle %s from %s: %s", bname, host, exc)
 
 
-def _cleanup_tunnels(ctx: DistributedBenchContext, toggles: RuntimeToggles) -> None:
-    if toggles.keep_tunnels:
-        ctx.logger.info("Keeping SSH tunnels (BAXBENCH_KEEP_TUNNELS=1)")
-        return
-    for tunnel_host, pidfile in ctx.active_tunnels:
-        try:
-            remote_exec.stop_remote_ssh_tunnel(tunnel_host, pidfile, ctx.logger)
-        except subprocess.CalledProcessError as exc:
-            ctx.logger.warning("Failed to cleanup tunnel %s on %s: %s", pidfile, tunnel_host, exc)
-
-
 def run_remote_bench(
     config: RemoteConfig,
     env: Env,
@@ -158,6 +147,7 @@ def run_remote_bench(
         bench_spawn_rate=load_profile.spawn_rate,
         bench_run_time=load_profile.run_time_s,
     )
+
     ctx = DistributedBenchContext.create(
         plan=plan,
         sample_slug=sample_slug,
@@ -191,6 +181,12 @@ def run_remote_bench(
         plan.load_host,
         ctx.container_name,
         plan.app_port,
+    )
+    logger.info(
+        "Resolved net IPs lb=%s db=%s backends=%s",
+        ctx.lb_net_host,
+        ctx.db_net_host if plan.needs_db else "(none)",
+        ",".join(f"{h}={ctx.backend_net_hosts[h]}" for h in plan.backend_hosts),
     )
 
     backend_mgr = BackendManager(
@@ -232,7 +228,6 @@ def run_remote_bench(
             keep_backends=toggles.keep_backends,
             keep_db=toggles.keep_db,
             keep_lb=toggles.keep_lb,
-            keep_tunnels=toggles.keep_tunnels,
         )
     with phase(logger, "Stage image tar to backends", extra=f"image={image_id} backends={len(plan.backend_hosts)}"):
         stage_image_to_backends(ctx)
@@ -240,7 +235,7 @@ def run_remote_bench(
     if db_mgr:
         with phase(logger, "DB setup/reuse", extra=f"host={plan.db_host} keep_db={int(toggles.keep_db)}"):
             db_mgr.setup_or_reuse()
-        with phase(logger, "Start/ensure DB tunnels", extra=f"keep_tunnels={int(toggles.keep_tunnels)}"):
+        with phase(logger, "Configure DB connectivity", extra="direct"):
             db_mgr.configure_backend_connectivity()
 
     with phase(logger, "Start/reuse backends", extra=f"count={len(plan.backend_hosts)} keep_backends={int(toggles.keep_backends)}"):
@@ -251,7 +246,7 @@ def run_remote_bench(
     try:
         with phase(logger, "Wait for backends ready"):
             backend_mgr.wait_ready()
-        with phase(logger, "Start/ensure LB tunnels", extra=f"count={len(plan.backend_hosts)} keep_tunnels={int(toggles.keep_tunnels)}"):
+        with phase(logger, "Start/reuse LB", extra="direct"):
             with phase(logger, "LB config + start/reuse", extra=f"host={plan.lb_host} keep_lb={int(toggles.keep_lb)}"):
                 lb_mgr.setup_or_reuse()
         with phase(logger, "Wait for LB ready"):
@@ -297,7 +292,6 @@ def run_remote_bench(
             )
             return
 
-        _cleanup_tunnels(ctx, toggles)
         lb_mgr.cleanup()
         backend_mgr.cleanup()
         if db_mgr:

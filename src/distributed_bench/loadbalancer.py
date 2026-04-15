@@ -1,10 +1,9 @@
 from __future__ import annotations
 
-import concurrent.futures
 import shlex
 
 import remote_exec
-from bench_models import DistributedBenchContext, host_slug
+from bench_models import DistributedBenchContext
 from env.base import Env
 
 from .config import RuntimeToggles
@@ -32,39 +31,12 @@ class LoadBalancerManager:
         self.nginx_log_path_host = ""
         self.nginx_log_path_container = "/tmp/nginx_access_timing.csv"
 
-    def _ensure_lb_tunnels(self) -> tuple[str, list[tuple[str, int]]]:
-        lb_host_ip = self.ctx.lb_net_host
-        if lb_host_ip.startswith("127."):
-            lb_host_ip = remote_exec.resolve_remote_primary_ipv4(self.plan.lb_host, self.logger)
-
-        def _start_lb_tunnel(idx_h: tuple[int, str]) -> tuple[str, int, str]:
-            _idx, host = idx_h
-            local_lb_port = self.runtime.stable_port(17001, f"lb:{self.ctx.sample_slug}:{host}:{self.plan.lb_host}")
-            tunnel_name = f"lb-{self.ctx.sample_slug}-{host_slug(host)}"
-            tunnel_fn = remote_exec.ensure_remote_ssh_tunnel if self.toggles.keep_tunnels else remote_exec.start_remote_ssh_tunnel
-            pidfile = tunnel_fn(
-                host=self.plan.lb_host,
-                tunnel_name=tunnel_name,
-                local_port=local_lb_port,
-                target_host="127.0.0.1",
-                target_port=self.plan.app_port,
-                ssh_dest=host,
-                tunnel_dir=self.ctx.remote_tunnel_dir,
-                logger=self.logger,
-                bind_host="0.0.0.0",
-            )
-            return (host, local_lb_port, pidfile)
-
-        endpoints: list[tuple[str, int]] = []
-        with concurrent.futures.ThreadPoolExecutor(max_workers=min(16, len(self.plan.backend_hosts) or 1)) as ex:
-            for _h, local_lb_port, pidfile in ex.map(_start_lb_tunnel, list(enumerate(self.plan.backend_hosts))):
-                self.ctx.active_tunnels.append((self.plan.lb_host, pidfile))
-                self.ctx.active_lb_tunnels.append((self.plan.lb_host, pidfile))
-                endpoints.append((lb_host_ip, local_lb_port))
-        return lb_host_ip, endpoints
+    def _backend_endpoints(self) -> list[tuple[str, int]]:
+        # Direct connectivity: LB proxies to each backend host directly.
+        return [(self.ctx.backend_net_hosts[h], self.plan.app_port) for h in self.plan.backend_hosts]
 
     def setup_or_reuse(self) -> None:
-        _lb_host_ip, endpoints = self._ensure_lb_tunnels()
+        endpoints = self._backend_endpoints()
         upstream = "\n".join(f"        server {host}:{port};" for host, port in endpoints)
         self.nginx_log_path_host = f"{self.plan.config.remote_dir('lb', self.ctx.sample_slug)}/nginx_access_timing.csv"
         nginx_conf = (

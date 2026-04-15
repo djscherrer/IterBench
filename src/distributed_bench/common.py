@@ -35,7 +35,6 @@ def preclean_hosts(
     keep_backends: bool,
     keep_db: bool,
     keep_lb: bool,
-    keep_tunnels: bool,
 ) -> None:
     def _preclean_host(host: str) -> None:
         paths: list[str] = []
@@ -43,8 +42,6 @@ def preclean_hosts(
             paths.append(ctx.remote_app_dirs[host])
         if (not keep_lb) and host == ctx.plan.lb_host:
             paths.append(ctx.plan.config.remote_dir("lb", ctx.sample_slug))
-        if (not keep_tunnels) and host == ctx.plan.lb_host:
-            paths.append(ctx.plan.config.remote_dir("tunnels", ctx.sample_slug))
         if host == ctx.plan.load_host:
             paths.append(ctx.remote_load_dir)
         if ctx.plan.needs_db and (not keep_db) and host == ctx.plan.db_host:

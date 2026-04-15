@@ -26,7 +26,6 @@ class RuntimeToggles:
     keep_backends: bool
     keep_db: bool
     keep_lb: bool
-    keep_tunnels: bool
     wipe_db_on_reuse: bool
     skip_teardown: bool
     ssh_multiplex: bool
@@ -42,7 +41,6 @@ class RuntimeToggles:
             keep_backends=_env_bool("BAXBENCH_KEEP_BACKENDS", False),
             keep_db=_env_bool("BAXBENCH_KEEP_DB", False),
             keep_lb=_env_bool("BAXBENCH_KEEP_LB", False),
-            keep_tunnels=_env_bool("BAXBENCH_KEEP_TUNNELS", False),
             wipe_db_on_reuse=_env_bool("BAXBENCH_WIPE_DB_ON_REUSE", True),
             skip_teardown=_env_bool("BAXBENCH_SKIP_TEARDOWN", False),
             ssh_multiplex=_env_bool("BAXBENCH_SSH_MULTIPLEX", False),

@@ -13,7 +13,6 @@ import os
 import pathlib
 import re
 import shlex
-import socket
 import subprocess
 import tarfile
 import tempfile
@@ -283,17 +282,6 @@ def wait_for_remote_http(
     raise TimeoutError(f"Remote server {host}:{port} did not respond within {wait_budget} seconds") from last_exc
 
 
-def resolve_ipv4(hostname: str) -> str:
-    try:
-        info = socket.getaddrinfo(hostname, None, family=socket.AF_INET)
-        return info[0][4][0]
-    except socket.gaierror as exc:
-        raise ValueError(
-            f"Unable to resolve '{hostname}' to an IPv4 address on the orchestrator. "
-            "Pass a DNS-resolvable hostname or an explicit IP."
-        ) from exc
-
-
 def resolve_remote_primary_ipv4(host: str, logger: logging.Logger) -> str:
     cmd = (
         "set -euo pipefail; "
@@ -312,90 +300,41 @@ def resolve_remote_primary_ipv4(host: str, logger: logging.Logger) -> str:
     return ip
 
 
-def start_remote_ssh_tunnel(
-    host: str,
-    tunnel_name: str,
-    local_port: int,
-    target_host: str,
-    target_port: int,
-    ssh_dest: str,
-    tunnel_dir: str,
-    logger: logging.Logger,
-    bind_host: str = "127.0.0.1",
-) -> str:
-    pidfile = f"{tunnel_dir}/{tunnel_name}.pid"
-    cmd = (
-        "set -euo pipefail; "
-        f"mkdir -p {shlex.quote(tunnel_dir)}; "
-        f"if [ -f {shlex.quote(pidfile)} ]; then "
-        f"  kill $(cat {shlex.quote(pidfile)}) >/dev/null 2>&1 || true; "
-        f"  rm -f {shlex.quote(pidfile)}; "
-        "fi; "
-        "nohup ssh "
-        "-o ExitOnForwardFailure=yes "
-        "-o StrictHostKeyChecking=accept-new "
-        "-o ServerAliveInterval=30 "
-        "-o ServerAliveCountMax=3 "
-        f"-N -L {bind_host}:{local_port}:{target_host}:{target_port} "
-        f"{shlex.quote(ssh_dest)} "
-        ">/dev/null 2>&1 & "
-        f"echo $! > {shlex.quote(pidfile)}"
-    )
-    ssh(host, f"bash -lc {shlex.quote(cmd)}", logger).check_returncode()
-    return pidfile
+def _is_preferred_ipv4(ip: str, preferred_prefixes: tuple[str, ...]) -> bool:
+    return any(ip.startswith(pfx) for pfx in preferred_prefixes)
 
 
-def ensure_remote_ssh_tunnel(
+def resolve_remote_preferred_ipv4(
     host: str,
-    tunnel_name: str,
-    local_port: int,
-    target_host: str,
-    target_port: int,
-    ssh_dest: str,
-    tunnel_dir: str,
     logger: logging.Logger,
-    bind_host: str = "127.0.0.1",
+    *,
+    preferred_prefixes: tuple[str, ...] = ("10.233.",),
 ) -> str:
     """
-    Ensure a tunnel is running, without restarting it if it's already alive.
+    Resolve an IPv4 address *on the remote host*.
+
+    Policy:
+    - Query all global IPv4 addresses on the remote host.
+    - Prefer the first address matching any prefix in preferred_prefixes (default: 10.233.*).
+    - Otherwise fall back to the first non-loopback global IPv4.
+    - Otherwise fall back to the primary route source IP.
     """
-    pidfile = f"{tunnel_dir}/{tunnel_name}.pid"
-    check_cmd = (
-        "set -euo pipefail; "
-        f"if [ -f {shlex.quote(pidfile)} ]; then "
-        f"  pid=$(cat {shlex.quote(pidfile)} || true); "
-        "  if [ -n \"$pid\" ] && kill -0 \"$pid\" >/dev/null 2>&1; then "
-        "    echo ALIVE; exit 0; "
-        "  fi; "
-        "fi; "
-        "echo DEAD"
-    )
-    out = ssh(host, f"bash -lc {shlex.quote(check_cmd)}", logger)
-    status = (out.stdout or b"").decode(errors="ignore")
-    if "ALIVE" in status:
-        return pidfile
-    return start_remote_ssh_tunnel(
-        host=host,
-        tunnel_name=tunnel_name,
-        local_port=local_port,
-        target_host=target_host,
-        target_port=target_port,
-        ssh_dest=ssh_dest,
-        tunnel_dir=tunnel_dir,
-        logger=logger,
-        bind_host=bind_host,
-    )
-
-
-def stop_remote_ssh_tunnel(host: str, pidfile: str, logger: logging.Logger) -> None:
     cmd = (
         "set -euo pipefail; "
-        f"if [ -f {shlex.quote(pidfile)} ]; then "
-        f"  kill $(cat {shlex.quote(pidfile)}) >/dev/null 2>&1 || true; "
-        f"  rm -f {shlex.quote(pidfile)}; "
-        "fi"
+        # List all non-loopback global IPv4 addresses (no CIDR), one per line.
+        "ip -4 -o addr show scope global | awk '{print $4}' | cut -d/ -f1 || true"
     )
-    ssh(host, f"bash -lc {shlex.quote(cmd)}", logger)
+    out = ssh(host, f"bash -lc {shlex.quote(cmd)}", logger)
+    out.check_returncode()
+    text = (out.stdout or b"").decode(errors="ignore")
+    ips = re.findall(r"\b(?:\d{1,3}\.){3}\d{1,3}\b", text)
+    ips = [ip for ip in ips if ip and not ip.startswith("127.")]
+    preferred = [ip for ip in ips if _is_preferred_ipv4(ip, preferred_prefixes)]
+    if preferred:
+        return preferred[0]
+    if ips:
+        return ips[0]
+    return resolve_remote_primary_ipv4(host, logger)
 
 
 def get_cpu_times(connection: Connection) -> tuple[int, int, int, int, int, int, int, int]:
@@ -664,16 +603,13 @@ __all__ = [
     "collect_docker_logs_bundle",
     "ensure_remote_python_env",
     "ensure_rootless_docker",
-    "resolve_ipv4",
     "resolve_remote_primary_ipv4",
+    "resolve_remote_preferred_ipv4",
     "save_image_tar",
     "scp_from_remote",
     "scp_to_remote",
     "ssh",
     "ssh_warmup",
-    "start_remote_ssh_tunnel",
-    "ensure_remote_ssh_tunnel",
-    "stop_remote_ssh_tunnel",
     "wait_for_remote_http",
     "capture_host_performance",
     "capture_socket_queues",

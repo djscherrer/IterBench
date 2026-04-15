@@ -1,11 +1,10 @@
 from __future__ import annotations
 
-import concurrent.futures
 import shlex
 from dataclasses import dataclass
 
 import remote_exec
-from bench_models import DistributedBenchContext, host_slug
+from bench_models import DistributedBenchContext
 from db_manager import PostgresManager
 
 from .config import RuntimeToggles
@@ -156,39 +155,11 @@ class DatabaseManager:
             )
 
     def configure_backend_connectivity(self) -> None:
-        tunnel_jobs: list[tuple[int, str]] = []
-        for idx, host in enumerate(self.plan.backend_hosts):
-            if host == self.plan.db_host:
-                self.ctx.db_host_for_backend[host] = self.ctx.db_net_host
-                self.ctx.db_port_for_backend[host] = 5432
-            else:
-                tunnel_jobs.append((idx, host))
-
-        def _start_db_tunnel(job: tuple[int, str]) -> tuple[str, str, int]:
-            _idx, host = job
-            local_db_port = self.runtime.stable_port(15432, f"db:{self.ctx.sample_slug}:{host}:{self.plan.db_host}")
-            tunnel_name = f"db-{self.ctx.sample_slug}-{host_slug(host)}"
-            tunnel_fn = remote_exec.ensure_remote_ssh_tunnel if self.toggles.keep_tunnels else remote_exec.start_remote_ssh_tunnel
-            pidfile = tunnel_fn(
-                host=host,
-                tunnel_name=tunnel_name,
-                local_port=local_db_port,
-                target_host="127.0.0.1",
-                target_port=5432,
-                ssh_dest=self.plan.db_host,
-                tunnel_dir=self.ctx.remote_tunnel_dir,
-                logger=self.logger,
-                bind_host="0.0.0.0",
-            )
-            return (host, pidfile, local_db_port)
-
-        if not tunnel_jobs:
-            return
-        with concurrent.futures.ThreadPoolExecutor(max_workers=min(16, len(tunnel_jobs) or 1)) as ex:
-            for host, pidfile, local_db_port in ex.map(_start_db_tunnel, tunnel_jobs):
-                self.ctx.active_tunnels.append((host, pidfile))
-                self.ctx.db_host_for_backend[host] = self.ctx.backend_net_hosts[host]
-                self.ctx.db_port_for_backend[host] = local_db_port
+        # Direct connectivity: every backend talks directly to the DB host over the network.
+        # (No per-backend SSH port-forward tunnels.)
+        for host in self.plan.backend_hosts:
+            self.ctx.db_host_for_backend[host] = self.ctx.db_net_host
+            self.ctx.db_port_for_backend[host] = 5432
 
     def start_sampler(self) -> None:
         remote_db_dir = self.plan.config.remote_dir("db", self.ctx.sample_slug)
