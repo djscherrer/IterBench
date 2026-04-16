@@ -122,13 +122,13 @@ def _docker_cpu_saturation_pct_by_stats_host(run_dir: pathlib.Path) -> dict[str,
     lb = _cap_perc(topo.get("lb_resources") or {})
 
     out: dict[str, float] = {}
-    for h in erc.get("app_hosts") or []:
+    for h in erc.get("backend_hosts") or []:
         slug = host_slug(str(h))
         if be is not None:
             out[slug] = be
-    dh = erc.get("db_host")
-    if dh and db is not None:
-        out[host_slug(str(dh))] = db
+    dhs = erc.get("db_hosts") or []
+    if dhs and db is not None:
+        out[host_slug(str(dhs[0]))] = db
     lh = erc.get("lb_host")
     if lh and lb is not None:
         out[host_slug(str(lh))] = lb

@@ -97,11 +97,12 @@ def _collect_docker_logs(ctx: DistributedBenchContext) -> None:
         )
 
     jobs: list[tuple[str, str, list[str]]] = []
-    jobs.append((ctx.plan.lb_host, f"lb-{ctx.sample_slug}", [ctx.lb_container_name]))
+    if ctx.plan.lb_host:
+        jobs.append((ctx.plan.lb_host, f"lb-{ctx.sample_slug}", [ctx.lb_container_name]))
     for host, cname in ctx.backend_container_names.items():
         jobs.append((host, f"app-{ctx.sample_slug}-{host_slug(host)}", [cname]))
     if ctx.plan.needs_db:
-        jobs.append((ctx.plan.db_host, f"db-{ctx.sample_slug}", [ctx.db_container_name]))
+        jobs.append((ctx.plan.db_hosts[0], f"db-{ctx.sample_slug}", [ctx.db_container_name]))
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=min(8, len(jobs) or 1)) as ex:
         futs = [ex.submit(_collect_one, host, bname, cnames) for (host, bname, cnames) in jobs]
@@ -176,16 +177,16 @@ def run_remote_bench(
     logger.info(
         "Using remote hosts backends=%s db=%s lb=%s load=%s, container=%s, port=%d",
         ",".join(plan.backend_hosts),
-        plan.db_host if plan.needs_db else "(none)",
-        plan.lb_host,
-        plan.load_host,
+        ",".join(plan.db_hosts) if plan.needs_db else "(none)",
+        plan.lb_host or "(none)",
+        ",".join(plan.load_hosts),
         ctx.container_name,
         plan.app_port,
     )
     logger.info(
         "Resolved net IPs lb=%s db=%s backends=%s",
-        ctx.lb_net_host,
-        ctx.db_net_host if plan.needs_db else "(none)",
+        ctx.lb_net_host or "(none)",
+        (f"{plan.db_hosts[0]}={ctx.db_net_host}" if plan.needs_db else "(none)"),
         ",".join(f"{h}={ctx.backend_net_hosts[h]}" for h in plan.backend_hosts),
     )
 
@@ -206,12 +207,16 @@ def run_remote_bench(
         if plan.needs_db
         else None
     )
-    lb_mgr = LoadBalancerManager(
-        ctx=ctx,
-        env=env,
-        runtime=runtime,
-        toggles=toggles,
-        system_topology=system_topology,
+    lb_mgr = (
+        LoadBalancerManager(
+            ctx=ctx,
+            env=env,
+            runtime=runtime,
+            toggles=toggles,
+            system_topology=system_topology,
+        )
+        if plan.lb_host
+        else None
     )
     locust_runner = LocustRunner(
         ctx=ctx,
@@ -233,7 +238,7 @@ def run_remote_bench(
         stage_image_to_backends(ctx)
 
     if db_mgr:
-        with phase(logger, "DB setup/reuse", extra=f"host={plan.db_host} keep_db={int(toggles.keep_db)}"):
+        with phase(logger, "DB setup/reuse", extra=f"host={plan.db_hosts[0]} keep_db={int(toggles.keep_db)}"):
             db_mgr.setup_or_reuse()
         with phase(logger, "Configure DB connectivity", extra="direct"):
             db_mgr.configure_backend_connectivity()
@@ -246,11 +251,12 @@ def run_remote_bench(
     try:
         with phase(logger, "Wait for backends ready"):
             backend_mgr.wait_ready()
-        with phase(logger, "Start/reuse LB", extra="direct"):
-            with phase(logger, "LB config + start/reuse", extra=f"host={plan.lb_host} keep_lb={int(toggles.keep_lb)}"):
-                lb_mgr.setup_or_reuse()
-        with phase(logger, "Wait for LB ready"):
-            lb_mgr.wait_ready()
+        if lb_mgr is not None:
+            with phase(logger, "Start/reuse LB", extra="direct"):
+                with phase(logger, "LB config + start/reuse", extra=f"host={plan.lb_host} keep_lb={int(toggles.keep_lb)}"):
+                    lb_mgr.setup_or_reuse()
+            with phase(logger, "Wait for LB ready"):
+                lb_mgr.wait_ready()
 
         if db_mgr:
             db_mgr.start_sampler()
@@ -263,8 +269,14 @@ def run_remote_bench(
                 f"runtime={plan.locust_run_time} procs={load_profile.locust_processes}"
             ),
         ):
-            locust_runner.run(lb_target_for_load=lb_mgr.lb_target_for_loader())
+            if lb_mgr is not None:
+                locust_runner.run(load_targets={h: lb_mgr.lb_target_for_loader(h) for h in plan.load_hosts})
+            else:
+                # Validated in DistributedBenchPlan.__post_init__: exactly one backend when no LB.
+                only_backend = plan.backend_hosts[0]
+                locust_runner.run(load_targets={h: ctx.backend_net_hosts[only_backend] for h in plan.load_hosts})
 
+        # Access logs from DB and LB
         if db_mgr:
             try:
                 with phase(logger, "Stop DB sampler + copy DB CSVs"):
@@ -272,11 +284,12 @@ def run_remote_bench(
             except subprocess.CalledProcessError as exc:
                 logger.warning("Failed to fetch DB metrics CSVs: %s", exc)
 
-        try:
-            with phase(logger, "Copy LB timing access log"):
-                lb_mgr.copy_timing_access_log()
-        except Exception as exc:
-            logger.warning("Failed to fetch LB timing access log: %s", exc)
+        if lb_mgr is not None:
+            try:
+                with phase(logger, "Copy LB timing access log"):
+                    lb_mgr.copy_timing_access_log()
+            except Exception as exc:
+                logger.warning("Failed to fetch LB timing access log: %s", exc)
     finally:
         if toggles.collect_docker_logs:
             try:
@@ -292,7 +305,8 @@ def run_remote_bench(
             )
             return
 
-        lb_mgr.cleanup()
+        if lb_mgr is not None:
+            lb_mgr.cleanup()
         backend_mgr.cleanup()
         if db_mgr:
             db_mgr.cleanup()

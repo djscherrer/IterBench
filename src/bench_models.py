@@ -21,43 +21,52 @@ def host_slug(host: str) -> str:
 
 @dataclass
 class RemoteConfig:
-    app_host: str
-    load_host: str
+    backend_hosts: tuple[str, ...]
+    load_hosts: tuple[str, ...]
     remote_base_dir: str
-    app_private_addr: str | None = None
-    app_hosts: list[str] | None = None
-    app_port: int | None = None
+    
     lb_host: str | None = None
-    db_host: str | None = None
+    db_hosts: tuple[str, ...] = ()
+    app_private_addr: str | None = None
+    app_port: int | None = None
     max_startup_wait: float | None = None
     poll_interval: float = 0.5
     request_timeout: float = 2.0
 
     def __post_init__(self) -> None:
-        if not self.app_host and not self.app_hosts:
-            raise ValueError("Remote bench requires an app host or app hosts")
-        if not self.load_host:
-            raise ValueError("Remote bench requires a load host")
+        self.backend_hosts = tuple(str(h).strip() for h in self.backend_hosts if str(h).strip())
+        self.load_hosts = tuple(str(h).strip() for h in self.load_hosts if str(h).strip())
+        self.db_hosts = tuple(str(h).strip() for h in self.db_hosts if str(h).strip())
+        if self.lb_host is not None and not str(self.lb_host).strip():
+            self.lb_host = ""
 
-        if self.app_hosts is not None and len(self.app_hosts) == 0:
-            raise ValueError("--bench-app-hosts must not be empty when provided")
+        if not self.backend_hosts:
+            raise ValueError("Remote bench requires at least one backend host")
+        if not self.load_hosts:
+            raise ValueError("Remote bench requires at least one load host")
 
-    def selected_backend_hosts(self) -> list[str]:
-        hosts = self.app_hosts if self.app_hosts is not None else [self.app_host]
-        if not hosts:
-            return []
-        return list(hosts)
+    @property
+    def backend_host_master(self) -> str:
+        return self.backend_hosts[0]
 
-    def selected_db_host(self) -> str:
-        if self.db_host:
-            return self.db_host
-        backends = self.selected_backend_hosts()
-        if not backends:
-            raise ValueError("No backend hosts available to select a db host")
-        return backends[0]
+    @property
+    def load_host_master(self) -> str:
+        return self.load_hosts[0]
 
-    def selected_lb_host(self) -> str:
-        return self.lb_host or self.load_host
+    @property
+    def db_host_master(self) -> str:
+        if not self.db_hosts:
+            raise ValueError("No db_hosts configured")
+        return self.db_hosts[0]
+
+    def effective_lb_host(self) -> str:
+        # lb_host semantics:
+        # - None: legacy default, assume LB runs on the master load host
+        # - "": explicitly no LB
+        # - "<host>": dedicated LB host
+        if self.lb_host is None:
+            return self.load_host_master
+        return str(self.lb_host)
 
     def remote_dir(self, *parts: str) -> str:
         base = self.remote_base_dir.rstrip("/")
@@ -82,16 +91,25 @@ class DistributedBenchPlan:
     app_port: int
 
     backend_hosts: tuple[str, ...]
-    load_host: str
+    load_hosts: tuple[str, ...]
     lb_host: str
-    db_host: str
+    db_hosts: tuple[str, ...]
 
     def __post_init__(self) -> None:
         if not self.backend_hosts:
             raise ValueError("No backend hosts selected for remote benchmarking")
+        if not self.load_hosts:
+            raise ValueError("No load hosts selected for remote benchmarking")
+        if self.needs_db and not self.db_hosts:
+            raise ValueError("DB is required but no db_hosts were selected for remote benchmarking")
+        if self.needs_db and len(self.db_hosts) != 1:
+            raise ValueError(
+                "Currently only a single DB is supported for distributed benchmarking. "
+                f"Got db_hosts={self.db_hosts}"
+            )
         bad = [
             h
-            for h in ([*self.backend_hosts, self.lb_host] + ([self.db_host] if self.needs_db else []))
+            for h in ([*self.backend_hosts, self.lb_host] + (list(self.db_hosts) if self.needs_db else []))
             if "@" in h
         ]
         if bad:
@@ -100,6 +118,22 @@ class DistributedBenchPlan:
                 f"Got: {bad}. "
                 "Recommendation: add host aliases in ~/.ssh/config and use those aliases here."
             )
+
+        # If there is no dedicated load balancer, load must go directly to exactly one backend.
+        # (Multi-backend without LB is ambiguous and would require client-side sharding.)
+        if (not self.lb_host) and len(self.backend_hosts) != 1:
+            raise ValueError(
+                "No load balancer configured (lb_host is empty), but multiple backends were selected. "
+                "Either configure lb_host or select exactly one backend host."
+            )
+
+    @property
+    def db_host(self) -> str:
+        return self.db_hosts[0] if self.db_hosts else ""
+
+    @property
+    def load_host_master(self) -> str:
+        return self.load_hosts[0] if self.load_hosts else ""
 
     @property
     def locust_run_time(self) -> str:
@@ -116,10 +150,10 @@ class DistributedBenchPlan:
         bench_spawn_rate: int | None,
         bench_run_time: int | None,
     ) -> "DistributedBenchPlan":
-        backend_hosts = tuple(config.selected_backend_hosts())
-        load_host = config.load_host
-        lb_host = config.selected_lb_host()
-        db_host = config.selected_db_host() if needs_db else ""
+        backend_hosts = tuple(config.backend_hosts)
+        load_hosts = tuple(config.load_hosts)
+        lb_host = config.effective_lb_host()
+        db_hosts = tuple(config.db_hosts) if needs_db else ()
 
         bu = int(bench_users) if bench_users is not None else 7200
         bsr = int(bench_spawn_rate) if bench_spawn_rate is not None else 40
@@ -136,9 +170,9 @@ class DistributedBenchPlan:
             bench_run_time_s=brt,
             app_port=app_port,
             backend_hosts=backend_hosts,
-            load_host=load_host,
+            load_hosts=load_hosts,
             lb_host=lb_host,
-            db_host=db_host,
+            db_hosts=db_hosts,
         )
 
 
@@ -221,10 +255,15 @@ class DistributedBenchContext:
                 return remote_exec.resolve_remote_primary_ipv4(host, logger)
 
         resolved_backend_net_hosts = {h: _resolve_net_ip(h) for h in plan.backend_hosts}
-        resolved_lb_net_host = _resolve_net_ip(plan.lb_host)
+        resolved_lb_net_host = _resolve_net_ip(plan.lb_host) if plan.lb_host else ""
         resolved_db_net_host = _resolve_net_ip(plan.db_host) if plan.needs_db else ""
         involved_hosts = sorted(
-            set([*plan.backend_hosts, plan.lb_host] + ([plan.db_host] if plan.needs_db else []))
+            set(
+                [*plan.backend_hosts]
+                + list(plan.load_hosts)
+                + ([plan.lb_host] if plan.lb_host else [])
+                + ([plan.db_host] if plan.needs_db else [])
+            )
         )
 
         backend_container_names: dict[str, str] = {

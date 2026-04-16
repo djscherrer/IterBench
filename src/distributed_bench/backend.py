@@ -50,6 +50,8 @@ class BackendManager:
                 "baxbench.host": host_slug(host),
                 "baxbench.image_id": self.ctx.image_id,
             }
+
+            # Check if the backend container already exists and is using the correct image.
             existing_app = self.runtime.docker_ps_id(host, labels=app_labels) if self.toggles.keep_backends else ""
             if existing_app and self.runtime.docker_image_matches(host, existing_app, self.ctx.image_id):
                 existing_name = self.runtime.docker_ps_name(host, labels=app_labels) or cname
@@ -57,6 +59,7 @@ class BackendManager:
                 self.logger.info("Reusing backend on %s (BAXBENCH_KEEP_BACKENDS=1)", host)
                 return
 
+            # Ensure the backend container is removed if we're not keeping it.
             if not self.toggles.keep_backends:
                 self.runtime.docker_rm_by_labels(
                     host,

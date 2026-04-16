@@ -35,9 +35,13 @@ class ContainerResources:
 class SystemTopology:
     name: str
     backend_hosts: tuple[str, ...] | None = None
-    db_host: str | None = None
+    # A single DB host (str) or multiple DB hosts (tuple[str, ...]).
+    # The current distributed runner supports exactly one DB, but we store this
+    # as a tuple for future extensibility.
+    db_hosts: str | tuple[str, ...] | None = None
     lb_host: str | None = None
-    load_host: str | None = None
+    # Load generator hosts (tuple-of-one allowed).
+    load_hosts: tuple[str, ...] | None = None
     app_port: int | None = None
     backend_resources: ContainerResources = field(default_factory=ContainerResources)
     db_resources: ContainerResources = field(default_factory=ContainerResources)
@@ -45,7 +49,7 @@ class SystemTopology:
     load_taskset_cpus: str | None = None
 
     def has_host_mapping(self) -> bool:
-        return bool(self.backend_hosts) and bool(self.load_host)
+        return bool(self.backend_hosts) and bool(self.load_hosts)
 
     def to_remote_config(
         self,
@@ -56,33 +60,44 @@ class SystemTopology:
     ) -> RemoteConfig:
         if not self.has_host_mapping():
             raise ValueError(
-                f"System topology '{self.name}' does not define backend_hosts/load_host. "
+                f"System topology '{self.name}' does not define backend_hosts/load_hosts. "
                 "Add those fields in system_configs/registry.py or pass --bench-app-hosts/--bench-loader-host."
             )
-        backend_hosts = list(self.backend_hosts or ())
+        backend_hosts = tuple(self.backend_hosts or ())
+        load_hosts = tuple(self.load_hosts or ())
+        if not load_hosts:
+            raise ValueError(
+                f"System topology '{self.name}' does not define load_hosts. "
+                "Add load_hosts in system_configs/registry.py or pass --bench-loader-host."
+            )
+        raw_db = self.db_hosts
+        db_hosts = tuple(raw_db) if isinstance(raw_db, tuple) else ((raw_db,) if raw_db else ())
+        db_hosts = tuple(str(h).strip() for h in db_hosts if h is not None and str(h).strip())
         return RemoteConfig(
-            app_host=backend_hosts[0],
-            app_hosts=backend_hosts,
+            backend_hosts=backend_hosts,
             app_private_addr=app_private_addr,
-            load_host=str(self.load_host),
+            load_hosts=load_hosts,
             remote_base_dir=remote_base_dir,
             app_port=app_port if app_port is not None else self.app_port,
             lb_host=self.lb_host,
-            db_host=self.db_host,
+            db_hosts=db_hosts,
         )
 
     def apply_to_remote_config(self, base: RemoteConfig) -> RemoteConfig:
-        app_hosts = list(self.backend_hosts) if self.backend_hosts is not None else base.app_hosts
-        app_host = app_hosts[0] if app_hosts else base.app_host
+        backend_hosts = tuple(self.backend_hosts) if self.backend_hosts is not None else base.backend_hosts
+        backend_host_master = backend_hosts[0] if backend_hosts else base.backend_host_master
+        raw_db = self.db_hosts
+        db_hosts = tuple(raw_db) if isinstance(raw_db, tuple) else ((raw_db,) if raw_db else ())
+        db_hosts = tuple(str(h).strip() for h in db_hosts if h is not None and str(h).strip())
+        load_hosts = tuple(self.load_hosts) if self.load_hosts is not None else base.load_hosts
         return RemoteConfig(
-            app_host=app_host,
-            app_hosts=app_hosts,
+            backend_hosts=backend_hosts,
             app_private_addr=base.app_private_addr,
-            load_host=self.load_host or base.load_host,
+            load_hosts=load_hosts,
             remote_base_dir=base.remote_base_dir,
             app_port=self.app_port if self.app_port is not None else base.app_port,
             lb_host=self.lb_host if self.lb_host is not None else base.lb_host,
-            db_host=self.db_host if self.db_host is not None else base.db_host,
+            db_hosts=db_hosts if db_hosts else base.db_hosts,
             max_startup_wait=base.max_startup_wait,
             poll_interval=base.poll_interval,
             request_timeout=base.request_timeout,

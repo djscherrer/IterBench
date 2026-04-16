@@ -90,10 +90,11 @@ class DatabaseManager:
         self.sampler = DbSamplerState()
 
     def setup_or_reuse(self) -> None:
+        db_host = self.plan.db_hosts[0]
         db_labels = {"baxbench.sample": self.ctx.sample_slug, "baxbench.role": "db"}
-        existing_db = self.runtime.docker_ps_id(self.plan.db_host, labels=db_labels) if self.toggles.keep_db else ""
+        existing_db = self.runtime.docker_ps_id(db_host, labels=db_labels) if self.toggles.keep_db else ""
         if not existing_db:
-            self.runtime.docker_rm_by_labels(self.plan.db_host, labels=db_labels)
+            self.runtime.docker_rm_by_labels(db_host, labels=db_labels)
 
         start_db_cmd = (
             "set -euo pipefail; "
@@ -114,19 +115,19 @@ class DatabaseManager:
             "-c track_io_timing=on"
         )
         if existing_db:
-            self.logger.info("Reusing existing Postgres container on %s (BAXBENCH_KEEP_DB=1)", self.plan.db_host)
-            reused_name = self.runtime.docker_ps_name(self.plan.db_host, labels=db_labels)
+            self.logger.info("Reusing existing Postgres container on %s (BAXBENCH_KEEP_DB=1)", db_host)
+            reused_name = self.runtime.docker_ps_name(db_host, labels=db_labels)
             if reused_name:
                 self.ctx.db_container_name = reused_name
         else:
-            remote_exec.ssh(self.plan.db_host, f'bash -lc "{start_db_cmd}"', self.logger)
+            remote_exec.ssh(db_host, f'bash -lc "{start_db_cmd}"', self.logger)
             self.logger.info("Remote Postgres started")
 
         wait_cmd = (
             f"timeout 30s bash -lc 'until docker exec {shlex.quote(self.ctx.db_container_name)} "
             f"pg_isready -U {PostgresManager.DEFAULT_USER}; do sleep 1; done'"
         )
-        remote_exec.ssh(self.plan.db_host, wait_cmd, self.logger)
+        remote_exec.ssh(db_host, wait_cmd, self.logger)
 
         ext_sql = "CREATE EXTENSION IF NOT EXISTS pg_stat_statements;"
         ext_cmd = (
@@ -136,7 +137,7 @@ class DatabaseManager:
             "-v ON_ERROR_STOP=1 "
             f"-c {shlex.quote(ext_sql)}"
         )
-        remote_exec.ssh(self.plan.db_host, f"bash -lc {shlex.quote(ext_cmd)}", self.logger)
+        remote_exec.ssh(db_host, f"bash -lc {shlex.quote(ext_cmd)}", self.logger)
 
         if existing_db and self.toggles.wipe_db_on_reuse:
             wipe_sql = sql_reset_db_data_for_container_reuse()
@@ -147,7 +148,7 @@ class DatabaseManager:
                 "-v ON_ERROR_STOP=1 "
                 f"-c {shlex.quote(wipe_sql)}"
             )
-            remote_exec.ssh(self.plan.db_host, f"bash -lc {shlex.quote(wipe_cmd)}", self.logger)
+            remote_exec.ssh(db_host, f"bash -lc {shlex.quote(wipe_cmd)}", self.logger)
             self.logger.info(
                 "Reset DB application data for reuse: truncated public tables "
                 "(migration metadata preserved), pg_stat_statements reset "
@@ -162,13 +163,14 @@ class DatabaseManager:
             self.ctx.db_port_for_backend[host] = 5432
 
     def start_sampler(self) -> None:
+        db_host = self.plan.db_hosts[0]
         remote_db_dir = self.plan.config.remote_dir("db", self.ctx.sample_slug)
         self.sampler.remote_db_csv = f"{remote_db_dir}/db_performance.csv"
         self.sampler.remote_db_wait_csv = f"{remote_db_dir}/db_queue.csv"
         self.sampler.remote_db_wait_events_csv = f"{remote_db_dir}/db_wait_events.csv"
         self.sampler.remote_db_stop = f"{remote_db_dir}/STOP"
         self.sampler.remote_db_pid = f"{remote_db_dir}/sampler.pid"
-        remote_exec.ssh(self.plan.db_host, f"mkdir -p {shlex.quote(remote_db_dir)}", self.logger).check_returncode()
+        remote_exec.ssh(db_host, f"mkdir -p {shlex.quote(remote_db_dir)}", self.logger).check_returncode()
         sampler_cmd = (
             "set -euo pipefail; "
             f"rm -f {shlex.quote(self.sampler.remote_db_stop)} {shlex.quote(self.sampler.remote_db_pid)}; "
@@ -197,39 +199,40 @@ class DatabaseManager:
             ") >/dev/null 2>&1 & echo $! > "
             f"{shlex.quote(self.sampler.remote_db_pid)}"
         )
-        remote_exec.ssh(self.plan.db_host, f"bash -lc {shlex.quote(sampler_cmd)}", self.logger)
+        remote_exec.ssh(db_host, f"bash -lc {shlex.quote(sampler_cmd)}", self.logger)
 
     def stop_sampler_and_copy(self) -> None:
         if not self.sampler.remote_db_csv:
             return
-        db_stats_dir = self.ctx.sample_dir / "stats" / host_slug(self.plan.db_host)
+        db_host = self.plan.db_hosts[0]
+        db_stats_dir = self.ctx.sample_dir / "stats" / host_slug(db_host)
         db_stats_dir.mkdir(parents=True, exist_ok=True)
         remote_exec.ssh(
-            self.plan.db_host,
+            db_host,
             f"bash -lc \"touch {shlex.quote(self.sampler.remote_db_stop)} || true\"",
             self.logger,
         )
         remote_exec.ssh(
-            self.plan.db_host,
+            db_host,
             f"bash -lc \"if [ -f {shlex.quote(self.sampler.remote_db_pid)} ]; then kill -0 $(cat {shlex.quote(self.sampler.remote_db_pid)}) >/dev/null 2>&1 || true; fi\"",
             self.logger,
         )
         remote_exec.scp_from_remote(
-            self.plan.db_host,
+            db_host,
             self.sampler.remote_db_csv,
             (db_stats_dir / "db_performance.csv"),
             self.logger,
         )
         if self.sampler.remote_db_wait_csv:
             remote_exec.scp_from_remote(
-                self.plan.db_host,
+                db_host,
                 self.sampler.remote_db_wait_csv,
                 (db_stats_dir / "db_queue.csv"),
                 self.logger,
             )
         if self.sampler.remote_db_wait_events_csv:
             remote_exec.scp_from_remote(
-                self.plan.db_host,
+                db_host,
                 self.sampler.remote_db_wait_events_csv,
                 (db_stats_dir / "db_wait_events.csv"),
                 self.logger,
@@ -237,17 +240,18 @@ class DatabaseManager:
 
     def cleanup(self) -> None:
         if self.toggles.keep_db:
-            self.logger.info("Keeping DB container on %s (BAXBENCH_KEEP_DB=1)", self.plan.db_host)
+            self.logger.info("Keeping DB container on %s (BAXBENCH_KEEP_DB=1)", self.plan.db_hosts[0])
             return
+        db_host = self.plan.db_hosts[0]
         try:
             if self.sampler.remote_db_stop:
                 remote_exec.ssh(
-                    self.plan.db_host,
+                    db_host,
                     f"bash -lc \"touch {shlex.quote(self.sampler.remote_db_stop)} || true\"",
                     self.logger,
                 )
             remote_exec.ssh(
-                self.plan.db_host,
+                db_host,
                 f"bash -lc \"docker rm -f {shlex.quote(self.ctx.db_container_name)} >/dev/null 2>&1 || true\"",
                 self.logger,
             )

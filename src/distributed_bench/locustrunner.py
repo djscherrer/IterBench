@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import concurrent.futures
+import hashlib
 import pathlib
 import shlex
 import subprocess
@@ -32,22 +33,41 @@ class LocustRunner:
         self.plan = ctx.plan
         self.logger = ctx.logger
 
-    def run(self, *, lb_target_for_load: str) -> None:
-        remote_exec.ssh(self.plan.load_host, f"mkdir -p {shlex.quote(self.ctx.remote_load_dir)}", self.logger)
-        remote_locustfile = f"{self.ctx.remote_load_dir}/{self.ctx.locustfile.name}"
-        remote_exec.scp_to_remote(self.ctx.locustfile, self.plan.load_host, remote_locustfile, self.logger)
+    @staticmethod
+    def _stable_port(base: int, key: str, span: int = 4000) -> int:
+        hid = int(hashlib.sha256(key.encode("utf-8")).hexdigest()[:8], 16)
+        return base + (hid % span)
+
+    def run(self, *, load_targets: dict[str, str]) -> None:
+        """
+        Run Locust from one or more load generator hosts.
+
+        load_targets maps load_host -> target_host (IP/hostname) to send load to.
+        """
+        load_hosts = list(load_targets.keys())
+        if not load_hosts:
+            raise ValueError("No load hosts provided to LocustRunner.run")
+
+        master_host = self.plan.load_host_master
+        if master_host not in load_targets:
+            raise ValueError(f"Missing load target for master host {master_host!r}")
+        worker_hosts = [h for h in load_hosts if h != master_host]
 
         metrics_capture_stop_event = threading.Event()
         perf_threads: list[threading.Thread] = []
         queue_threads: list[threading.Thread] = []
-        perf_hosts = list(self.plan.backend_hosts) + ([self.plan.db_host] if self.plan.needs_db else []) + [self.plan.lb_host]
+
+        # Building ordered list of hosts to capture metrics from.
+        perf_hosts = list(self.plan.backend_hosts) + ([self.plan.db_hosts[0]] if self.plan.needs_db else [])
+        if self.plan.lb_host:
+            perf_hosts.append(self.plan.lb_host)
         seen: set[str] = set()
         perf_hosts = [h for h in perf_hosts if not (h in seen or seen.add(h))]
 
         def _docker_container_for_host(h: str) -> str | None:
             if h in self.ctx.backend_container_names:
                 return self.ctx.backend_container_names[h]
-            if self.plan.needs_db and h == self.plan.db_host:
+            if self.plan.needs_db and h == self.plan.db_hosts[0]:
                 return self.ctx.db_container_name
             if h == self.plan.lb_host:
                 return self.ctx.lb_container_name
@@ -72,7 +92,7 @@ class LocustRunner:
             ports: list[int] = []
             if host in self.plan.backend_hosts or host == self.plan.lb_host:
                 ports.append(int(self.plan.app_port))
-            if self.plan.needs_db and host == self.plan.db_host:
+            if self.plan.needs_db and host == self.plan.db_hosts[0]:
                 ports.append(5432)
             if ports:
                 q_csv = host_stats_dir / "socket_queue.csv"
@@ -84,15 +104,70 @@ class LocustRunner:
                 )
                 queue_threads.append(qt)
 
-        connection = Connection(self.plan.load_host)
-        locust_bin = remote_exec.ensure_remote_python_env(self.plan.load_host, self.ctx.remote_env_dir, self.logger)
-        remote_csv_prefix = f"{self.ctx.remote_load_dir}/{self.ctx.csv_prefix.name}"
+        # Stage locustfile and env on all load hosts first.
+        def _stage_one_load_host(h: str) -> None:
+            remote_exec.ssh(h, f"mkdir -p {shlex.quote(self.ctx.remote_load_dir)}", self.logger).check_returncode()
+            remote_locustfile = f"{self.ctx.remote_load_dir}/{self.ctx.locustfile.name}"
+            remote_exec.scp_to_remote(self.ctx.locustfile, h, remote_locustfile, self.logger)
+            remote_exec.ensure_remote_python_env(h, self.ctx.remote_env_dir, self.logger)
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=min(8, len(load_hosts) or 1)) as ex:
+            list(ex.map(_stage_one_load_host, load_hosts))
+
         locust_processes = max(1, int(self.load_profile.locust_processes))
         locust_processes_arg = f"--processes {locust_processes} " if locust_processes > 1 else ""
         locust_csv_full_history = "--csv-full-history " if locust_processes <= 1 else ""
         extra_args = " ".join(self.load_profile.extra_locust_args).strip()
         if extra_args:
             extra_args += " "
+
+        for t in perf_threads:
+            t.start()
+        for t in queue_threads:
+            t.start()
+
+        logs_dir = self.ctx.sample_dir / "logs" / f"loader-{self.ctx.sample_slug}"
+        logs_dir.mkdir(parents=True, exist_ok=True)
+
+        is_distributed = bool(worker_hosts)
+        worker_pidfiles: dict[str, str] = {}
+        worker_logfiles: dict[str, str] = {}
+        master_ip = ""
+        master_port = 0
+        expect_workers = 0
+
+        if is_distributed:
+            # Distributed master/worker mode.
+            master_ip = remote_exec.resolve_remote_preferred_ipv4(
+                master_host, self.logger, preferred_prefixes=("10.233.",)
+            )
+            master_port = self._stable_port(15557, f"locust-master:{self.ctx.sample_slug}")
+            expect_workers = len(worker_hosts)
+
+            # Start workers in background (nohup) on each worker host.
+            for wh in worker_hosts:
+                pidfile = f"{self.ctx.remote_load_dir}/locust-worker-{host_slug(wh)}.pid"
+                logfile = f"{self.ctx.remote_load_dir}/locust-worker-{host_slug(wh)}.log"
+                worker_pidfiles[wh] = pidfile
+                worker_logfiles[wh] = logfile
+                locust_bin = remote_exec.ensure_remote_python_env(wh, self.ctx.remote_env_dir, self.logger)
+                w_cmd = (
+                    "set -euo pipefail; "
+                    f"cd {shlex.quote(self.ctx.remote_load_dir)}; "
+                    f"rm -f {shlex.quote(pidfile)} {shlex.quote(logfile)} || true; "
+                    f"nohup {shlex.quote(locust_bin)} "
+                    f"--worker --master-host {shlex.quote(master_ip)} --master-port {int(master_port)} "
+                    f"--locustfile {shlex.quote(self.ctx.locustfile.name)} "
+                    f"> {shlex.quote(logfile)} 2>&1 & "
+                    f"echo $! > {shlex.quote(pidfile)}"
+                )
+                remote_exec.ssh(wh, f"bash -lc {shlex.quote(w_cmd)}", self.logger).check_returncode()
+
+        # Run master in foreground for completion + CSVs.
+        target = load_targets[master_host]
+        connection = Connection(master_host)
+        locust_bin = remote_exec.ensure_remote_python_env(master_host, self.ctx.remote_env_dir, self.logger)
+
         env_prefix = (
             f"BAXBENCH_LOCUST_WAIT_MIN_S={self.load_profile.wait_min_s} "
             f"BAXBENCH_LOCUST_WAIT_MAX_S={self.load_profile.wait_max_s} "
@@ -102,13 +177,21 @@ class LocustRunner:
         locust_exec = f"{locust_bin}"
         if self.system_topology.load_taskset_cpus:
             locust_exec = f"taskset -c \"$TASKSET_CPUS\" {locust_bin}"
+
+        distributed_master_args = (
+            f"--master --headless "
+            f"--master-bind-host 0.0.0.0 --master-bind-port {int(master_port)} "
+            f"--expect-workers {int(expect_workers)} --expect-workers-max-wait 60 "
+        ) if is_distributed else "--headless "
+
         locust_cmd = (
             "set -euo pipefail; "
             f"cd {shlex.quote(self.ctx.remote_load_dir)}; "
-            f"{env_prefix}{locust_exec} --headless --locustfile {shlex.quote(self.ctx.locustfile.name)} "
-            f"--host http://{lb_target_for_load}:{self.plan.app_port} "
-            f"--users {self.plan.bench_users} "
-            f"--spawn-rate {self.plan.bench_spawn_rate} "
+            f"{env_prefix}{locust_exec} {distributed_master_args}"
+            f"--locustfile {shlex.quote(self.ctx.locustfile.name)} "
+            f"--host http://{target}:{self.plan.app_port} "
+            f"--users {int(self.plan.bench_users)} "
+            f"--spawn-rate {int(self.plan.bench_spawn_rate)} "
             f"--run-time {self.plan.locust_run_time} "
             f"{locust_processes_arg}"
             f"--csv {shlex.quote(self.ctx.csv_prefix.name)} "
@@ -117,32 +200,83 @@ class LocustRunner:
             "--only-summary "
         )
 
-        for t in perf_threads:
-            t.start()
-        for t in queue_threads:
-            t.start()
         locust_proc = connection.run(locust_cmd, hide=True, warn=True)
+        self.logger.info(
+            "Locust %s output (%s):\n%s",
+            "distributed master" if is_distributed else "single loader",
+            master_host,
+            locust_proc,
+        )
+        connection.close()
+
+        loader_log_path = (
+            logs_dir / f"locust-master-{host_slug(master_host)}.log"
+            if is_distributed
+            else logs_dir / f"locust-{host_slug(master_host)}.log"
+        )
+        loader_log_mode = "distributed" if is_distributed else "single"
+        loader_log_extra = (
+            f"## master_host: {master_host}\n"
+            f"## master_ip: {master_ip}\n"
+            f"## master_port: {master_port}\n"
+            f"## workers: {', '.join(worker_hosts)}\n"
+            if is_distributed
+            else f"## load_host: {master_host}\n"
+        )
+        try:
+            loader_log_path.write_text(
+                f"## mode: {loader_log_mode}\n"
+                f"{loader_log_extra}"
+                f"## target: http://{target}:{self.plan.app_port}\n"
+                f"## cmd: {locust_cmd}\n\n"
+                f"--- stdout ---\n{getattr(locust_proc, 'stdout', '') or ''}\n\n"
+                f"--- stderr ---\n{getattr(locust_proc, 'stderr', '') or ''}\n",
+                encoding="utf-8",
+                errors="ignore",
+            )
+        except Exception as exc:
+            self.logger.warning("Failed to write loader log for %s: %s", master_host, exc)
+
+        if is_distributed:
+            # Fetch worker logs
+            for wh in worker_hosts:
+                try:
+                    remote_exec.scp_from_remote(
+                        wh,
+                        worker_logfiles[wh],
+                        (logs_dir / f"locust-worker-{host_slug(wh)}.log"),
+                        self.logger,
+                    )
+                except Exception as exc:
+                    self.logger.warning("Failed to fetch worker log from %s: %s", wh, exc)
+
+        # Copy CSVs back from the host that aggregates results (master).
+        remote_csv_prefix = f"{self.ctx.remote_load_dir}/{self.ctx.csv_prefix.name}"
+        for suffix in ("_stats_history.csv", "_stats.csv", "_failures.csv", "_exceptions.csv"):
+            remote_csv = f"{remote_csv_prefix}{suffix}"
+            local_csv = pathlib.Path(f"{self.ctx.csv_prefix}{suffix}")
+            try:
+                remote_exec.scp_from_remote(master_host, remote_csv, local_csv, self.logger)
+            except subprocess.CalledProcessError as exc:
+                self.logger.warning("Failed to copy remote CSV %s from %s: %s", suffix, master_host, exc)
+
+        # Cleanup worker processes (distributed mode only).
+        if is_distributed:
+            for wh in worker_hosts:
+                pidfile = worker_pidfiles.get(wh, "")
+                if not pidfile:
+                    continue
+                kill_cmd = (
+                    "set -euo pipefail; "
+                    f"if [ -f {shlex.quote(pidfile)} ]; then "
+                    f"  kill $(cat {shlex.quote(pidfile)}) >/dev/null 2>&1 || true; "
+                    f"  rm -f {shlex.quote(pidfile)}; "
+                    "fi"
+                )
+                remote_exec.ssh(wh, f"bash -lc {shlex.quote(kill_cmd)}", self.logger)
+
         metrics_capture_stop_event.set()
         for t in perf_threads:
             t.join()
         for t in queue_threads:
             t.join()
-
-        self.logger.info("Locust output:\n%s", locust_proc)
-        connection.close()
-
-        def _copy_locust_csv(suffix: str) -> None:
-            remote_csv = f"{remote_csv_prefix}{suffix}"
-            local_csv = pathlib.Path(f"{self.ctx.csv_prefix}{suffix}")
-            remote_exec.scp_from_remote(self.plan.load_host, remote_csv, local_csv, self.logger)
-
-        with concurrent.futures.ThreadPoolExecutor(max_workers=4) as ex:
-            futs = [
-                ex.submit(_copy_locust_csv, s)
-                for s in ("_stats_history.csv", "_stats.csv", "_failures.csv", "_exceptions.csv")
-            ]
-            for suffix, fut in zip(("_stats_history.csv", "_stats.csv", "_failures.csv", "_exceptions.csv"), futs):
-                try:
-                    fut.result()
-                except subprocess.CalledProcessError as exc:
-                    self.logger.warning("Failed to copy remote CSV %s: %s", suffix, exc)

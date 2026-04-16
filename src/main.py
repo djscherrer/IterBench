@@ -131,14 +131,17 @@ def main(args: Any) -> None:
                 "Either --bench-app-host or --bench-app-hosts must be provided for remote benchmarking"
             )
         remote_kwargs: dict[str, Any] = {
-            "app_host": args.bench_app_host,
-            "app_hosts": args.bench_app_hosts,
+            "backend_hosts": (
+                tuple(args.bench_app_hosts)
+                if args.bench_app_hosts
+                else ((args.bench_app_host,) if args.bench_app_host else ())
+            ),
             "app_private_addr": args.bench_app_private_addr,
-            "load_host": args.bench_loader_host,
+            "load_hosts": (args.bench_loader_host,),
             "remote_base_dir": args.bench_remote_dir,
             "app_port": args.bench_remote_port,
             "lb_host": args.bench_lb_host,
-            "db_host": args.bench_db_host,
+            "db_hosts": ((args.bench_db_host,) if args.bench_db_host else ()),
         }
         bench_remote_config = RemoteConfig(**remote_kwargs)
     elif args.mode == "bench":

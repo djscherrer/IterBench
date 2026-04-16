@@ -40,11 +40,11 @@ def preclean_hosts(
         paths: list[str] = []
         if (not keep_backends) and host in ctx.remote_app_dirs:
             paths.append(ctx.remote_app_dirs[host])
-        if (not keep_lb) and host == ctx.plan.lb_host:
+        if (not keep_lb) and ctx.plan.lb_host and host == ctx.plan.lb_host:
             paths.append(ctx.plan.config.remote_dir("lb", ctx.sample_slug))
-        if host == ctx.plan.load_host:
+        if host in ctx.plan.load_hosts:
             paths.append(ctx.remote_load_dir)
-        if ctx.plan.needs_db and (not keep_db) and host == ctx.plan.db_host:
+        if ctx.plan.needs_db and (not keep_db) and host == ctx.plan.db_hosts[0]:
             paths.append(ctx.plan.config.remote_dir("db", ctx.sample_slug))
         if not paths:
             return

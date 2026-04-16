@@ -36,6 +36,8 @@ class LoadBalancerManager:
         return [(self.ctx.backend_net_hosts[h], self.plan.app_port) for h in self.plan.backend_hosts]
 
     def setup_or_reuse(self) -> None:
+        if not self.plan.lb_host:
+            raise ValueError("LoadBalancerManager.setup_or_reuse called but lb_host is empty")
         endpoints = self._backend_endpoints()
         upstream = "\n".join(f"        server {host}:{port};" for host, port in endpoints)
         self.nginx_log_path_host = f"{self.plan.config.remote_dir('lb', self.ctx.sample_slug)}/nginx_access_timing.csv"
@@ -107,12 +109,14 @@ class LoadBalancerManager:
         )
         remote_exec.ssh(self.plan.lb_host, f'bash -lc "{lb_cmd}"', self.logger)
 
-    def lb_target_for_loader(self) -> str:
-        return "127.0.0.1" if self.plan.load_host == self.plan.lb_host else self.ctx.lb_net_host
+    def lb_target_for_loader(self, load_host: str) -> str:
+        if not self.plan.lb_host:
+            raise ValueError("LoadBalancerManager.lb_target_for_loader called but lb_host is empty")
+        return "127.0.0.1" if load_host == self.plan.lb_host else self.ctx.lb_net_host
 
     def wait_ready(self) -> None:
         remote_exec.wait_for_remote_http(
-            self.lb_target_for_loader(),
+            self.lb_target_for_loader(self.plan.load_host_master),
             self.plan.app_port,
             self.plan.config,
             self.env,

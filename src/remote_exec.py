@@ -271,7 +271,7 @@ def wait_for_remote_http(
     while time.time() - start < wait_budget:
         try:
             probe_cmd = "set -euo pipefail; " f"curl -sS -o /dev/null http://{host}:{port}/ --max-time 5"
-            out = ssh(probe_host or config.load_host, f'bash -lc "{probe_cmd}"', logger)
+            out = ssh(probe_host or config.load_host_master, f'bash -lc "{probe_cmd}"', logger)
             out.check_returncode()
             logger.info("Remote server %s:%d is ready", host, port)
             return
