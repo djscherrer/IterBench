@@ -4,7 +4,7 @@ import shlex
 from dataclasses import dataclass
 
 import remote_exec
-from bench_models import DistributedBenchContext
+from bench_models import DistributedBenchContext, host_slug
 from db_manager import PostgresManager
 
 from .config import RuntimeToggles

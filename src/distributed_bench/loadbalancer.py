@@ -112,7 +112,7 @@ class LoadBalancerManager:
     def lb_target_for_loader(self, load_host: str) -> str:
         if not self.plan.lb_host:
             raise ValueError("LoadBalancerManager.lb_target_for_loader called but lb_host is empty")
-        return "127.0.0.1" if load_host == self.plan.lb_host else self.ctx.lb_net_host
+        return self.ctx.lb_net_host
 
     def wait_ready(self) -> None:
         remote_exec.wait_for_remote_http(

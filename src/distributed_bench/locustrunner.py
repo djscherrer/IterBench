@@ -58,7 +58,7 @@ class LocustRunner:
         queue_threads: list[threading.Thread] = []
 
         # Building ordered list of hosts to capture metrics from.
-        perf_hosts = list(self.plan.backend_hosts) + ([self.plan.db_hosts[0]] if self.plan.needs_db else [])
+        perf_hosts = load_hosts + list(self.plan.backend_hosts) + ([self.plan.db_hosts[0]] if self.plan.needs_db else [])
         if self.plan.lb_host:
             perf_hosts.append(self.plan.lb_host)
         seen: set[str] = set()

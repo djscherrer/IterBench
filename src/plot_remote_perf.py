@@ -135,9 +135,9 @@ def _docker_cpu_saturation_pct_by_stats_host(run_dir: pathlib.Path) -> dict[str,
     return out
 
 
-def _infer_host_roles(run_dir: pathlib.Path) -> dict[str, set[str]]:
+def _host_roles_from_config(run_dir: pathlib.Path) -> dict[str, set[str]] | None:
     """
-    Infer host roles from on-disk artifacts.
+    Derive host roles from the run snapshot (`run_dir/config.json`).
 
     Tags:
       - CL: client / load generator
@@ -145,6 +145,66 @@ def _infer_host_roles(run_dir: pathlib.Path) -> dict[str, set[str]]:
       - BE: backend
       - DB: database
     """
+    cfg_path = run_dir / "config.json"
+    if not cfg_path.is_file():
+        return None
+    try:
+        cfg = json.loads(cfg_path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return None
+
+    erc = cfg.get("effective_remote_config") or {}
+    if not isinstance(erc, dict):
+        return None
+
+    # Collect hosts present in stats/ (these are the machines we have telemetry for)
+    stats_root = run_dir / "stats"
+    hosts = []
+    if stats_root.exists():
+        hosts = sorted([p.name for p in stats_root.iterdir() if p.is_dir()])
+
+    roles: dict[str, set[str]] = {h: set() for h in hosts}
+
+    def _add_roles(tag: str, host_list) -> None:
+        if not host_list:
+            return
+        for h in host_list:
+            slug = host_slug(str(h))
+            if not slug:
+                continue
+            roles.setdefault(slug, set()).add(tag)
+
+    _add_roles("CL", erc.get("load_hosts"))
+    _add_roles("BE", erc.get("backend_hosts"))
+
+    lb_host = erc.get("lb_host")
+    # In our config, `lb_host` can be "" to mean "no dedicated LB".
+    if lb_host is not None and str(lb_host).strip():
+        roles.setdefault(host_slug(str(lb_host)), set()).add("LB")
+
+    db_hosts = erc.get("db_hosts") or []
+    if isinstance(db_hosts, list) and db_hosts:
+        roles.setdefault(host_slug(str(db_hosts[0])), set()).add("DB")
+
+    # Everything else (with telemetry) is assumed to be backend
+    for h in hosts:
+        if not roles.get(h):
+            roles[h].add("BE")
+
+    return roles
+
+
+def _infer_host_roles(run_dir: pathlib.Path) -> dict[str, set[str]]:
+    """
+    Determine host roles for plotting.
+
+    Primary source: `run_dir/config.json` (resolved system topology / effective remote config).
+    Fallback: heuristics based on `bench.log` and `socket_queue.csv`.
+    """
+    roles_from_cfg = _host_roles_from_config(run_dir)
+    if roles_from_cfg is not None:
+        return roles_from_cfg
+
     roles: dict[str, set[str]] = {}
 
     # Collect hosts present in stats/ (these are the machines we have telemetry for)
