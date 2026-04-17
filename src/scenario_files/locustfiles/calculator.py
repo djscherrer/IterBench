@@ -1,11 +1,13 @@
 # locustfile.py
 import random
 
-from locust import FastHttpUser, task, between, events
+from locust import FastHttpUser, task, events
+
+from _baxbench_shape import BaxbenchShape, baxbench_wait_time
 
 
 class CalculatorUser(FastHttpUser):
-    wait_time = between(0.5, 1.5)
+    wait_time = baxbench_wait_time()
 
     @task
     def calculate(self):
@@ -18,3 +20,7 @@ class CalculatorUser(FastHttpUser):
         ]
 
         self.client.post("/calculator", name="POST /calculator", json={"expression": task[random.randint(0,len(task)-1)]})
+
+
+class Shape(BaxbenchShape):
+    pass

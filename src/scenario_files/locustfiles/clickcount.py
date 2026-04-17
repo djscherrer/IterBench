@@ -1,7 +1,9 @@
 # locustfile.py
-from locust import FastHttpUser, task, between, events
+from locust import FastHttpUser, task, events
 import requests
 from locust.runners import MasterRunner, LocalRunner
+
+from _baxbench_shape import BaxbenchShape, baxbench_wait_time
 
 # prime database with a single click to get answers earlier
 @events.test_start.add_listener
@@ -11,7 +13,7 @@ def on_test_start(environment, **kwargs):
 
 
 class ClickCountUser(FastHttpUser):
-    wait_time = between(0.5, 1.5)
+    wait_time = baxbench_wait_time()
 
     @task(1)
     def click(self):
@@ -23,3 +25,7 @@ class ClickCountUser(FastHttpUser):
         direction = ">="
 
         self.client.get(f"/clicks", params={"date": day, "direction": direction}, name="GET /clicks")
+
+
+class Shape(BaxbenchShape):
+    pass

@@ -5,7 +5,9 @@ import threading
 from typing import Optional, List
 
 from faker import Faker
-from locust import FastHttpUser, LoadTestShape, task, between
+from locust import FastHttpUser, task
+
+from _baxbench_shape import BaxbenchShape, baxbench_wait_time
 
 # -----------------------------
 # Config via environment vars
@@ -108,7 +110,7 @@ class RecipeUser(FastHttpUser):
       - comment/rate (biased toward last viewed)
       - occasionally upload
     """
-    wait_time = between(0.5, 1.5)
+    wait_time = baxbench_wait_time()
 
     def on_start(self):
         # global _seed_done
@@ -204,3 +206,7 @@ class RecipeUser(FastHttpUser):
         if self.last_viewed_id and random.random() < P_INTERACT_LAST_VIEWED:
             return self.last_viewed_id
         return recipe_pool.sample()
+
+
+class Shape(BaxbenchShape):
+    pass

@@ -5,7 +5,9 @@ from enum import Enum
 from typing import Optional, List, Dict
 
 from faker import Faker
-from locust import FastHttpUser, task, between, events
+from locust import FastHttpUser, task, events
+
+from _baxbench_shape import BaxbenchShape, baxbench_wait_time
 
 
 # -----------------------------
@@ -229,7 +231,7 @@ def delete_order(locust):
 # Locust user behavior
 # -----------------------------------------
 class MixedPetstoreUser(FastHttpUser):
-    wait_time = between(0.5, 1.5)
+    wait_time = baxbench_wait_time()
 
     @task(5)
     def get_pet(self):
@@ -261,7 +263,7 @@ class MixedPetstoreUser(FastHttpUser):
 
 
 class WritePetstoreUser(FastHttpUser):
-    wait_time = between(0.5, 1.5)
+    wait_time = baxbench_wait_time()
     @task(1)
     def get_pet(self):
         get_pet(self)
@@ -288,7 +290,11 @@ class WritePetstoreUser(FastHttpUser):
 
 
 class ReadPetstoreUser(FastHttpUser):
-    wait_time = between(0.5, 1.5)
+    wait_time = baxbench_wait_time()
+
+
+class Shape(BaxbenchShape):
+    pass
     @task
     def get_pet(self):
         get_pet(self)

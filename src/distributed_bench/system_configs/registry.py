@@ -5,34 +5,29 @@ from .models import ContainerResources, SystemTopology
 
 SYSTEM_TOPOLOGY_REGISTRY: dict[str, SystemTopology] = {
     # Default topology for the current remote lab.
-    "default": SystemTopology(
-        name="default",
-        backend_hosts=("r630-02", "r630-03", "r630-04"),
-        load_host="r630-08",
-        lb_host="r630-08",
-        db_host="r630-05",
+
+    "2C-1B-1DB": SystemTopology(
+        name="2C-1B-1DB",
+        backend_hosts=("r630-03",),
+        load_hosts=("r630-08", "r630-02"),
+        lb_host="",
+        db_hosts=("r630-05",),
     ),
-    # Example preset that caps backend resources.
-    "balanced-2-backend": SystemTopology(
-        name="balanced-2-backend",
-        backend_hosts=("r630-02", "r630-03"),
-        load_host="r630-08",
+
+    "2C-1LB-2B-1DB": SystemTopology(
+        name="2C-2B-1DB",
+        backend_hosts=("r630-03", "r630-04"),
+        load_hosts=("r630-08", "r630-02"),
         lb_host="r630-08",
-        db_host="r630-05",
-        backend_resources=ContainerResources(cpus=2.0, memory="3g"),
-        db_resources=ContainerResources(cpus=2.0, memory="4g"),
-        lb_resources=ContainerResources(cpus=1.0, memory="1g"),
+        db_hosts=("r630-05",),
     ),
-    # Example preset for stronger backend limits.
-    "high-throughput": SystemTopology(
-        name="high-throughput",
-        backend_hosts=("r630-02", "r630-03", "r630-04"),
-        load_host="r630-08",
-        lb_host="r630-08",
-        db_host="r630-05",
-        backend_resources=ContainerResources(cpus=4.0, memory="6g"),
-        db_resources=ContainerResources(cpus=4.0, memory="8g"),
-        lb_resources=ContainerResources(cpus=2.0, memory="2g"),
+
+    "multi-client": SystemTopology(
+        name="multi-client",
+        load_hosts=("r630-08", "r630-02", "r630-03"),
+        lb_host="",
+        backend_hosts=("r630-04",),
+        db_hosts=("r630-05",),
     ),
 }
 

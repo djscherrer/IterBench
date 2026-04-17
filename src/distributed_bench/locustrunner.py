@@ -13,7 +13,7 @@ import remote_exec
 from bench_models import DistributedBenchContext, host_slug
 
 from .config import RuntimeToggles
-from .load_profiles import LoadProfile
+from .load_profiles import ContinuousLoadProfile, LoadProfile, SpikeLoadProfile, StairsLoadProfile
 from .system_configs import SystemTopology
 
 
@@ -109,17 +109,27 @@ class LocustRunner:
             remote_exec.ssh(h, f"mkdir -p {shlex.quote(self.ctx.remote_load_dir)}", self.logger).check_returncode()
             remote_locustfile = f"{self.ctx.remote_load_dir}/{self.ctx.locustfile.name}"
             remote_exec.scp_to_remote(self.ctx.locustfile, h, remote_locustfile, self.logger)
+            # Shared load-shaping helper; locustfiles import this by filename from the load dir.
+            local_shape = pathlib.Path(__file__).parent / "load_profiles" / "_baxbench_shape.py"
+            if local_shape.is_file():
+                remote_exec.scp_to_remote(
+                    local_shape,
+                    h,
+                    f"{self.ctx.remote_load_dir}/_baxbench_shape.py",
+                    self.logger,
+                )
             remote_exec.ensure_remote_python_env(h, self.ctx.remote_env_dir, self.logger)
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=min(8, len(load_hosts) or 1)) as ex:
             list(ex.map(_stage_one_load_host, load_hosts))
 
         locust_processes = max(1, int(self.load_profile.locust_processes))
-        locust_processes_arg = f"--processes {locust_processes} " if locust_processes > 1 else ""
-        locust_csv_full_history = "--csv-full-history " if locust_processes <= 1 else ""
-        extra_args = " ".join(self.load_profile.extra_locust_args).strip()
-        if extra_args:
-            extra_args += " "
+        is_distributed = bool(worker_hosts)
+        # Locust disallows combining distributed master mode with multiprocessing mode.
+        # Keep --processes for single-host runs only.
+        locust_processes_eff = 1 if is_distributed else locust_processes
+        locust_processes_arg = f"--processes {locust_processes_eff} " if locust_processes_eff > 1 else ""
+        locust_csv_full_history = "--csv-full-history " if locust_processes_eff <= 1 else ""
 
         for t in perf_threads:
             t.start()
@@ -129,7 +139,6 @@ class LocustRunner:
         logs_dir = self.ctx.sample_dir / "logs" / f"loader-{self.ctx.sample_slug}"
         logs_dir.mkdir(parents=True, exist_ok=True)
 
-        is_distributed = bool(worker_hosts)
         worker_pidfiles: dict[str, str] = {}
         worker_logfiles: dict[str, str] = {}
         master_ip = ""
@@ -168,10 +177,45 @@ class LocustRunner:
         connection = Connection(master_host)
         locust_bin = remote_exec.ensure_remote_python_env(master_host, self.ctx.remote_env_dir, self.logger)
 
+        if isinstance(self.load_profile, ContinuousLoadProfile):
+            load_mode = "continuous"
+        elif isinstance(self.load_profile, StairsLoadProfile):
+            load_mode = "stairs"
+        elif isinstance(self.load_profile, SpikeLoadProfile):
+            load_mode = "spike"
+        else:
+            load_mode = "steady"
         env_prefix = (
             f"BAXBENCH_LOCUST_WAIT_MIN_S={self.load_profile.wait_min_s} "
             f"BAXBENCH_LOCUST_WAIT_MAX_S={self.load_profile.wait_max_s} "
+            f"BAXBENCH_LOAD_MODE={shlex.quote(load_mode)} "
+            f"BAXBENCH_RUN_TIME_S={int(self.plan.bench_run_time_s)} "
         )
+        if load_mode == "steady":
+            env_prefix += f"BAXBENCH_STEADY_USERS={int(self.plan.bench_users)} "
+        elif load_mode == "continuous":
+            if isinstance(self.load_profile, ContinuousLoadProfile):
+                env_prefix += (
+                    f"BAXBENCH_CONTINUOUS_SPAWN_RATE={int(self.load_profile.spawn_rate)} "
+                    f"BAXBENCH_CONTINUOUS_START_USERS={int(self.load_profile.start_users)} "
+                    f"BAXBENCH_CONTINUOUS_TARGET_USERS={int(self.load_profile.target_users)} "
+                )
+        elif load_mode == "stairs":
+            if isinstance(self.load_profile, StairsLoadProfile):
+                env_prefix += (
+                    f"BAXBENCH_STAIRS_START_USERS={int(self.load_profile.start_users)} "
+                    f"BAXBENCH_STAIRS_STEP_USERS={int(self.load_profile.step_users)} "
+                    f"BAXBENCH_STAIRS_STEP_DURATION_S={int(self.load_profile.step_duration_s)} "
+                    f"BAXBENCH_STAIRS_STEPS={int(self.load_profile.steps)} "
+                )
+        elif load_mode == "spike":
+            if isinstance(self.load_profile, SpikeLoadProfile):
+                env_prefix += (
+                    f"BAXBENCH_SPIKE_BASE_USERS={int(self.load_profile.base_users)} "
+                    f"BAXBENCH_SPIKE_USERS={int(self.load_profile.spike_users)} "
+                    f"BAXBENCH_SPIKE_INTERVAL_S={int(self.load_profile.interval_s)} "
+                    f"BAXBENCH_SPIKE_DURATION_S={int(self.load_profile.duration_s)} "
+                )
         if self.system_topology.load_taskset_cpus:
             env_prefix += f"TASKSET_CPUS={shlex.quote(self.system_topology.load_taskset_cpus)} "
         locust_exec = f"{locust_bin}"
@@ -196,7 +240,6 @@ class LocustRunner:
             f"{locust_processes_arg}"
             f"--csv {shlex.quote(self.ctx.csv_prefix.name)} "
             f"{locust_csv_full_history}"
-            f"{extra_args}"
             "--only-summary "
         )
 

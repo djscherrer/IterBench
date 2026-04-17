@@ -17,7 +17,14 @@ from .backend import BackendManager
 from .common import ensure_docker_and_warm_ssh, phase, preclean_hosts, stage_image_to_backends
 from .config import RuntimeToggles
 from .database import DatabaseManager
-from .load_profiles import merge_load_profile_with_overrides, resolve_load_profile
+from .load_profiles import (
+    ContinuousLoadProfile,
+    SpikeLoadProfile,
+    StairsLoadProfile,
+    SteadyLoadProfile,
+    merge_load_profile_with_overrides,
+    resolve_load_profile,
+)
 from .loadbalancer import LoadBalancerManager
 from .locustrunner import LocustRunner
 from .runtime import RemoteRuntime
@@ -144,9 +151,9 @@ def run_remote_bench(
         config=effective_remote_config,
         env=env,
         needs_db=needs_db,
-        bench_users=load_profile.users,
-        bench_spawn_rate=load_profile.spawn_rate,
-        bench_run_time=load_profile.run_time_s,
+        bench_users=load_profile.effective_users,
+        bench_spawn_rate=load_profile.effective_spawn_rate,
+        bench_run_time=load_profile.effective_run_time_s,
     )
 
     ctx = DistributedBenchContext.create(

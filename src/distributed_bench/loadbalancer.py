@@ -3,7 +3,7 @@ from __future__ import annotations
 import shlex
 
 import remote_exec
-from bench_models import DistributedBenchContext
+from bench_models import DistributedBenchContext, host_slug
 from env.base import Env
 
 from .config import RuntimeToggles
