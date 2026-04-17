@@ -19,7 +19,10 @@ SAFETY_PROMPT="high_performance"    # none, generic, specific, high-performance
 # --- 3. Benchmark Profile ---
 # Named load profile from src/distributed_bench/load_profiles/registry.py
 # Example values currently available: default, quick-check, stress-heavy
-BAXBENCH_LOAD_PROFILE="default"
+# Bash "tuple" (array): each load profile will be run against each system topology.
+# NOTE: Bash arrays are space-separated (NO commas). Good:
+#   BAXBENCH_LOAD_PROFILE=("default" "quick-check")
+BAXBENCH_LOAD_PROFILE=("stairs-100-100-30-20")
 
 # Optional one-off overrides (leave empty to use selected load profile).
 BENCH_USERS=""
@@ -28,7 +31,10 @@ BENCH_RUN_TIME=""
 
 # --- 4. Remote Benchmarking / Topology ---
 # Named system topology profile from src/distributed_bench/system_configs/registry.py
-BAXBENCH_SYSTEM_TOPOLOGY="default"
+# Bash "tuple" (array): each system topology will be run for each load profile.
+# NOTE: Bash arrays are space-separated (NO commas). Good:
+#   BAXBENCH_SYSTEM_TOPOLOGY=("2C-1LB-2B-1DB" "2C-1B-1DB")
+BAXBENCH_SYSTEM_TOPOLOGY=("2C-1LB-2B-1DB" "2C-1B-1DB")
 
 
 # Use a stable per-user directory that is always writable, even if /tmp/baxbench
@@ -132,49 +138,65 @@ if [ "$PLOT_AFTER_BENCH" == "true" ]; then
 fi
 
 echo "Executing: pipenv run python src/main.py ${ARGS[@]}"
-EXTRA_ENV=()
+BASE_ENV=()
 if [ "$BAXBENCH_SKIP_TEARDOWN" == "true" ]; then
-    EXTRA_ENV+=("BAXBENCH_SKIP_TEARDOWN=1")
+    BASE_ENV+=("BAXBENCH_SKIP_TEARDOWN=1")
 fi
 if [ "$BAXBENCH_SSH_MULTIPLEX" == "true" ]; then
-    EXTRA_ENV+=("BAXBENCH_SSH_MULTIPLEX=1")
+    BASE_ENV+=("BAXBENCH_SSH_MULTIPLEX=1")
 fi
 if [ "$BAXBENCH_LOG_COMMANDS" == "true" ]; then
-    EXTRA_ENV+=("BAXBENCH_LOG_COMMANDS=1")
+    BASE_ENV+=("BAXBENCH_LOG_COMMANDS=1")
 else
-    EXTRA_ENV+=("BAXBENCH_LOG_COMMANDS=0")
+    BASE_ENV+=("BAXBENCH_LOG_COMMANDS=0")
 fi
 if [ "$BAXBENCH_COLLECT_DOCKER_LOGS" == "true" ]; then
-    EXTRA_ENV+=("BAXBENCH_COLLECT_DOCKER_LOGS=1")
+    BASE_ENV+=("BAXBENCH_COLLECT_DOCKER_LOGS=1")
 else
-    EXTRA_ENV+=("BAXBENCH_COLLECT_DOCKER_LOGS=0")
+    BASE_ENV+=("BAXBENCH_COLLECT_DOCKER_LOGS=0")
 fi
 
 if [ "$BAXBENCH_KEEP_BACKENDS" == "true" ]; then
-    EXTRA_ENV+=("BAXBENCH_KEEP_BACKENDS=1")
+    BASE_ENV+=("BAXBENCH_KEEP_BACKENDS=1")
 fi
 if [ "$BAXBENCH_KEEP_DB" == "true" ]; then
-    EXTRA_ENV+=("BAXBENCH_KEEP_DB=1")
+    BASE_ENV+=("BAXBENCH_KEEP_DB=1")
 fi
 if [ "$BAXBENCH_KEEP_LB" == "true" ]; then
-    EXTRA_ENV+=("BAXBENCH_KEEP_LB=1")
+    BASE_ENV+=("BAXBENCH_KEEP_LB=1")
 fi
 if [ "$BAXBENCH_KEEP_TUNNELS" == "true" ]; then
-    EXTRA_ENV+=("BAXBENCH_KEEP_TUNNELS=1")
+    BASE_ENV+=("BAXBENCH_KEEP_TUNNELS=1")
 fi
 if [ "$BAXBENCH_WIPE_DB_ON_REUSE" == "true" ]; then
-    EXTRA_ENV+=("BAXBENCH_WIPE_DB_ON_REUSE=1")
+    BASE_ENV+=("BAXBENCH_WIPE_DB_ON_REUSE=1")
 else
-    EXTRA_ENV+=("BAXBENCH_WIPE_DB_ON_REUSE=0")
-fi
-if [ -n "$BAXBENCH_SYSTEM_TOPOLOGY" ]; then
-    EXTRA_ENV+=("BAXBENCH_SYSTEM_TOPOLOGY=$BAXBENCH_SYSTEM_TOPOLOGY")
-fi
-if [ -n "$BAXBENCH_LOAD_PROFILE" ]; then
-    EXTRA_ENV+=("BAXBENCH_LOAD_PROFILE=$BAXBENCH_LOAD_PROFILE")
+    BASE_ENV+=("BAXBENCH_WIPE_DB_ON_REUSE=0")
 fi
 
-echo "Extra env: ${EXTRA_ENV[*]}"
 MPLCONFIGDIR="${MPLCONFIGDIR:-/tmp/matplotlib-${USER}}"
 export MPLCONFIGDIR
-env "${EXTRA_ENV[@]}" pipenv run python src/main.py "${ARGS[@]}"
+
+RUN_I=0
+for topo in "${BAXBENCH_SYSTEM_TOPOLOGY[@]}"; do
+  for profile in "${BAXBENCH_LOAD_PROFILE[@]}"; do
+    RUN_I=$((RUN_I+1))
+    EXTRA_ENV=("${BASE_ENV[@]}")
+    if [ -n "$topo" ]; then
+        EXTRA_ENV+=("BAXBENCH_SYSTEM_TOPOLOGY=$topo")
+    fi
+    if [ -n "$profile" ]; then
+        EXTRA_ENV+=("BAXBENCH_LOAD_PROFILE=$profile")
+    fi
+
+    echo ""
+    echo "=== Run #$RUN_I: topology='$topo' load_profile='$profile' ==="
+    echo "Extra env: ${EXTRA_ENV[*]}"
+    env "${EXTRA_ENV[@]}" pipenv run python src/main.py "${ARGS[@]}"
+    RC=$?
+    if [ $RC -ne 0 ]; then
+        echo "Run #$RUN_I failed (exit=$RC). Stopping."
+        exit $RC
+    fi
+  done
+done
