@@ -619,19 +619,6 @@ class Task:
                 except Exception as e:
                     logger.exception("got exception:\n%s", str(e), exc_info=e)
                     return
-                try:
-                    prompter.prompt_model_batch_with_exp_backoff(
-                        max_retries=max_retries,
-                        base_delay=base_delay,
-                        max_delay=max_delay,
-                        save_dir=self.get_save_dir(results_dir),
-                        logger=logger,
-                    )
-                except KeyboardInterrupt:
-                    raise
-                except Exception as e:
-                    logger.exception("got exception:\n%s", str(e), exc_info=e)
-                    return
 
     def _build_image(
         self,
