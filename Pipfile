@@ -4,6 +4,8 @@ verify_ssl = true
 name = "pypi"
 
 [packages]
+openhands-sdk = "*"
+openhands-tools = "*"
 
 [dev-packages]
 

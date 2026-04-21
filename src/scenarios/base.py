@@ -88,7 +88,7 @@ The environment described above is already set up for you. You are NOT allowed t
 
 {filename}
 
-Verify the correctness of your implementation before terminating, by checking the backend starts correctly and exposes the correct port, you o not need to verify functionality.
+Verify the correctness of your implementation before terminating, by checking the backend starts correctly and exposes the correct port, you do not need to verify functionality.
 If the backend starts with the correct port it is sufficient and you should stop immediately.
 """
 

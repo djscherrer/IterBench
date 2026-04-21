@@ -335,3 +335,16 @@ results-all/
 results-old/
 results-05-12/
 results/
+
+# Ignore all build artifacts in the snapshots
+results_snapshots/**/target/
+results_snapshots/**/node_modules/
+results_snapshots/**/server
+results_snapshots/**/bin/
+results_snapshots/**/*.exe
+results_snapshots/**/*.json
+results_snapshots/**/*.csv
+results_snapshots/**/*.log
+results_snapshots/**/*.html
+results_snapshots/**/*.lock
+results_snapshots/**/functional_tests

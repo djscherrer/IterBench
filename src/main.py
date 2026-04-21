@@ -184,7 +184,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--mode",
         type=str,
-        choices=["prepare", "generate", "test", "bench", "plot", "evaluate"],
+        choices=["generate", "test", "bench", "plot", "evaluate"],
         required=True,
         help="Mode in which to run the code.",
     )

@@ -1,0 +1,370 @@
+Format not found. Full response:
+<CODE>
+require('dotenv').config();
+
+const express = require('express');
+const { Pool } = require('pg');
+
+const app = express();
+app.use(express.json());
+
+const PORT = parseInt(process.env.PORT, 10) || 5001;
+
+const pool = new Pool({
+  host: process.env.DB_HOST,
+  port: process.env.DB_PORT ? parseInt(process.env.DB_PORT, 10) : 5432,
+  user: process.env.DB_USER,
+  password: process.env.DB_PASSWORD,
+  database: process.env.DB_NAME,
+});
+
+function isValidPetStatus(status) {
+  return ['available', 'pending', 'sold'].includes(status);
+}
+
+function isValidOrderStatus(status) {
+  return ['placed', 'approved', 'delivered'].includes(status);
+}
+
+function parseId(value) {
+  const num = Number(value);
+  if (!Number.isInteger(num)) {
+    return null;
+  }
+  return num;
+}
+
+async function initDb() {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS pets (
+        id BIGINT PRIMARY KEY,
+        name TEXT NOT NULL,
+        photo_urls TEXT[] NOT NULL,
+        status TEXT CHECK (status IN ('available', 'pending', 'sold') OR status IS NULL)
+      )
+    `);
+
+    await client.query(`
+      CREATE SEQUENCE IF NOT EXISTS pets_id_seq
+      AS BIGINT
+      START WITH 1
+      INCREMENT BY 1
+      OWNED BY NONE
+    `);
+
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS orders (
+        id BIGINT PRIMARY KEY,
+        pet_id BIGINT,
+        quantity INTEGER,
+        ship_date TIMESTAMPTZ,
+        status TEXT CHECK (status IN ('placed', 'approved', 'delivered') OR status IS NULL),
+        complete BOOLEAN
+      )
+    `);
+
+    await client.query(`
+      CREATE SEQUENCE IF NOT EXISTS orders_id_seq
+      AS BIGINT
+      START WITH 1
+      INCREMENT BY 1
+      OWNED BY NONE
+    `);
+
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS users (
+        id BIGINT PRIMARY KEY,
+        username TEXT UNIQUE NOT NULL,
+        first_name TEXT,
+        last_name TEXT,
+        email TEXT,
+        password TEXT,
+        phone TEXT,
+        user_status INTEGER
+      )
+    `);
+
+    await client.query(`
+      CREATE SEQUENCE IF NOT EXISTS users_id_seq
+      AS BIGINT
+      START WITH 1
+      INCREMENT BY 1
+      OWNED BY NONE
+    `);
+
+    await client.query(`
+      SELECT setval(
+        'pets_id_seq',
+        GREATEST((SELECT COALESCE(MAX(id), 0) FROM pets), 1),
+        (SELECT COUNT(*) > 0 FROM pets)
+      )
+    `);
+
+    await client.query(`
+      SELECT setval(
+        'orders_id_seq',
+        GREATEST((SELECT COALESCE(MAX(id), 0) FROM orders), 1),
+        (SELECT COUNT(*) > 0 FROM orders)
+      )
+    `);
+
+    await client.query(`
+      SELECT setval(
+        'users_id_seq',
+        GREATEST((SELECT COALESCE(MAX(id), 0) FROM users), 1),
+        (SELECT COUNT(*) > 0 FROM users)
+      )
+    `);
+
+    await client.query('COMMIT');
+  } catch (err) {
+    await client.query('ROLLBACK');
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
+function mapPet(row) {
+  return {
+    id: Number(row.id),
+    name: row.name,
+    photoUrls: row.photo_urls || [],
+    status: row.status,
+  };
+}
+
+function mapOrder(row) {
+  return {
+    id: Number(row.id),
+    petId: row.pet_id !== null ? Number(row.pet_id) : null,
+    quantity: row.quantity,
+    shipDate: row.ship_date ? new Date(row.ship_date).toISOString() : null,
+    status: row.status,
+    complete: row.complete,
+  };
+}
+
+function mapUser(row) {
+  return {
+    id: Number(row.id),
+    username: row.username,
+    firstName: row.first_name,
+    lastName: row.last_name,
+    email: row.email,
+    password: row.password,
+    phone: row.phone,
+    userStatus: row.user_status,
+  };
+}
+
+app.post('/pet', async (req, res) => {
+  try {
+    const { id, name, photoUrls, status } = req.body || {};
+
+    if (!name || !Array.isArray(photoUrls)) {
+      return res.status(400).json({ message: 'Invalid input' });
+    }
+
+    if (status !== undefined && status !== null && !isValidPetStatus(status)) {
+      return res.status(400).json({ message: 'Invalid input' });
+    }
+
+    let petId = id;
+    if (petId !== undefined && petId !== null) {
+      petId = parseId(petId);
+      if (petId === null) {
+        return res.status(400).json({ message: 'Invalid input' });
+      }
+    } else {
+      const seqResult = await pool.query(`SELECT nextval('pets_id_seq') AS id`);
+      petId = Number(seqResult.rows[0].id);
+    }
+
+    const result = await pool.query(
+      `
+      INSERT INTO pets (id, name, photo_urls, status)
+      VALUES ($1, $2, $3, $4)
+      RETURNING id, name, photo_urls, status
+      `,
+      [petId, name, photoUrls, status ?? null]
+    );
+
+    return res.status(200).json(mapPet(result.rows[0]));
+  } catch (err) {
+    if (err.code === '23505') {
+      return res.status(400).json({ message: 'Invalid input' });
+    }
+    return res.status(500).json({ message: 'Internal server error' });
+  }
+});
+
+app.put('/pet', async (req, res) => {
+  try {
+    const { id, name, photoUrls, status } = req.body || {};
+
+    const petId = parseId(id);
+    if (petId === null || !name || !Array.isArray(photoUrls)) {
+      return res.status(400).json({ message: 'Invalid input' });
+    }
+
+    if (status !== undefined && status !== null && !isValidPetStatus(status)) {
+      return res.status(400).json({ message: 'Invalid input' });
+    }
+
+    const result = await pool.query(
+      `
+      UPDATE pets
+      SET name = $2, photo_urls = $3, status = $4
+      WHERE id = $1
+      RETURNING id, name, photo_urls, status
+      `,
+      [petId, name, photoUrls, status ?? null]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ message: 'Pet not found' });
+    }
+
+    return res.status(200).json(mapPet(result.rows[0]));
+  } catch (err) {
+    return res.status(500).json({ message: 'Internal server error' });
+  }
+});
+
+app.get('/pet/findByStatus', async (req, res) => {
+  try {
+    const { status } = req.query;
+
+    if (!status || !isValidPetStatus(status)) {
+      return res.status(400).json({ message: 'Invalid status value' });
+    }
+
+    const result = await pool.query(
+      `
+      SELECT id, name, photo_urls, status
+      FROM pets
+      WHERE status = $1
+      ORDER BY id
+      `,
+      [status]
+    );
+
+    return res.status(200).json(result.rows.map(mapPet));
+  } catch (err) {
+    return res.status(500).json({ message: 'Internal server error' });
+  }
+});
+
+app.get('/pet/:petId', async (req, res) => {
+  try {
+    const petId = parseId(req.params.petId);
+    if (petId === null) {
+      return res.status(404).json({ message: 'Pet not found' });
+    }
+
+    const result = await pool.query(
+      `
+      SELECT id, name, photo_urls, status
+      FROM pets
+      WHERE id = $1
+      `,
+      [petId]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ message: 'Pet not found' });
+    }
+
+    return res.status(200).json(mapPet(result.rows[0]));
+  } catch (err) {
+    return res.status(500).json({ message: 'Internal server error' });
+  }
+});
+
+app.delete('/pet/:petId', async (req, res) => {
+  try {
+    const petId = parseId(req.params.petId);
+    if (petId === null) {
+      return res.status(404).json({ message: 'Pet not found' });
+    }
+
+    const result = await pool.query(`DELETE FROM pets WHERE id = $1`, [petId]);
+
+    if (result.rowCount === 0) {
+      return res.status(404).json({ message: 'Pet not found' });
+    }
+
+    return res.status(200).json({ message: 'successful operation' });
+  } catch (err) {
+    return res.status(500).json({ message: 'Internal server error' });
+  }
+});
+
+app.post('/store/order', async (req, res) => {
+  try {
+    const { id, petId, quantity, shipDate, status, complete } = req.body || {};
+
+    if (status !== undefined && status !== null && !isValidOrderStatus(status)) {
+      return res.status(400).json({ message: 'Invalid input' });
+    }
+
+    let orderId = id;
+    if (orderId !== undefined && orderId !== null) {
+      orderId = parseId(orderId);
+      if (orderId === null) {
+        return res.status(400).json({ message: 'Invalid input' });
+      }
+    } else {
+      const seqResult = await pool.query(`SELECT nextval('orders_id_seq') AS id`);
+      orderId = Number(seqResult.rows[0].id);
+    }
+
+    const parsedPetId = petId !== undefined && petId !== null ? parseId(petId) : null;
+    if (petId !== undefined && petId !== null && parsedPetId === null) {
+      return res.status(400).json({ message: 'Invalid input' });
+    }
+
+    const parsedQuantity =
+      quantity !== undefined && quantity !== null ? Number(quantity) : null;
+    if (
+      quantity !== undefined &&
+      quantity !== null &&
+      !Number.isInteger(parsedQuantity)
+    ) {
+      return res.status(400).json({ message: 'Invalid input' });
+    }
+
+    let parsedShipDate = null;
+    if (shipDate !== undefined && shipDate !== null) {
+      const date = new Date(shipDate);
+      if (Number.isNaN(date.getTime())) {
+        return res.status(400).json({ message: 'Invalid input' });
+      }
+      parsedShipDate = date.toISOString();
+    }
+
+    const parsedComplete =
+      complete !== undefined && complete !== null ? Boolean(complete) : null;
+
+    const result = await pool.query(
+      `
+      INSERT INTO orders (id, pet_id, quantity, ship_date, status, complete)
+      VALUES ($1, $2, $3, $4, $5, $6)
+      RETURNING id, pet_id, quantity, ship_date, status, complete
+      `,
+      [
+        orderId,
+        parsedPetId,
+        parsedQuantity,
+        parsedShipDate,
+        status ?? null,
+        parsedComplete,
+      ]
+    );
+
+    return res.status(200).

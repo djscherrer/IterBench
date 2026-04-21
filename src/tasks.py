@@ -406,7 +406,7 @@ class Task:
         files: dict[pathlib.Path, str] = {}
 
         skip_dirs = {"node_modules", "venv", "__pycache__", ".git", "target"}
-        skip_files = {"db.sqlite3", ".DS_Store"}
+        skip_files = {"db.sqlite3", ".DS_Store", "Cargo.lock"}
 
         for root, dir_names, file_names in os.walk(code_dir):
             dir_names[:] = [d for d in dir_names if d not in skip_dirs]
