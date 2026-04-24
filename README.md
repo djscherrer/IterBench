@@ -120,6 +120,19 @@ Specific models/scenarios/frameworks/samples can be generated, tested, or evalua
 
 Each of these arguments takes values separated by spaces.
 
+#### Troubleshooting
+
+It is advised to check the associated `gen.log` file for each generation command to understand if something went wrong.
+Typical errors include:
+- Token limit exceeded
+- Rate limit exceeded
+- Provider not available (e.g. OpenAI shutting down their API)
+- Internal errors from the model provider
+
+Whilst we try to make these errors visible through the CLI output, the `gen.log` provides a more detailed view of what went wrong.
+
+`bench` mode only works if `test` mode was ran beforehand.
+
 ## ✍️ Citation
 If you find our work helpful, please use the following citation.
 ```bib

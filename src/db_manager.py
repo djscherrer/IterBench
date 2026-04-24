@@ -89,7 +89,7 @@ class PostgresManager:
             try:
                 # Use pg_isready to check if Postgres is ready
                 exit_code, output = self._container.exec_run(
-                    f"pg_isready -U {self.DEFAULT_USER} -d {self.DEFAULT_DATABASE}"
+                    f"pg_isready -h localhost -p 5432 -U {self.DEFAULT_USER} -d {self.DEFAULT_DATABASE}"
                 )
                 
                 if exit_code == 0:
