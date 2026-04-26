@@ -48,6 +48,13 @@ _COLLECT_DOCKER_LOGS = os.environ.get("BAXBENCH_COLLECT_DOCKER_LOGS", "1").strip
     "on",
 )
 
+_CAPTURE_PERCPU = os.environ.get("BAXBENCH_CAPTURE_PERCPU", "0").strip().lower() in (
+    "1",
+    "true",
+    "yes",
+    "on",
+)
+
 
 def ssh_control_path(host: str) -> str:
     """
@@ -152,9 +159,21 @@ def ensure_rootless_docker(host: str, logger: logging.Logger) -> None:
         "if command -v systemctl >/dev/null 2>&1; then "
         "  systemctl --user is-active docker >/dev/null 2>&1 || systemctl --user start docker >/dev/null 2>&1 || true; "
         "fi; "
-        "docker info >/dev/null 2>&1 || true"
+        # If Docker isn't reachable, fail early so later steps don't produce confusing
+        # "No such container" / readiness timeouts.
+        "docker info >/dev/null 2>&1"
     )
-    ssh(host, f"bash -lc {shlex.quote(cmd)}", logger)
+    out = ssh(host, f"bash -lc {shlex.quote(cmd)}", logger)
+    try:
+        out.check_returncode()
+    except Exception as exc:
+        msg = (out.stdout or b"").decode(errors="ignore").strip()
+        if not msg:
+            msg = f"exit {out.returncode}"
+        raise RuntimeError(
+            f"Docker is not available on host {host}. "
+            f"Ensure the Docker daemon is running and that your user can access it.\n{msg}"
+        ) from exc
 
 
 def scp_to_remote(local_path: pathlib.Path, host: str, remote_path: str, logger: logging.Logger) -> None:
@@ -348,6 +367,28 @@ def get_cpu_times(connection: Connection) -> tuple[int, int, int, int, int, int,
     return (user, nice, system, idle, iowait, irq, softirq, steal)
 
 
+def get_cpu_times_percpu(connection: Connection) -> dict[str, tuple[int, int, int, int, int, int, int, int]]:
+    """
+    Return per-CPU times from /proc/stat for cpu0, cpu1, ...
+    """
+    out = connection.run("cat /proc/stat | grep '^cpu[0-9]'", hide=True, warn=True)
+    if not getattr(out, "ok", False):
+        return {}
+    rows: dict[str, tuple[int, int, int, int, int, int, int, int]] = {}
+    for line in (out.stdout or "").splitlines():
+        parts = line.split()
+        if len(parts) < 2:
+            continue
+        cpu = parts[0].strip()
+        try:
+            nums = list(map(int, parts[1:]))
+        except Exception:
+            continue
+        user, nice, system, idle, iowait, irq, softirq, steal, *_ = nums + [0] * (9 - len(nums))
+        rows[cpu] = (user, nice, system, idle, iowait, irq, softirq, steal)
+    return rows
+
+
 def get_loadavg(connection: Connection) -> tuple[float, float, float]:
     out = connection.run("cat /proc/loadavg", hide=True)
     if not out.ok:
@@ -470,6 +511,10 @@ def capture_host_performance(
     # reflect --cpus limits on a single container. Compare container limits with
     # `docker stats`, not this series.
     filename = out_csv or (sample_dir / "server_performance.csv")
+    percpu_filename: pathlib.Path | None = None
+    percpu_cpus: list[str] = []
+    if _CAPTURE_PERCPU:
+        percpu_filename = filename.with_name(filename.stem + "_percpu.csv")
     with open(filename, "w") as f:
         f.write(
             "ts_epoch_s,ts,cpu_usage_ratio,mem_used_mbytes,mem_total_mbytes,mem_used_pct,"
@@ -481,11 +526,13 @@ def capture_host_performance(
         )
     connection = Connection(host)
     last_cpu_stats = None
+    last_cpu_stats_percpu: dict[str, tuple[int, int, int, int, int, int, int, int]] | None = None
     last_disk_stats = None
     last_net_stats = None
     while not stop_event.is_set():
         loop_start = time.time()
         cpu_stats = get_cpu_times(connection)
+        cpu_stats_percpu = get_cpu_times_percpu(connection) if percpu_filename is not None else {}
         disk_stats = get_disk_usage(connection)
         mem_stats = get_memory_usage(connection)
         swap_stats = get_swap_usage(connection)
@@ -537,7 +584,31 @@ def capture_host_performance(
                 f"{disk_reads},{disk_writes},{net_rx},{net_tx},{container_pct}\n"
             )
 
+        # Optional: per-CPU utilization series.
+        if percpu_filename is not None and cpu_stats_percpu:
+            if not percpu_cpus:
+                percpu_cpus = sorted(cpu_stats_percpu.keys())
+                with open(percpu_filename, "w") as pf:
+                    pf.write("ts_epoch_s,ts," + ",".join(f"{c}_usage_ratio" for c in percpu_cpus) + "\n")
+            ratios: list[str] = []
+            if last_cpu_stats_percpu is not None:
+                for c in percpu_cpus:
+                    cur = cpu_stats_percpu.get(c)
+                    prev = last_cpu_stats_percpu.get(c) if last_cpu_stats_percpu else None
+                    r = ""
+                    if cur is not None and prev is not None:
+                        dt = sum(cur) - sum(prev)
+                        if dt > 0:
+                            didle = (cur[3] + cur[4]) - (prev[3] + prev[4])
+                            r = str(1.0 - (didle / dt))
+                    ratios.append(r)
+            else:
+                ratios = ["" for _ in percpu_cpus]
+            with open(percpu_filename, "a") as pf:
+                pf.write(f"{ts_epoch:.3f},{ts}," + ",".join(ratios) + "\n")
+
         last_cpu_stats = cpu_stats
+        last_cpu_stats_percpu = cpu_stats_percpu or last_cpu_stats_percpu
         last_disk_stats = disk_stats
         last_net_stats = net_stats
 

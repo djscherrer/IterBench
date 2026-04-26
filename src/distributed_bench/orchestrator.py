@@ -48,19 +48,26 @@ def _write_run_config_snapshot(
         "BAXBENCH_BACKEND_CPUS",
         "BAXBENCH_BACKEND_MEMORY",
         "BAXBENCH_BACKEND_CPUSET",
+        "BAXBENCH_BACKEND_TASKSET_CPUS",
+        "BAXBENCH_BACKEND_CPUSET_DOCKER",
         "BAXBENCH_BACKEND_PIDS_LIMIT",
         "BAXBENCH_BACKEND_MEMORY_SWAP",
         "BAXBENCH_DB_CPUS",
         "BAXBENCH_DB_MEMORY",
         "BAXBENCH_DB_CPUSET",
+        "BAXBENCH_DB_TASKSET_CPUS",
+        "BAXBENCH_DB_CPUSET_DOCKER",
         "BAXBENCH_DB_PIDS_LIMIT",
         "BAXBENCH_DB_MEMORY_SWAP",
         "BAXBENCH_LB_CPUS",
         "BAXBENCH_LB_MEMORY",
         "BAXBENCH_LB_CPUSET",
+        "BAXBENCH_LB_TASKSET_CPUS",
+        "BAXBENCH_LB_CPUSET_DOCKER",
         "BAXBENCH_LB_PIDS_LIMIT",
         "BAXBENCH_LB_MEMORY_SWAP",
         "BAXBENCH_LOAD_TASKSET_CPUS",
+        "BAXBENCH_LOAD_CPUSET",
     ]
     resource_overrides_env = {
         k: os.environ.get(k)
@@ -186,7 +193,7 @@ def run_remote_bench(
         ",".join(plan.backend_hosts),
         ",".join(plan.db_hosts) if plan.needs_db else "(none)",
         plan.lb_host or "(none)",
-        ",".join(plan.load_hosts),
+        ",".join(plan.load_all_hosts),
         ctx.container_name,
         plan.app_port,
     )
@@ -277,11 +284,11 @@ def run_remote_bench(
             ),
         ):
             if lb_mgr is not None:
-                locust_runner.run(load_targets={h: lb_mgr.lb_target_for_loader(h) for h in plan.load_hosts})
+                locust_runner.run(target=lb_mgr.lb_target_for_loader(plan.load_master))
             else:
                 # Validated in DistributedBenchPlan.__post_init__: exactly one backend when no LB.
                 only_backend = plan.backend_hosts[0]
-                locust_runner.run(load_targets={h: ctx.backend_net_hosts[only_backend] for h in plan.load_hosts})
+                locust_runner.run(target=ctx.backend_net_hosts[only_backend])
 
         # Access logs from DB and LB
         if db_mgr:

@@ -164,7 +164,8 @@ class LocustRunner:
                 locust_bin = remote_exec.ensure_remote_python_env(wh, self.ctx.remote_env_dir, self.logger)
                 ts = self.system_topology.load_resources.taskset_cpus
                 worker_exec = (
-                    f"TASKSET_CPUS={shlex.quote(ts)} nohup taskset -c \"$TASKSET_CPUS\" {shlex.quote(locust_bin)} "
+                    # Don't use VAR=... cmd "$VAR" under `set -u` (the "$VAR" expands before the env assignment).
+                    f"nohup taskset -c {shlex.quote(ts)} {shlex.quote(locust_bin)} "
                     if ts
                     else f"nohup {shlex.quote(locust_bin)} "
                 )
@@ -224,11 +225,9 @@ class LocustRunner:
                     f"BAXBENCH_SPIKE_DURATION_S={int(self.load_profile.duration_s)} "
                 )
         load_ts = self.system_topology.load_resources.taskset_cpus
+        locust_exec = f"{shlex.quote(locust_bin)}"
         if load_ts:
-            env_prefix += f"TASKSET_CPUS={shlex.quote(load_ts)} "
-        locust_exec = f"{locust_bin}"
-        if load_ts:
-            locust_exec = f"taskset -c \"$TASKSET_CPUS\" {locust_bin}"
+            locust_exec = f"taskset -c {shlex.quote(load_ts)} {shlex.quote(locust_bin)}"
 
         distributed_master_args = (
             f"--master --headless "

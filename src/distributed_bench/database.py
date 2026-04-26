@@ -96,13 +96,16 @@ class DatabaseManager:
         if not existing_db:
             self.runtime.docker_rm_by_labels(db_host, labels=db_labels)
 
+        dbn_q = shlex.quote(self.ctx.db_container_name)
+        db_res = self.system_topology.db_resources
+        pin_db = db_res.bash_apply_taskset_to_container(dbn_q)
         start_db_cmd = (
             "set -euo pipefail; "
-            f"docker rm -f {shlex.quote(self.ctx.db_container_name)} >/dev/null 2>&1 || true; "
-            f"docker run -d --name {shlex.quote(self.ctx.db_container_name)} "
+            f"docker rm -f {dbn_q} >/dev/null 2>&1 || true; "
+            f"docker run -d --name {dbn_q} "
             + " ".join(f"--label {shlex.quote(k + '=' + v)}" for k, v in db_labels.items())
             + " "
-            f"{self.system_topology.db_resources.docker_run_flags()} "
+            f"{db_res.docker_run_flags()} "
             "-p 0.0.0.0:5432:5432 "
             f"-e POSTGRES_USER={PostgresManager.DEFAULT_USER} "
             f"-e POSTGRES_PASSWORD={PostgresManager.DEFAULT_PASSWORD} "
@@ -114,20 +117,44 @@ class DatabaseManager:
             "-c pg_stat_statements.track=all "
             "-c track_io_timing=on"
         )
+        if pin_db:
+            start_db_cmd += f"; {pin_db}"
         if existing_db:
             self.logger.info("Reusing existing Postgres container on %s (BAXBENCH_KEEP_DB=1)", db_host)
             reused_name = self.runtime.docker_ps_name(db_host, labels=db_labels)
             if reused_name:
                 self.ctx.db_container_name = reused_name
         else:
-            remote_exec.ssh(db_host, f'bash -lc "{start_db_cmd}"', self.logger)
+            # Use shlex.quote() so hostpin fragments containing quotes don't break the script.
+            out = remote_exec.ssh(db_host, f"bash -lc {shlex.quote(start_db_cmd)}", self.logger)
+            out.check_returncode()
             self.logger.info("Remote Postgres started")
 
         wait_cmd = (
             f"timeout 30s bash -lc 'until docker exec {shlex.quote(self.ctx.db_container_name)} "
             f"pg_isready -U {PostgresManager.DEFAULT_USER}; do sleep 1; done'"
         )
-        remote_exec.ssh(db_host, wait_cmd, self.logger)
+        remote_exec.ssh(db_host, wait_cmd, self.logger).check_returncode()
+
+        # Verification: record the effective CPU affinity after pinning.
+        if db_res.taskset_cpus:
+            verify_cmd = (
+                "set -euo pipefail; "
+                "docker_sock=\"/run/user/$(id -u)/docker.sock\"; "
+                "if [[ -z \"${DOCKER_HOST:-}\" && -S \"$docker_sock\" ]]; then export DOCKER_HOST=\"unix://$docker_sock\"; fi; "
+                f"pid=$(docker inspect -f '{{{{.State.Pid}}}}' {dbn_q} 2>/dev/null || echo ''); "
+                f"echo \"PINVERIFY role=db host={db_host} container={self.ctx.db_container_name} expected={db_res.taskset_cpus} pid=${{pid}}\"; "
+                "if [[ -n \"${pid:-}\" && \"${pid:-}\" != 0 ]]; then "
+                f"  _out=$(taskset -apc {shlex.quote(db_res.taskset_cpus)} \"$pid\" 2>&1) && _rc=0 || _rc=$?; "
+                "  echo \"PINAPPLY rc=${_rc} out=${_out}\"; "
+                "  taskset -pc \"$pid\" 2>&1 || true; "
+                "  grep -E '^Cpus_allowed_list:' \"/proc/$pid/status\" 2>&1 || true; "
+                "fi"
+            )
+            vout = remote_exec.ssh(db_host, f"bash -lc {shlex.quote(verify_cmd)}", self.logger)
+            txt = (vout.stdout or b"").decode(errors="ignore").strip()
+            if txt:
+                self.logger.info("%s", txt)
 
         ext_sql = "CREATE EXTENSION IF NOT EXISTS pg_stat_statements;"
         ext_cmd = (

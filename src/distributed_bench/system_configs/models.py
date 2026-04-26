@@ -59,12 +59,21 @@ class ContainerResources:
         if not self.taskset_cpus:
             return ""
         cpus_arg = shlex.quote(self.taskset_cpus)
-        # No double quotes in this fragment: backend/lb/db wrap the whole script in
-        # ``bash -lc "..."`` and nested quotes would break that.
+        # NOTE: callers wrap the whole script via `bash -lc <shlex.quote(...)>`,
+        # so this fragment is allowed to contain quotes safely.
         return (
-            f"root_pid=$(docker inspect -f '{{{{.State.Pid}}}}' {container_name_word}); "
-            f"if [[ -n $root_pid && $root_pid != 0 ]]; then "
-            f"taskset -a -c {cpus_arg} -p $root_pid >/dev/null 2>&1 || true; fi"
+            # Rootless Docker commonly listens on /run/user/$UID/docker.sock and requires DOCKER_HOST.
+            # Non-interactive SSH shells may not have that env var, so we set it if we detect the socket.
+            "docker_sock=\"/run/user/$(id -u)/docker.sock\"; "
+            "if [[ -z \"${DOCKER_HOST:-}\" && -S \"$docker_sock\" ]]; then export DOCKER_HOST=\"unix://$docker_sock\"; fi; "
+            f"root_pid=$(docker inspect -f '{{{{.State.Pid}}}}' {container_name_word} 2>/dev/null || echo ''); "
+            f"if [[ -n \"${{root_pid:-}}\" && \"${{root_pid:-}}\" != 0 ]]; then "
+            # Apply pinning and *surface failures* (rootless/cgroup policies often disallow this).
+            # NOTE: util-linux taskset syntax is: taskset -pc <cpu-list> <pid>
+            # (optionally add -a to include all threads).
+            f"  _pin_out=$(taskset -apc {cpus_arg} \"${{root_pid}}\" 2>&1) && _pin_rc=0 || _pin_rc=$?; "
+            f"  echo \"PINAPPLY pid=${{root_pid}} cpus={self.taskset_cpus} rc=${{_pin_rc}} out=${{_pin_out}}\"; "
+            "fi"
         )
 
 

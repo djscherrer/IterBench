@@ -90,7 +90,8 @@ def _docker_cpu_saturation_pct_by_stats_host(run_dir: pathlib.Path) -> dict[str,
     """
     Map stats/ subdirectory name -> Docker CPUPerc value at full CPU quota.
 
-    Uses resolved_system_topology in config.json: min(--cpus, cpuset size) when both are set.
+    Uses resolved_system_topology in config.json: min of Docker ``--cpus``, Docker
+    ``--cpuset-cpus`` size (nested ``docker``), and ``taskset_cpus`` list size when set.
     """
     cfg_path = run_dir / "config.json"
     if not cfg_path.is_file():
@@ -106,13 +107,22 @@ def _docker_cpu_saturation_pct_by_stats_host(run_dir: pathlib.Path) -> dict[str,
 
     def _cap_perc(res: dict) -> float | None:
         caps: list[float] = []
-        c = res.get("cpus")
+        docker = res.get("docker") if isinstance(res.get("docker"), dict) else {}
+        c = docker.get("cpus")
+        if c is None and "cpus" in res:
+            c = res.get("cpus")
         if c is not None:
             caps.append(float(c) * 100.0)
-        cs = res.get("cpuset_cpus")
+        cs = docker.get("cpuset_cpus")
+        if cs is None and res.get("cpuset_cpus"):
+            cs = res.get("cpuset_cpus")
         n = _cpuset_cpu_count(str(cs)) if cs else None
         if n is not None:
             caps.append(float(n) * 100.0)
+        ts = res.get("taskset_cpus")
+        n_ts = _cpuset_cpu_count(str(ts)) if ts else None
+        if n_ts is not None:
+            caps.append(float(n_ts) * 100.0)
         if not caps:
             return None
         return min(caps)
@@ -174,7 +184,14 @@ def _host_roles_from_config(run_dir: pathlib.Path) -> dict[str, set[str]] | None
                 continue
             roles.setdefault(slug, set()).add(tag)
 
-    _add_roles("CL", erc.get("load_hosts"))
+    load_master = erc.get("load_master")
+    load_workers = erc.get("load_workers") or []
+    load_all = []
+    if load_master is not None and str(load_master).strip():
+        load_all.append(load_master)
+    if isinstance(load_workers, list):
+        load_all.extend(load_workers)
+    _add_roles("CL", load_all)
     _add_roles("BE", erc.get("backend_hosts"))
 
     lb_host = erc.get("lb_host")

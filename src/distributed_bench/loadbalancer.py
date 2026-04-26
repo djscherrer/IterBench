@@ -70,21 +70,26 @@ class LoadBalancerManager:
         write_cmd = f"cat > {shlex.quote(remote_nginx_conf)} <<'EOF'\n{nginx_conf}\nEOF\n"
         remote_exec.ssh(self.plan.lb_host, f"bash -lc {shlex.quote(write_cmd)}", self.logger)
 
+        lbn_q = shlex.quote(self.ctx.lb_container_name)
+        lb_res = self.system_topology.lb_resources
+        pin_lb = lb_res.bash_apply_taskset_to_container(lbn_q)
         lb_cmd = (
             "set -euo pipefail; "
-            f"docker rm -f {shlex.quote(self.ctx.lb_container_name)} >/dev/null 2>&1 || true; "
-            f"docker run -d --name {shlex.quote(self.ctx.lb_container_name)} "
+            f"docker rm -f {lbn_q} >/dev/null 2>&1 || true; "
+            f"docker run -d --name {lbn_q} "
             + " ".join(
                 f"--label {shlex.quote(k + '=' + v)}"
                 for k, v in {"baxbench.sample": self.ctx.sample_slug, "baxbench.role": "lb"}.items()
             )
             + " "
-            f"{self.system_topology.lb_resources.docker_run_flags()} "
+            f"{lb_res.docker_run_flags()} "
             f"-p 0.0.0.0:{self.plan.app_port}:80 "
             f"-v {shlex.quote(remote_nginx_conf)}:/etc/nginx/nginx.conf:ro "
             f"-v {shlex.quote(remote_lb_dir)}:{shlex.quote(remote_lb_dir)} "
             "nginx:1.27-alpine"
         )
+        if pin_lb:
+            lb_cmd += f"; {pin_lb}"
 
         if self.toggles.keep_lb:
             existing_lb = self.runtime.docker_ps_id(
