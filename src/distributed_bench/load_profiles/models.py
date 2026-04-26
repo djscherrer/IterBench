@@ -98,7 +98,9 @@ class SpikeLoadProfile(BaseLoadProfile):
     # Base load most of the time, with periodic spikes.
     base_users: int
     spike_users: int
-    # Spike every interval_s for duration_s.
+    # Repeating window of ``interval_s`` seconds: hold ``spike_users`` for the first
+    # ``duration_s`` seconds, then ``base_users`` for the remainder (e.g. interval 30,
+    # duration 10 → 10s spike, 20s at base).
     interval_s: int
     duration_s: int
     # Total runtime in seconds.
