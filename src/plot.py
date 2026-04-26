@@ -975,3 +975,174 @@ def plot_throughput_over_time_for_run_dir(
     fig.savefig(out_path, dpi=300, bbox_inches="tight")
     plt.close(fig)
     return out_path
+
+
+def plot_throughput_by_rps_for_run_dir(
+    run_dir: pathlib.Path,
+    out_dir: pathlib.Path | None = None,
+    *,
+    rps_bucket_width: float = 25.0,
+    rps_bucket_min: float | None = None,
+    rps_bucket_max: float | None = None,
+    rolling_window: int = 1,
+) -> pathlib.Path:
+    """
+    Plot throughput aggregated into buckets by served RPS (not by time).
+
+    X-axis: served RPS bucket midpoints.
+    Y-axis: per-bucket average of:
+      - Successful req/s (Requests/s - Failures/s)
+      - Served req/s (Requests/s)
+      - Failures/s (Failures/s)
+
+    Notes:
+    - Locust reports Requests/s and Failures/s at ~1s cadence; optional rolling_window
+      smooths those series before bucketing (default: no smoothing).
+    - Bucketing uses served RPS to match what the system attempted to serve; successful
+      throughput is shown as the averaged achieved throughput within each served bucket.
+    """
+    run_dir = pathlib.Path(run_dir)
+    if not run_dir.exists() or not run_dir.is_dir():
+        raise FileNotFoundError(f"run_dir does not exist or is not a directory: {run_dir}")
+
+    stats_candidates = sorted(run_dir.glob("bench_results_*_stats_history.csv"))
+    if not stats_candidates:
+        raise FileNotFoundError(
+            f"No locust stats_history CSV found in {run_dir} (expected bench_results_*_stats_history.csv)"
+        )
+    stats_path = stats_candidates[0]
+
+    df = pd.read_csv(stats_path)
+    df = df[df["Name"] == "Aggregated"].copy()
+    if df.empty:
+        raise ValueError(f"No Aggregated rows in {stats_path}")
+
+    df["Timestamp"] = pd.to_numeric(df["Timestamp"], errors="coerce")
+    df["Requests/s"] = pd.to_numeric(df["Requests/s"], errors="coerce")
+    df["Failures/s"] = pd.to_numeric(df["Failures/s"], errors="coerce")
+    df = df.dropna(subset=["Timestamp", "Requests/s", "Failures/s"])
+    if df.empty:
+        raise ValueError(f"Stats history in {stats_path} is empty after numeric coercion")
+
+    df = df.sort_values("Timestamp").reset_index(drop=True)
+    df["served_rps"] = df["Requests/s"].astype(float)
+    df["failures_rps"] = df["Failures/s"].astype(float)
+    df["successful_rps"] = (df["Requests/s"] - df["Failures/s"]).astype(float)
+
+    rw = max(1, int(rolling_window))
+    df["served_rps_smooth"] = df["served_rps"].rolling(window=rw, min_periods=1).mean()
+    df["failures_rps_smooth"] = (
+        df["failures_rps"].rolling(window=rw, min_periods=1).mean()
+    )
+    df["successful_rps_smooth"] = (
+        df["successful_rps"].rolling(window=rw, min_periods=1).mean()
+    )
+
+    # Choose bucket range
+    rps_w = float(rps_bucket_width)
+    if not np.isfinite(rps_w) or rps_w <= 0:
+        raise ValueError(f"rps_bucket_width must be > 0, got {rps_bucket_width}")
+
+    served_min = float(df["served_rps_smooth"].min())
+    served_max = float(df["served_rps_smooth"].max())
+    lo = served_min if rps_bucket_min is None else float(rps_bucket_min)
+    hi = served_max if rps_bucket_max is None else float(rps_bucket_max)
+    if not np.isfinite(lo) or not np.isfinite(hi) or hi <= lo:
+        raise ValueError(
+            f"Invalid bucket range lo={lo} hi={hi} (served_min={served_min} served_max={served_max})"
+        )
+
+    # Bucket by served RPS; include 0 as a natural floor if range crosses it.
+    lo2 = min(lo, 0.0)
+    # Make sure the last edge includes hi.
+    n_steps = int(np.ceil((hi - lo2) / rps_w))
+    if n_steps < 2:
+        n_steps = 2
+    edges = lo2 + (np.arange(n_steps + 1, dtype=float) * rps_w)
+    if edges[-1] < hi:
+        edges = np.append(edges, edges[-1] + rps_w)
+
+    df["served_rps_bin"] = pd.cut(
+        df["served_rps_smooth"], bins=edges, include_lowest=True
+    )
+    grouped = df.groupby("served_rps_bin", observed=True)
+
+    served_mean = grouped["served_rps_smooth"].mean()
+    succ_mean = grouped["successful_rps_smooth"].mean()
+    fail_mean = grouped["failures_rps_smooth"].mean()
+    n_obs = grouped["served_rps_smooth"].count()
+
+    # Drop empty bins (should be none with observed=True, but keep defensive)
+    out = (
+        pd.DataFrame(
+            {
+                "served_mean": served_mean,
+                "successful_mean": succ_mean,
+                "failures_mean": fail_mean,
+                "n": n_obs,
+            }
+        )
+        .reset_index()
+        .dropna(subset=["served_rps_bin", "served_mean", "successful_mean", "failures_mean"])
+    )
+    if out.empty:
+        raise ValueError(f"No data left after bucketing for {run_dir}")
+
+    def _mid(iv) -> float:
+        try:
+            return float(iv.left + iv.right) / 2.0
+        except Exception:
+            return float("nan")
+
+    out["served_bin_mid"] = out["served_rps_bin"].apply(_mid)
+    out = out.dropna(subset=["served_bin_mid"]).sort_values("served_bin_mid")
+    if out.empty:
+        raise ValueError(f"No valid buckets produced midpoints for {run_dir}")
+
+    fig, ax = plt.subplots(figsize=(12, 6))
+    ax.plot(
+        out["served_bin_mid"].to_numpy(),
+        out["served_mean"].to_numpy(),
+        color="#ff7f0e",
+        linewidth=2.0,
+        marker="o",
+        markersize=3.5,
+        label="Served req/s (avg)",
+    )
+    ax.plot(
+        out["served_bin_mid"].to_numpy(),
+        out["successful_mean"].to_numpy(),
+        color="#2ca02c",
+        linewidth=2.2,
+        marker="o",
+        markersize=3.5,
+        label="Successful req/s (avg)",
+    )
+    ax.plot(
+        out["served_bin_mid"].to_numpy(),
+        out["failures_mean"].to_numpy(),
+        color="#d62728",
+        linewidth=1.8,
+        linestyle="--",
+        marker="o",
+        markersize=3.0,
+        alpha=0.9,
+        label="Failures/s (avg)",
+    )
+
+    ax.set_xlabel("Served requests/s (bucketed)")
+    ax.set_ylabel("Requests/s")
+    ax.set_title(
+        "Throughput by served RPS (bucket averages)\n"
+        f"{run_dir}  |  bucket={rps_w:g} rps  |  smooth_window={rw}"
+    )
+    ax.grid(alpha=0.25, linestyle="--")
+    ax.legend(loc="best")
+
+    out_dir = out_dir or (run_dir / "plots")
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_path = out_dir / "throughput_by_rps.png"
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=300, bbox_inches="tight")
+    plt.close(fig)
+    return out_path

@@ -26,19 +26,26 @@ from distributed_bench.system_configs import resolve_system_topology
 def _plot_per_run_dir_best_effort(
     run_dir: pathlib.Path,
     out_dir: pathlib.Path | None,
+    *,
+    throughput_rps_bucket_width: float = 25.0,
 ) -> None:
     """Per-run plots matching ``--mode plot --plot-run-dir`` (skips missing metrics)."""
     import plot as plot_mod
     import plot_remote_perf as plot_remote_perf_mod
 
     run_dir = pathlib.Path(run_dir)
-    for name, fn in (
-        ("backend_vs_db_latency", plot_mod.plot_backend_vs_db_latency_for_run_dir),
-        ("throughput_over_time", plot_mod.plot_throughput_over_time_for_run_dir),
-        ("remote_perf", plot_remote_perf_mod.plot_remote_perf_for_run_dir),
+    for name, fn, extra_kwargs in (
+        ("backend_vs_db_latency", plot_mod.plot_backend_vs_db_latency_for_run_dir, {}),
+        ("throughput_over_time", plot_mod.plot_throughput_over_time_for_run_dir, {}),
+        (
+            "throughput_by_rps",
+            plot_mod.plot_throughput_by_rps_for_run_dir,
+            {"rps_bucket_width": throughput_rps_bucket_width},
+        ),
+        ("remote_perf", plot_remote_perf_mod.plot_remote_perf_for_run_dir, {}),
     ):
         try:
-            fn(run_dir=run_dir, out_dir=out_dir)  # type: ignore[misc]
+            fn(run_dir=run_dir, out_dir=out_dir, **extra_kwargs)  # type: ignore[misc]
         except (FileNotFoundError, ValueError) as e:
             print(f"[plot-run-dir] Skipping {name}: {e}")
 
@@ -121,10 +128,10 @@ def main(args: Any) -> None:
     )
 
     bench_remote_config = None
-    if args.bench_app_host or args.bench_app_hosts or args.bench_loader_host:
-        if not args.bench_loader_host:
+    if args.bench_app_host or args.bench_app_hosts or args.bench_load_master:
+        if not args.bench_load_master:
             raise ValueError(
-                "--bench-loader-host must be provided for remote benchmarking"
+                "--bench-load-master must be provided for remote benchmarking"
             )
         if not args.bench_app_host and not args.bench_app_hosts:
             raise ValueError(
@@ -137,7 +144,8 @@ def main(args: Any) -> None:
                 else ((args.bench_app_host,) if args.bench_app_host else ())
             ),
             "app_private_addr": args.bench_app_private_addr,
-            "load_hosts": (args.bench_loader_host,),
+            "load_master": args.bench_load_master,
+            "load_workers": tuple(args.bench_load_workers or ()),
             "remote_base_dir": args.bench_remote_dir,
             "app_port": args.bench_remote_port,
             "lb_host": args.bench_lb_host,
@@ -170,7 +178,11 @@ def main(args: Any) -> None:
     def _run_plotting(*, plot_run_dir: pathlib.Path | None) -> None:
         """Shared plotting logic for --mode plot and post-bench plotting."""
         if plot_run_dir is not None:
-            _plot_per_run_dir_best_effort(plot_run_dir, None)
+            _plot_per_run_dir_best_effort(
+                plot_run_dir,
+                None,
+                throughput_rps_bucket_width=float(args.throughput_rps_bucket_width),
+            )
         else:
             task_handler.plot_bench(
                 samples=samples,
@@ -256,6 +268,15 @@ if __name__ == "__main__":
         help=(
             "After bench mode completes, run the same per-run plots as "
             "--plot-run-dir for each benched perf directory (best-effort)."
+        ),
+    )
+    parser.add_argument(
+        "--throughput-rps-bucket-width",
+        type=float,
+        default=25.0,
+        help=(
+            "Bucket width (in req/s) for plots/throughput_by_rps.png when using "
+            "--plot-run-dir or --plot-after-bench."
         ),
     )
     parser.add_argument(
@@ -394,16 +415,23 @@ if __name__ == "__main__":
         help="Private IP address for the app host, used by the load generator to reach the app",
     )
     parser.add_argument(
-        "--bench-loader-host",
+        "--bench-load-master",
         type=str,
         default=None,
-        help="Host (e.g. user@host) where the load generator should run",
+        help="SSH host where the Locust master should run",
+    )
+    parser.add_argument(
+        "--bench-load-workers",
+        type=str,
+        default=None,
+        nargs="+",
+        help="List of SSH hosts where Locust workers should run (may include the master host).",
     )
     parser.add_argument(
         "--bench-lb-host",
         type=str,
         default=None,
-        help="SSH host where the load balancer (nginx) should run. Defaults to --bench-loader-host.",
+        help="SSH host where the load balancer (nginx) should run. Defaults to --bench-load-master.",
     )
     parser.add_argument(
         "--bench-db-host",
