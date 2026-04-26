@@ -22,9 +22,14 @@ def host_slug(host: str) -> str:
 @dataclass
 class RemoteConfig:
     backend_hosts: tuple[str, ...]
-    load_hosts: tuple[str, ...]
     remote_base_dir: str
     
+    # Explicit Locust topology:
+    # - load_master: the host that runs the Locust master process (single hostname)
+    # - load_workers: hosts that run Locust worker processes (may include the same host as load_master)
+    load_master: str
+    load_workers: tuple[str, ...] = ()
+
     lb_host: str | None = None
     db_hosts: tuple[str, ...] = ()
     app_private_addr: str | None = None
@@ -35,15 +40,16 @@ class RemoteConfig:
 
     def __post_init__(self) -> None:
         self.backend_hosts = tuple(str(h).strip() for h in self.backend_hosts if str(h).strip())
-        self.load_hosts = tuple(str(h).strip() for h in self.load_hosts if str(h).strip())
+        self.load_master = str(self.load_master).strip()
+        self.load_workers = tuple(str(h).strip() for h in self.load_workers if str(h).strip())
         self.db_hosts = tuple(str(h).strip() for h in self.db_hosts if str(h).strip())
         if self.lb_host is not None and not str(self.lb_host).strip():
             self.lb_host = ""
 
         if not self.backend_hosts:
             raise ValueError("Remote bench requires at least one backend host")
-        if not self.load_hosts:
-            raise ValueError("Remote bench requires at least one load host")
+        if not self.load_master:
+            raise ValueError("Remote bench requires load_master")
 
     @property
     def backend_host_master(self) -> str:
@@ -51,7 +57,7 @@ class RemoteConfig:
 
     @property
     def load_host_master(self) -> str:
-        return self.load_hosts[0]
+        return self.load_master
 
     @property
     def db_host_master(self) -> str:
@@ -91,15 +97,17 @@ class DistributedBenchPlan:
     app_port: int
 
     backend_hosts: tuple[str, ...]
-    load_hosts: tuple[str, ...]
+    # Explicit Locust topology.
+    load_master: str
+    load_workers: tuple[str, ...]
     lb_host: str
     db_hosts: tuple[str, ...]
 
     def __post_init__(self) -> None:
         if not self.backend_hosts:
             raise ValueError("No backend hosts selected for remote benchmarking")
-        if not self.load_hosts:
-            raise ValueError("No load hosts selected for remote benchmarking")
+        if not self.load_master:
+            raise ValueError("No load master selected for remote benchmarking")
         if self.needs_db and not self.db_hosts:
             raise ValueError("DB is required but no db_hosts were selected for remote benchmarking")
         if self.needs_db and len(self.db_hosts) != 1:
@@ -109,7 +117,10 @@ class DistributedBenchPlan:
             )
         bad = [
             h
-            for h in ([*self.backend_hosts, self.lb_host] + (list(self.db_hosts) if self.needs_db else []))
+            for h in (
+                [*self.backend_hosts, self.lb_host, self.load_master, *self.load_workers]
+                + (list(self.db_hosts) if self.needs_db else [])
+            )
             if "@" in h
         ]
         if bad:
@@ -133,7 +144,18 @@ class DistributedBenchPlan:
 
     @property
     def load_host_master(self) -> str:
-        return self.load_hosts[0] if self.load_hosts else ""
+        return self.load_master
+
+    @property
+    def load_all_hosts(self) -> tuple[str, ...]:
+        ordered = [self.load_master, *self.load_workers]
+        out: list[str] = []
+        seen: set[str] = set()
+        for h in ordered:
+            if h and h not in seen:
+                out.append(h)
+                seen.add(h)
+        return tuple(out)
 
     @property
     def locust_run_time(self) -> str:
@@ -151,7 +173,8 @@ class DistributedBenchPlan:
         bench_run_time: int | None,
     ) -> "DistributedBenchPlan":
         backend_hosts = tuple(config.backend_hosts)
-        load_hosts = tuple(config.load_hosts)
+        load_master = str(config.load_master).strip()
+        load_workers = tuple(config.load_workers)
         lb_host = config.effective_lb_host()
         db_hosts = tuple(config.db_hosts) if needs_db else ()
 
@@ -170,7 +193,8 @@ class DistributedBenchPlan:
             bench_run_time_s=brt,
             app_port=app_port,
             backend_hosts=backend_hosts,
-            load_hosts=load_hosts,
+            load_master=load_master,
+            load_workers=load_workers,
             lb_host=lb_host,
             db_hosts=db_hosts,
         )
@@ -260,7 +284,7 @@ class DistributedBenchContext:
         involved_hosts = sorted(
             set(
                 [*plan.backend_hosts]
-                + list(plan.load_hosts)
+                + list(plan.load_all_hosts)
                 + ([plan.lb_host] if plan.lb_host else [])
                 + ([plan.db_host] if plan.needs_db else [])
             )

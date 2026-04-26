@@ -38,27 +38,28 @@ class LocustRunner:
         hid = int(hashlib.sha256(key.encode("utf-8")).hexdigest()[:8], 16)
         return base + (hid % span)
 
-    def run(self, *, load_targets: dict[str, str]) -> None:
+    def run(self, *, target: str) -> None:
         """
         Run Locust from one or more load generator hosts.
 
-        load_targets maps load_host -> target_host (IP/hostname) to send load to.
+        target is the target host (IP/hostname) that Locust should send load to.
         """
-        load_hosts = list(load_targets.keys())
-        if not load_hosts:
-            raise ValueError("No load hosts provided to LocustRunner.run")
-
-        master_host = self.plan.load_host_master
-        if master_host not in load_targets:
-            raise ValueError(f"Missing load target for master host {master_host!r}")
-        worker_hosts = [h for h in load_hosts if h != master_host]
+        master_host = self.plan.load_master
+        worker_hosts = list(self.plan.load_workers)
+        load_hosts_unique = sorted(set([master_host, *worker_hosts]))
+        if not master_host:
+            raise ValueError("No load master host configured for LocustRunner.run")
 
         metrics_capture_stop_event = threading.Event()
         perf_threads: list[threading.Thread] = []
         queue_threads: list[threading.Thread] = []
 
         # Building ordered list of hosts to capture metrics from.
-        perf_hosts = load_hosts + list(self.plan.backend_hosts) + ([self.plan.db_hosts[0]] if self.plan.needs_db else [])
+        perf_hosts = (
+            load_hosts_unique
+            + list(self.plan.backend_hosts)
+            + ([self.plan.db_hosts[0]] if self.plan.needs_db else [])
+        )
         if self.plan.lb_host:
             perf_hosts.append(self.plan.lb_host)
         seen: set[str] = set()
@@ -120,8 +121,8 @@ class LocustRunner:
                 )
             remote_exec.ensure_remote_python_env(h, self.ctx.remote_env_dir, self.logger)
 
-        with concurrent.futures.ThreadPoolExecutor(max_workers=min(8, len(load_hosts) or 1)) as ex:
-            list(ex.map(_stage_one_load_host, load_hosts))
+        with concurrent.futures.ThreadPoolExecutor(max_workers=min(8, len(load_hosts_unique) or 1)) as ex:
+            list(ex.map(_stage_one_load_host, load_hosts_unique))
 
         locust_processes = max(1, int(self.load_profile.locust_processes))
         is_distributed = bool(worker_hosts)
@@ -154,17 +155,24 @@ class LocustRunner:
             expect_workers = len(worker_hosts)
 
             # Start workers in background (nohup) on each worker host.
-            for wh in worker_hosts:
-                pidfile = f"{self.ctx.remote_load_dir}/locust-worker-{host_slug(wh)}.pid"
-                logfile = f"{self.ctx.remote_load_dir}/locust-worker-{host_slug(wh)}.log"
-                worker_pidfiles[wh] = pidfile
-                worker_logfiles[wh] = logfile
+            for i, wh in enumerate(worker_hosts):
+                worker_key = f"{wh}#{i}"
+                pidfile = f"{self.ctx.remote_load_dir}/locust-worker-{host_slug(wh)}-{i}.pid"
+                logfile = f"{self.ctx.remote_load_dir}/locust-worker-{host_slug(wh)}-{i}.log"
+                worker_pidfiles[worker_key] = pidfile
+                worker_logfiles[worker_key] = logfile
                 locust_bin = remote_exec.ensure_remote_python_env(wh, self.ctx.remote_env_dir, self.logger)
+                ts = self.system_topology.load_resources.taskset_cpus
+                worker_exec = (
+                    f"TASKSET_CPUS={shlex.quote(ts)} nohup taskset -c \"$TASKSET_CPUS\" {shlex.quote(locust_bin)} "
+                    if ts
+                    else f"nohup {shlex.quote(locust_bin)} "
+                )
                 w_cmd = (
                     "set -euo pipefail; "
                     f"cd {shlex.quote(self.ctx.remote_load_dir)}; "
                     f"rm -f {shlex.quote(pidfile)} {shlex.quote(logfile)} || true; "
-                    f"nohup {shlex.quote(locust_bin)} "
+                    f"{worker_exec}"
                     f"--worker --master-host {shlex.quote(master_ip)} --master-port {int(master_port)} "
                     f"--locustfile {shlex.quote(self.ctx.locustfile.name)} "
                     f"> {shlex.quote(logfile)} 2>&1 & "
@@ -173,7 +181,6 @@ class LocustRunner:
                 remote_exec.ssh(wh, f"bash -lc {shlex.quote(w_cmd)}", self.logger).check_returncode()
 
         # Run master in foreground for completion + CSVs.
-        target = load_targets[master_host]
         connection = Connection(master_host)
         locust_bin = remote_exec.ensure_remote_python_env(master_host, self.ctx.remote_env_dir, self.logger)
 
@@ -216,10 +223,11 @@ class LocustRunner:
                     f"BAXBENCH_SPIKE_INTERVAL_S={int(self.load_profile.interval_s)} "
                     f"BAXBENCH_SPIKE_DURATION_S={int(self.load_profile.duration_s)} "
                 )
-        if self.system_topology.load_taskset_cpus:
-            env_prefix += f"TASKSET_CPUS={shlex.quote(self.system_topology.load_taskset_cpus)} "
+        load_ts = self.system_topology.load_resources.taskset_cpus
+        if load_ts:
+            env_prefix += f"TASKSET_CPUS={shlex.quote(load_ts)} "
         locust_exec = f"{locust_bin}"
-        if self.system_topology.load_taskset_cpus:
+        if load_ts:
             locust_exec = f"taskset -c \"$TASKSET_CPUS\" {locust_bin}"
 
         distributed_master_args = (
@@ -282,12 +290,13 @@ class LocustRunner:
 
         if is_distributed:
             # Fetch worker logs
-            for wh in worker_hosts:
+            for i, wh in enumerate(worker_hosts):
+                worker_key = f"{wh}#{i}"
                 try:
                     remote_exec.scp_from_remote(
                         wh,
-                        worker_logfiles[wh],
-                        (logs_dir / f"locust-worker-{host_slug(wh)}.log"),
+                        worker_logfiles[worker_key],
+                        (logs_dir / f"locust-worker-{host_slug(wh)}-{i}.log"),
                         self.logger,
                     )
                 except Exception as exc:
@@ -305,8 +314,9 @@ class LocustRunner:
 
         # Cleanup worker processes (distributed mode only).
         if is_distributed:
-            for wh in worker_hosts:
-                pidfile = worker_pidfiles.get(wh, "")
+            for i, wh in enumerate(worker_hosts):
+                worker_key = f"{wh}#{i}"
+                pidfile = worker_pidfiles.get(worker_key, "")
                 if not pidfile:
                     continue
                 kill_cmd = (
