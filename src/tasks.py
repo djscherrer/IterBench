@@ -436,6 +436,19 @@ class Task:
         name = f"perf-{topology}-{load_profile}-{ts}"
         return self.get_sample_dir(results_dir, sample) / name
 
+    def has_perf_run_for_profile(
+        self, sample_dir: pathlib.Path, *, topology: str, load_profile: str
+    ) -> bool:
+        """
+        Whether any perf run directory exists for this sample and (topology, load_profile),
+        regardless of timestamp.
+
+        This supports the common workflow of skipping already-benched samples when re-running
+        benches with the same profile.
+        """
+        prefix = f"perf-{_slugify_run_part(topology)}-{_slugify_run_part(load_profile)}-"
+        return any(p.is_dir() for p in sample_dir.glob(f"{prefix}*"))
+
     def has_any_bench_results(self, sample_dir: pathlib.Path, user: str) -> bool:
         """
         Whether any previous bench results exist for this sample (supports per-run subdirs).
@@ -930,6 +943,14 @@ class Task:
                 pass
             if image_id is None:
                 continue
+
+            # Skip if a perf run already exists for the same topology + load profile.
+            # (Timestamp differs, but the profile is the same.)
+            if not force:
+                topo = os.environ.get("BAXBENCH_SYSTEM_TOPOLOGY", "default")
+                prof = os.environ.get("BAXBENCH_LOAD_PROFILE", "default")
+                if self.has_perf_run_for_profile(sample_dir, topology=topo, load_profile=prof):
+                    continue
 
             run_dir = self.get_bench_run_dir(
                 results_dir=results_dir,
