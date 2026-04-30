@@ -28,7 +28,7 @@ from .load_profiles import (
 from .loadbalancer import LoadBalancerManager
 from .locustrunner import LocustRunner
 from .runtime import RemoteRuntime
-from .system_configs import apply_system_topology_env_overrides, resolve_system_topology
+from .system_configs import resolve_system_topology
 
 
 def _write_run_config_snapshot(
@@ -44,37 +44,6 @@ def _write_run_config_snapshot(
     bench_spawn_rate_override: int | None,
     bench_run_time_override: int | None,
 ) -> None:
-    resource_override_env_keys = [
-        "BAXBENCH_BACKEND_CPUS",
-        "BAXBENCH_BACKEND_MEMORY",
-        "BAXBENCH_BACKEND_CPUSET",
-        "BAXBENCH_BACKEND_TASKSET_CPUS",
-        "BAXBENCH_BACKEND_CPUSET_DOCKER",
-        "BAXBENCH_BACKEND_PIDS_LIMIT",
-        "BAXBENCH_BACKEND_MEMORY_SWAP",
-        "BAXBENCH_DB_CPUS",
-        "BAXBENCH_DB_MEMORY",
-        "BAXBENCH_DB_CPUSET",
-        "BAXBENCH_DB_TASKSET_CPUS",
-        "BAXBENCH_DB_CPUSET_DOCKER",
-        "BAXBENCH_DB_PIDS_LIMIT",
-        "BAXBENCH_DB_MEMORY_SWAP",
-        "BAXBENCH_LB_CPUS",
-        "BAXBENCH_LB_MEMORY",
-        "BAXBENCH_LB_CPUSET",
-        "BAXBENCH_LB_TASKSET_CPUS",
-        "BAXBENCH_LB_CPUSET_DOCKER",
-        "BAXBENCH_LB_PIDS_LIMIT",
-        "BAXBENCH_LB_MEMORY_SWAP",
-        "BAXBENCH_LOAD_TASKSET_CPUS",
-        "BAXBENCH_LOAD_CPUSET",
-    ]
-    resource_overrides_env = {
-        k: os.environ.get(k)
-        for k in resource_override_env_keys
-        if os.environ.get(k) not in (None, "")
-    }
-
     snapshot = {
         "requested_profiles": {
             "system_topology": requested_system_topology,
@@ -88,7 +57,6 @@ def _write_run_config_snapshot(
             "bench_spawn_rate": bench_spawn_rate_override,
             "bench_run_time": bench_run_time_override,
         },
-        "resource_overrides_env": resource_overrides_env,
         "runtime_toggles": asdict(toggles),
     }
 
@@ -144,7 +112,7 @@ def run_remote_bench(
     bench_run_time: int | None = None,
 ) -> None:
     toggles = RuntimeToggles.from_env()
-    system_topology = apply_system_topology_env_overrides(resolve_system_topology(toggles.system_topology))
+    system_topology = resolve_system_topology(toggles.system_topology)
     effective_remote_config = system_topology.apply_to_remote_config(config)
     load_profile = merge_load_profile_with_overrides(
         resolve_load_profile(toggles.load_profile),
