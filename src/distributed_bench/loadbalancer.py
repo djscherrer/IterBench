@@ -35,9 +35,9 @@ class LoadBalancerManager:
         # Direct connectivity: LB proxies to each backend host directly.
         return [(self.ctx.backend_net_hosts[h], self.plan.app_port) for h in self.plan.backend_hosts]
 
-    def setup_or_reuse(self) -> None:
+    def setup(self) -> None:
         if not self.plan.lb_host:
-            raise ValueError("LoadBalancerManager.setup_or_reuse called but lb_host is empty")
+            raise ValueError("LoadBalancerManager.setup called but lb_host is empty")
         endpoints = self._backend_endpoints()
         upstream = "\n".join(f"        server {host}:{port};" for host, port in endpoints)
         self.nginx_log_path_host = f"{self.plan.config.remote_dir('lb', self.ctx.sample_slug)}/nginx_access_timing.csv"
@@ -91,26 +91,10 @@ class LoadBalancerManager:
         if pin_lb:
             lb_cmd += f"; {pin_lb}"
 
-        if self.toggles.keep_lb:
-            existing_lb = self.runtime.docker_ps_id(
-                self.plan.lb_host,
-                labels={"baxbench.sample": self.ctx.sample_slug, "baxbench.role": "lb"},
-            )
-            if existing_lb:
-                self.logger.info("Reusing load balancer container on %s (BAXBENCH_KEEP_LB=1)", self.plan.lb_host)
-                reload_cmd = (
-                    "set -euo pipefail; "
-                    f"docker exec {shlex.quote(self.ctx.lb_container_name)} nginx -s reload >/dev/null 2>&1 "
-                    f"|| docker restart {shlex.quote(self.ctx.lb_container_name)} >/dev/null"
-                )
-                remote_exec.ssh(self.plan.lb_host, f"bash -lc {shlex.quote(reload_cmd)}", self.logger)
-            else:
-                remote_exec.ssh(self.plan.lb_host, f'bash -lc "{lb_cmd}"', self.logger)
-            return
-
+        # Always start fresh: remove any baxbench-managed LB container on the LB host.
         self.runtime.docker_rm_by_labels(
             self.plan.lb_host,
-            labels={"baxbench.sample": self.ctx.sample_slug, "baxbench.role": "lb"},
+            labels={"baxbench.role": "lb"},
         )
         remote_exec.ssh(self.plan.lb_host, f'bash -lc "{lb_cmd}"', self.logger)
 
@@ -145,18 +129,10 @@ class LoadBalancerManager:
         )
 
     def cleanup(self) -> None:
-        if self.toggles.keep_lb:
-            self.logger.info(
-                "Keeping load balancer container %s on %s (BAXBENCH_KEEP_LB=1)",
-                self.ctx.lb_container_name,
-                self.plan.lb_host,
-            )
-            return
         try:
-            remote_exec.ssh(
+            self.runtime.docker_rm_by_labels(
                 self.plan.lb_host,
-                f"bash -lc \"docker rm -f {shlex.quote(self.ctx.lb_container_name)} >/dev/null 2>&1 || true\"",
-                self.logger,
+                labels={"baxbench.role": "lb"},
             )
         except Exception as exc:
             self.logger.warning("Failed to cleanup LB container: %s", exc)

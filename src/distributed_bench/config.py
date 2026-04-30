@@ -23,10 +23,6 @@ def _env_int(name: str) -> int | None:
 
 @dataclass(frozen=True)
 class RuntimeToggles:
-    keep_backends: bool
-    keep_db: bool
-    keep_lb: bool
-    wipe_db_on_reuse: bool
     skip_teardown: bool
     ssh_multiplex: bool
     log_commands: bool
@@ -38,10 +34,6 @@ class RuntimeToggles:
     @classmethod
     def from_env(cls) -> "RuntimeToggles":
         return cls(
-            keep_backends=_env_bool("BAXBENCH_KEEP_BACKENDS", False),
-            keep_db=_env_bool("BAXBENCH_KEEP_DB", False),
-            keep_lb=_env_bool("BAXBENCH_KEEP_LB", False),
-            wipe_db_on_reuse=_env_bool("BAXBENCH_WIPE_DB_ON_REUSE", True),
             skip_teardown=_env_bool("BAXBENCH_SKIP_TEARDOWN", False),
             ssh_multiplex=_env_bool("BAXBENCH_SSH_MULTIPLEX", False),
             log_commands=_env_bool("BAXBENCH_LOG_COMMANDS", True),

@@ -31,20 +31,16 @@ def ensure_docker_and_warm_ssh(ctx: DistributedBenchContext) -> None:
 
 def preclean_hosts(
     ctx: DistributedBenchContext,
-    *,
-    keep_backends: bool,
-    keep_db: bool,
-    keep_lb: bool,
 ) -> None:
     def _preclean_host(host: str) -> None:
         paths: list[str] = []
-        if (not keep_backends) and host in ctx.remote_app_dirs:
+        if host in ctx.remote_app_dirs:
             paths.append(ctx.remote_app_dirs[host])
-        if (not keep_lb) and ctx.plan.lb_host and host == ctx.plan.lb_host:
+        if ctx.plan.lb_host and host == ctx.plan.lb_host:
             paths.append(ctx.plan.config.remote_dir("lb", ctx.sample_slug))
         if host == ctx.plan.load_master or host in ctx.plan.load_workers:
             paths.append(ctx.remote_load_dir)
-        if ctx.plan.needs_db and (not keep_db) and host == ctx.plan.db_hosts[0]:
+        if ctx.plan.needs_db and host == ctx.plan.db_hosts[0]:
             paths.append(ctx.plan.config.remote_dir("db", ctx.sample_slug))
         if not paths:
             return

@@ -32,7 +32,7 @@ class BackendManager:
         self.plan = ctx.plan
         self.logger = ctx.logger
 
-    def start_or_reuse(self) -> None:
+    def start(self) -> None:
         def _start_backend(host: str) -> None:
             cname = self.ctx.backend_container_names[host]
             env_vars = self.ctx.env_vars_base
@@ -51,24 +51,14 @@ class BackendManager:
                 "baxbench.image_id": self.ctx.image_id,
             }
 
-            # Check if the backend container already exists and is using the correct image.
-            existing_app = self.runtime.docker_ps_id(host, labels=app_labels) if self.toggles.keep_backends else ""
-            if existing_app and self.runtime.docker_image_matches(host, existing_app, self.ctx.image_id):
-                existing_name = self.runtime.docker_ps_name(host, labels=app_labels) or cname
-                self.ctx.backend_container_names[host] = existing_name
-                self.logger.info("Reusing backend on %s (BAXBENCH_KEEP_BACKENDS=1)", host)
-                return
-
-            # Ensure the backend container is removed if we're not keeping it.
-            if not self.toggles.keep_backends:
-                self.runtime.docker_rm_by_labels(
-                    host,
-                    labels={
-                        "baxbench.sample": self.ctx.sample_slug,
-                        "baxbench.role": "app",
-                        "baxbench.host": host_slug(host),
-                    },
-                )
+            # Always start fresh: remove any baxbench-managed backend on this host.
+            self.runtime.docker_rm_by_labels(
+                host,
+                labels={
+                    "baxbench.role": "app",
+                    "baxbench.host": host_slug(host),
+                },
+            )
 
             cname_q = shlex.quote(cname)
             res = self.system_topology.backend_resources
@@ -148,15 +138,14 @@ class BackendManager:
         time.sleep(2)
 
     def cleanup(self) -> None:
-        if self.toggles.keep_backends:
-            self.logger.info("Keeping backend containers (BAXBENCH_KEEP_BACKENDS=1)")
-            return
         for host, cname in self.ctx.backend_container_names.items():
             try:
-                remote_exec.ssh(
+                self.runtime.docker_rm_by_labels(
                     host,
-                    f"bash -lc \"docker rm -f {shlex.quote(cname)} >/dev/null 2>&1 || true\"",
-                    self.logger,
+                    labels={
+                        "baxbench.role": "app",
+                        "baxbench.host": host_slug(host),
+                    },
                 )
             except Exception as exc:
                 self.logger.warning("Failed to cleanup backend %s: %s", host, exc)

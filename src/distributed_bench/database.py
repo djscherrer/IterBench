@@ -11,57 +11,6 @@ from .config import RuntimeToggles
 from .runtime import RemoteRuntime
 from .system_configs import SystemTopology
 
-_REUSE_TRUNCATE_EXCLUDE_TABLES = (
-    "alembic_version",
-    "django_migrations",
-    "schema_migrations",
-    "flyway_schema_history",
-    "knex_migrations",
-    "knex_migrations_lock",
-    "liquibase_databasechangelog",
-    "liquibase_databasechangeloglock",
-)
-
-
-def sql_reset_db_data_for_container_reuse() -> str:
-    exclude = ", ".join(repr(t) for t in _REUSE_TRUNCATE_EXCLUDE_TABLES)
-    return f"""
-DO $reset_stats$
-BEGIN
-  PERFORM pg_stat_statements_reset();
-EXCEPTION
-  WHEN OTHERS THEN
-    IF SQLSTATE = '42883' THEN
-      NULL;
-    ELSE
-      RAISE;
-    END IF;
-END
-$reset_stats$;
-
-DO $truncate_public$
-DECLARE
-  stmt text;
-BEGIN
-  SELECT 'TRUNCATE TABLE ' || string_agg(format('%I.%I', n.nspname, c.relname), ', ')
-         || ' RESTART IDENTITY CASCADE'
-  INTO stmt
-  FROM pg_class c
-  JOIN pg_namespace n ON n.oid = c.relnamespace
-  WHERE n.nspname = 'public'
-    AND c.relkind = 'r'
-    AND NOT EXISTS (
-      SELECT 1 FROM pg_depend d
-      WHERE d.objid = c.oid AND d.deptype = 'e'
-    )
-    AND lower(c.relname) NOT IN ({exclude});
-  IF stmt IS NOT NULL THEN
-    EXECUTE stmt;
-  END IF;
-END
-$truncate_public$;
-"""
-
 
 @dataclass
 class DbSamplerState:
@@ -89,12 +38,12 @@ class DatabaseManager:
         self.logger = ctx.logger
         self.sampler = DbSamplerState()
 
-    def setup_or_reuse(self) -> None:
+    def setup(self) -> None:
         db_host = self.plan.db_hosts[0]
         db_labels = {"baxbench.sample": self.ctx.sample_slug, "baxbench.role": "db"}
-        existing_db = self.runtime.docker_ps_id(db_host, labels=db_labels) if self.toggles.keep_db else ""
-        if not existing_db:
-            self.runtime.docker_rm_by_labels(db_host, labels=db_labels)
+        # Always start a fresh DB container for reproducibility and to avoid cross-sample port conflicts.
+        # (Debugging uses BAXBENCH_SKIP_TEARDOWN=1 to keep containers around.)
+        self.runtime.docker_rm_by_labels(db_host, labels={"baxbench.role": "db"})
 
         dbn_q = shlex.quote(self.ctx.db_container_name)
         db_res = self.system_topology.db_resources
@@ -119,16 +68,10 @@ class DatabaseManager:
         )
         if pin_db:
             start_db_cmd += f"; {pin_db}"
-        if existing_db:
-            self.logger.info("Reusing existing Postgres container on %s (BAXBENCH_KEEP_DB=1)", db_host)
-            reused_name = self.runtime.docker_ps_name(db_host, labels=db_labels)
-            if reused_name:
-                self.ctx.db_container_name = reused_name
-        else:
-            # Use shlex.quote() so hostpin fragments containing quotes don't break the script.
-            out = remote_exec.ssh(db_host, f"bash -lc {shlex.quote(start_db_cmd)}", self.logger)
-            out.check_returncode()
-            self.logger.info("Remote Postgres started")
+        # Use shlex.quote() so hostpin fragments containing quotes don't break the script.
+        out = remote_exec.ssh(db_host, f"bash -lc {shlex.quote(start_db_cmd)}", self.logger)
+        out.check_returncode()
+        self.logger.info("Remote Postgres started")
 
         wait_cmd = (
             f"timeout 30s bash -lc 'until docker exec {shlex.quote(self.ctx.db_container_name)} "
@@ -165,22 +108,6 @@ class DatabaseManager:
             f"-c {shlex.quote(ext_sql)}"
         )
         remote_exec.ssh(db_host, f"bash -lc {shlex.quote(ext_cmd)}", self.logger)
-
-        if existing_db and self.toggles.wipe_db_on_reuse:
-            wipe_sql = sql_reset_db_data_for_container_reuse()
-            wipe_cmd = (
-                "set -euo pipefail; "
-                f"docker exec {shlex.quote(self.ctx.db_container_name)} "
-                f"psql -U {PostgresManager.DEFAULT_USER} -d {PostgresManager.DEFAULT_DATABASE} "
-                "-v ON_ERROR_STOP=1 "
-                f"-c {shlex.quote(wipe_sql)}"
-            )
-            remote_exec.ssh(db_host, f"bash -lc {shlex.quote(wipe_cmd)}", self.logger)
-            self.logger.info(
-                "Reset DB application data for reuse: truncated public tables "
-                "(migration metadata preserved), pg_stat_statements reset "
-                "(BAXBENCH_WIPE_DB_ON_REUSE=1)"
-            )
 
     def configure_backend_connectivity(self) -> None:
         # Direct connectivity: every backend talks directly to the DB host over the network.
@@ -266,9 +193,6 @@ class DatabaseManager:
             )
 
     def cleanup(self) -> None:
-        if self.toggles.keep_db:
-            self.logger.info("Keeping DB container on %s (BAXBENCH_KEEP_DB=1)", self.plan.db_hosts[0])
-            return
         db_host = self.plan.db_hosts[0]
         try:
             if self.sampler.remote_db_stop:
@@ -277,10 +201,8 @@ class DatabaseManager:
                     f"bash -lc \"touch {shlex.quote(self.sampler.remote_db_stop)} || true\"",
                     self.logger,
                 )
-            remote_exec.ssh(
-                db_host,
-                f"bash -lc \"docker rm -f {shlex.quote(self.ctx.db_container_name)} >/dev/null 2>&1 || true\"",
-                self.logger,
-            )
+            # Be robust to container name/label drift across retries: remove any baxbench-managed DB
+            # container that might still be running and holding port 5432.
+            self.runtime.docker_rm_by_labels(db_host, labels={"baxbench.role": "db"})
         except Exception as exc:
             self.logger.warning("Failed to cleanup DB container: %s", exc)

@@ -242,23 +242,18 @@ def run_remote_bench(
     with phase(logger, "Remote prep", extra=f"hosts={len(ctx.involved_hosts)} ssh_multiplex={int(toggles.ssh_multiplex)}"):
         ensure_docker_and_warm_ssh(ctx)
     with phase(logger, "Preclean remote dirs"):
-        preclean_hosts(
-            ctx,
-            keep_backends=toggles.keep_backends,
-            keep_db=toggles.keep_db,
-            keep_lb=toggles.keep_lb,
-        )
+        preclean_hosts(ctx)
     with phase(logger, "Stage image tar to backends", extra=f"image={image_id} backends={len(plan.backend_hosts)}"):
         stage_image_to_backends(ctx)
 
     if db_mgr:
-        with phase(logger, "DB setup/reuse", extra=f"host={plan.db_hosts[0]} keep_db={int(toggles.keep_db)}"):
-            db_mgr.setup_or_reuse()
+        with phase(logger, "DB setup", extra=f"host={plan.db_hosts[0]}"):
+            db_mgr.setup()
         with phase(logger, "Configure DB connectivity", extra="direct"):
             db_mgr.configure_backend_connectivity()
 
-    with phase(logger, "Start/reuse backends", extra=f"count={len(plan.backend_hosts)} keep_backends={int(toggles.keep_backends)}"):
-        backend_mgr.start_or_reuse()
+    with phase(logger, "Start backends", extra=f"count={len(plan.backend_hosts)}"):
+        backend_mgr.start()
     backend_mgr.graceful_start_delay()
     backend_mgr.collect_recent_logs()
 
@@ -267,8 +262,8 @@ def run_remote_bench(
             backend_mgr.wait_ready()
         if lb_mgr is not None:
             with phase(logger, "Start/reuse LB", extra="direct"):
-                with phase(logger, "LB config + start/reuse", extra=f"host={plan.lb_host} keep_lb={int(toggles.keep_lb)}"):
-                    lb_mgr.setup_or_reuse()
+                with phase(logger, "LB config + start", extra=f"host={plan.lb_host}"):
+                    lb_mgr.setup()
             with phase(logger, "Wait for LB ready"):
                 lb_mgr.wait_ready()
 
