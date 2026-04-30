@@ -335,6 +335,7 @@ results-all/
 results-old/
 results-05-12/
 results/
+results_custom/
 
 # Ignore all build artifacts in the snapshots
 results_snapshots/**/target/
