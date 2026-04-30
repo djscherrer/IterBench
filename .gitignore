@@ -349,3 +349,7 @@ results_snapshots/**/*.log
 results_snapshots/**/*.html
 results_snapshots/**/*.lock
 results_snapshots/**/functional_tests
+results_snapshots/**/performance
+results_snapshots/**/*perf*/
+*.tar
+throughput*.csv
