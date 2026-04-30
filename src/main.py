@@ -56,9 +56,6 @@ class ArgFileParser(argparse.ArgumentParser):
 
 
 def main(args: Any) -> None:
-
-    print(args)
-
     # ----- Preparation -----#
     # Override port for all environments with the value from args, if not provided defaults to 5001
     envs = [replace(e, port=args.port) for e in all_envs]
