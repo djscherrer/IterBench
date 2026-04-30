@@ -70,7 +70,7 @@ def ssh_control_path(host: str) -> str:
 
 
 def ssh_base_cmd(host: str) -> list[str]:
-    cmd = ["ssh"]
+    cmd = ["ssh", "-o", "BatchMode=yes"]
     if _SSH_MULTIPLEX:
         cp = ssh_control_path(host)
         cmd += [
@@ -86,7 +86,7 @@ def ssh_base_cmd(host: str) -> list[str]:
 
 
 def scp_base_cmd(host: str) -> list[str]:
-    cmd = ["scp"]
+    cmd = ["scp", "-o", "BatchMode=yes"]
     if _SSH_MULTIPLEX:
         cp = ssh_control_path(host)
         cmd += ["-o", f"ControlPath={cp}"]

@@ -572,6 +572,7 @@ def _prepare_locust_timeseries(stats_csv_path: str, rolling_window: int) -> pd.D
     loc["Timestamp"] = pd.to_numeric(loc["Timestamp"], errors="coerce")
     loc["Requests/s"] = pd.to_numeric(loc["Requests/s"], errors="coerce")
     loc["Failures/s"] = pd.to_numeric(loc["Failures/s"], errors="coerce")
+    loc["User Count"] = pd.to_numeric(loc.get("User Count"), errors="coerce")
     loc["95%"] = pd.to_numeric(loc["95%"], errors="coerce")
     loc["99%"] = pd.to_numeric(loc["99%"], errors="coerce")
     loc["Total Average Response Time"] = pd.to_numeric(
@@ -591,7 +592,8 @@ def _prepare_locust_timeseries(stats_csv_path: str, rolling_window: int) -> pd.D
         return loc
 
     loc["achieved_rps"] = loc["Requests/s"] - loc["Failures/s"]
-    loc = loc[loc["achieved_rps"] > 0].copy()
+    loc["served_rps"] = loc["Requests/s"]
+    loc = loc[loc["User Count"] > 0].copy()
     if loc.empty:
         return loc
 
@@ -636,6 +638,8 @@ def _prepare_backend_db_merged(
             [
                 "Timestamp",
                 "achieved_rps",
+                "served_rps",
+                "User Count",
                 "backend_mean_ms",
                 "backend_p95_ms",
                 "backend_p99_ms",
@@ -647,7 +651,7 @@ def _prepare_backend_db_merged(
         direction="nearest",
     ).dropna(
         subset=[
-            "achieved_rps",
+            "User Count",
             "backend_mean_ms",
             "backend_p95_ms",
             "backend_p99_ms",
@@ -715,14 +719,14 @@ def plot_backend_vs_db_latency_by_rps(
         return True
 
     all_rows = pd.concat(rows, ignore_index=True)
-    rps_min = float(all_rows["achieved_rps"].min())
-    rps_max = float(all_rows["achieved_rps"].max())
+    rps_min = float(all_rows["User Count"].min())
+    rps_max = float(all_rows["User Count"].max())
     if rps_max <= rps_min:
         return False
 
     bin_edges = np.linspace(rps_min, rps_max, max(6, n_bins))
     all_rows["rps_bin"] = pd.cut(
-        all_rows["achieved_rps"], bins=bin_edges, include_lowest=True
+        all_rows["User Count"], bins=bin_edges, include_lowest=True
     )
     grouped = all_rows.groupby("rps_bin", observed=True)
 
@@ -733,7 +737,7 @@ def plot_backend_vs_db_latency_by_rps(
     dmean = grouped["db_mean_ms"].mean()
     dp95 = grouped["db_mean_ms"].quantile(0.95)
     dp99 = grouped["db_mean_ms"].quantile(0.99)
-    counts = grouped["achieved_rps"].count()
+    counts = grouped["User Count"].count()
 
     mids = np.array(
         [
@@ -768,11 +772,11 @@ def plot_backend_vs_db_latency_by_rps(
     ax_db.plot(mids, dp95, color="#ef6a6a", linewidth=2.0, label="DB p95")
     ax_db.plot(mids, dp99, color="#f6aaaa", linewidth=2.0, label="DB p99")
 
-    ax.set_xlabel("Achieved RPS")
+    ax.set_xlabel("Attempted Load (User Count)")
     ax.set_ylabel("Backend latency (ms)")
     ax_db.set_ylabel("DB latency (ms)")
     ax.set_title(
-        f"Latency distribution by RPS: backend vs database\n{task.model} | {task.scenario.id} | {task.env.id}"
+        f"Latency distribution by Attempted Load: backend vs database\n{task.model} | {task.scenario.id} | {task.env.id}"
     )
     ax.grid(alpha=0.25, linestyle="--")
 
@@ -829,13 +833,13 @@ def plot_backend_vs_db_latency_for_run_dir(
     if merged.empty:
         raise ValueError(f"Failed to align locust stats with db metrics for {run_dir}")
 
-    rps_min = float(merged["achieved_rps"].min())
-    rps_max = float(merged["achieved_rps"].max())
+    rps_min = float(merged["User Count"].min())
+    rps_max = float(merged["User Count"].max())
     if rps_max <= rps_min:
-        raise ValueError(f"Not enough RPS variation to plot for {run_dir}")
+        raise ValueError(f"Not enough variation in User Count to plot for {run_dir}")
 
     bin_edges = np.linspace(rps_min, rps_max, max(6, int(n_bins)))
-    merged["rps_bin"] = pd.cut(merged["achieved_rps"], bins=bin_edges, include_lowest=True)
+    merged["rps_bin"] = pd.cut(merged["User Count"], bins=bin_edges, include_lowest=True)
     grouped = merged.groupby("rps_bin", observed=True)
 
     bmean = grouped["backend_mean_ms"].mean()
@@ -845,7 +849,7 @@ def plot_backend_vs_db_latency_for_run_dir(
     dmean = grouped["db_mean_ms"].mean()
     dp95 = grouped["db_mean_ms"].quantile(0.95)
     dp99 = grouped["db_mean_ms"].quantile(0.99)
-    counts = grouped["achieved_rps"].count()
+    counts = grouped["User Count"].count()
 
     mids = np.array(
         [
@@ -876,10 +880,10 @@ def plot_backend_vs_db_latency_for_run_dir(
     ax_db.plot(mids, dp95, color="#ef6a6a", linewidth=2.0, label="DB p95")
     ax_db.plot(mids, dp99, color="#f6aaaa", linewidth=2.0, label="DB p99")
 
-    ax.set_xlabel("Achieved RPS")
+    ax.set_xlabel("Attempted Load (User Count)")
     ax.set_ylabel("Backend latency (ms)")
     ax_db.set_ylabel("DB latency (ms)")
-    ax.set_title(f"Backend vs DB latency by RPS\n{run_dir}")
+    ax.set_title(f"Backend vs DB latency by Attempted Load\n{run_dir}")
     ax.grid(alpha=0.25, linestyle="--")
 
     lines1, labels1 = ax.get_legend_handles_labels()
@@ -947,13 +951,10 @@ def plot_throughput_over_time_for_run_dir(
     ax.plot(df["t"], df["failures_rps_smooth"], color="#d62728", linewidth=1.8, linestyle="--", label="Failures/s")
 
     ax.set_xlabel("Time (s)")
-    ax.set_ylabel("Requests/s")
     ax.set_title(f"Throughput over time\n{run_dir}")
     ax.grid(alpha=0.25, linestyle="--")
-
     if "User Count" in df.columns and df["User Count"].notna().any():
-        ax_u = ax.twinx()
-        ax_u.plot(
+        ax.plot(
             df["t"],
             df["User Count"].rolling(window=rw, min_periods=1).mean(),
             color="#1f77b4",
@@ -961,11 +962,10 @@ def plot_throughput_over_time_for_run_dir(
             alpha=0.7,
             label="User count",
         )
-        ax_u.set_ylabel("Users")
-        lines1, labels1 = ax.get_legend_handles_labels()
-        lines2, labels2 = ax_u.get_legend_handles_labels()
-        ax.legend(lines1 + lines2, labels1 + labels2, loc="upper left")
+        ax.set_ylabel("Requests/s & Users")
+        ax.legend(loc="upper left")
     else:
+        ax.set_ylabel("Requests/s")
         ax.legend(loc="upper left")
 
     out_dir = out_dir or (run_dir / "plots")
@@ -1020,7 +1020,8 @@ def plot_throughput_by_rps_for_run_dir(
     df["Timestamp"] = pd.to_numeric(df["Timestamp"], errors="coerce")
     df["Requests/s"] = pd.to_numeric(df["Requests/s"], errors="coerce")
     df["Failures/s"] = pd.to_numeric(df["Failures/s"], errors="coerce")
-    df = df.dropna(subset=["Timestamp", "Requests/s", "Failures/s"])
+    df["User Count"] = pd.to_numeric(df.get("User Count"), errors="coerce")
+    df = df.dropna(subset=["Timestamp", "Requests/s", "Failures/s", "User Count"])
     if df.empty:
         raise ValueError(f"Stats history in {stats_path} is empty after numeric coercion")
 
@@ -1028,8 +1029,10 @@ def plot_throughput_by_rps_for_run_dir(
     df["served_rps"] = df["Requests/s"].astype(float)
     df["failures_rps"] = df["Failures/s"].astype(float)
     df["successful_rps"] = (df["Requests/s"] - df["Failures/s"]).astype(float)
+    df["user_count"] = df["User Count"].astype(float)
 
     rw = max(1, int(rolling_window))
+    df["user_count_smooth"] = df["user_count"].rolling(window=rw, min_periods=1).mean()
     df["served_rps_smooth"] = df["served_rps"].rolling(window=rw, min_periods=1).mean()
     df["failures_rps_smooth"] = (
         df["failures_rps"].rolling(window=rw, min_periods=1).mean()
@@ -1043,8 +1046,8 @@ def plot_throughput_by_rps_for_run_dir(
     if not np.isfinite(rps_w) or rps_w <= 0:
         raise ValueError(f"rps_bucket_width must be > 0, got {rps_bucket_width}")
 
-    served_min = float(df["served_rps_smooth"].min())
-    served_max = float(df["served_rps_smooth"].max())
+    served_min = float(df["user_count_smooth"].min())
+    served_max = float(df["user_count_smooth"].max())
     lo = served_min if rps_bucket_min is None else float(rps_bucket_min)
     hi = served_max if rps_bucket_max is None else float(rps_bucket_max)
     if not np.isfinite(lo) or not np.isfinite(hi) or hi <= lo:
@@ -1063,7 +1066,7 @@ def plot_throughput_by_rps_for_run_dir(
         edges = np.append(edges, edges[-1] + rps_w)
 
     df["served_rps_bin"] = pd.cut(
-        df["served_rps_smooth"], bins=edges, include_lowest=True
+        df["user_count_smooth"], bins=edges, include_lowest=True
     )
     grouped = df.groupby("served_rps_bin", observed=True)
 
@@ -1130,10 +1133,10 @@ def plot_throughput_by_rps_for_run_dir(
         label="Failures/s (avg)",
     )
 
-    ax.set_xlabel("Served requests/s (bucketed)")
+    ax.set_xlabel("Attempted Load (User Count)")
     ax.set_ylabel("Requests/s")
     ax.set_title(
-        "Throughput by served RPS (bucket averages)\n"
+        "Throughput by Attempted Load (bucket averages)\n"
         f"{run_dir}  |  bucket={rps_w:g} rps  |  smooth_window={rw}"
     )
     ax.grid(alpha=0.25, linestyle="--")

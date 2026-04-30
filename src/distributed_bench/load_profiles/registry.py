@@ -52,6 +52,30 @@ LOAD_PROFILE_REGISTRY: dict[str, LoadProfile] = {
         wait_max_s=1.0,
         locust_processes=8,
     ),
+
+    "stairs-stress": StairsLoadProfile(
+        name="stairs-stress",
+        start_users=200,
+        step_users=300,
+        step_duration_s=30,
+        steps=10, # Goes up to 3200 RPS
+        run_time_s=300,
+        wait_min_s=0.5, # 2 requests per user per second
+        wait_max_s=0.5,
+        locust_processes=8,
+    ),
+    
+    "stairs-fine-stress": StairsLoadProfile(
+        name="stairs-fine-stress",
+        start_users=600,
+        step_users=100,
+        step_duration_s=45,
+        steps=15, # Goes from 600 up to 2000 users
+        run_time_s=675, # 15 steps * 45 seconds
+        wait_min_s=0.5,
+        wait_max_s=0.5,
+        locust_processes=8,
+    )
 }
 
 
