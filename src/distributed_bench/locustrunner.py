@@ -146,45 +146,6 @@ class LocustRunner:
         master_port = 0
         expect_workers = 0
 
-        if is_distributed:
-            # Distributed master/worker mode.
-            master_ip = remote_exec.resolve_remote_preferred_ipv4(
-                master_host, self.logger, preferred_prefixes=("10.233.",)
-            )
-            master_port = self._stable_port(15557, f"locust-master:{self.ctx.sample_slug}")
-            expect_workers = len(worker_hosts)
-
-            # Start workers in background (nohup) on each worker host.
-            for i, wh in enumerate(worker_hosts):
-                worker_key = f"{wh}#{i}"
-                pidfile = f"{self.ctx.remote_load_dir}/locust-worker-{host_slug(wh)}-{i}.pid"
-                logfile = f"{self.ctx.remote_load_dir}/locust-worker-{host_slug(wh)}-{i}.log"
-                worker_pidfiles[worker_key] = pidfile
-                worker_logfiles[worker_key] = logfile
-                locust_bin = remote_exec.ensure_remote_python_env(wh, self.ctx.remote_env_dir, self.logger)
-                ts = self.system_topology.load_resources.taskset_cpus
-                worker_exec = (
-                    # Don't use VAR=... cmd "$VAR" under `set -u` (the "$VAR" expands before the env assignment).
-                    f"nohup taskset -c {shlex.quote(ts)} {shlex.quote(locust_bin)} "
-                    if ts
-                    else f"nohup {shlex.quote(locust_bin)} "
-                )
-                w_cmd = (
-                    "set -euo pipefail; "
-                    f"cd {shlex.quote(self.ctx.remote_load_dir)}; "
-                    f"rm -f {shlex.quote(pidfile)} {shlex.quote(logfile)} || true; "
-                    f"{worker_exec}"
-                    f"--worker --master-host {shlex.quote(master_ip)} --master-port {int(master_port)} "
-                    f"--locustfile {shlex.quote(self.ctx.locustfile.name)} "
-                    f"> {shlex.quote(logfile)} 2>&1 & "
-                    f"echo $! > {shlex.quote(pidfile)}"
-                )
-                remote_exec.ssh(wh, f"bash -lc {shlex.quote(w_cmd)}", self.logger).check_returncode()
-
-        # Run master in foreground for completion + CSVs.
-        connection = Connection(master_host)
-        locust_bin = remote_exec.ensure_remote_python_env(master_host, self.ctx.remote_env_dir, self.logger)
-
         if isinstance(self.load_profile, ContinuousLoadProfile):
             load_mode = "continuous"
         elif isinstance(self.load_profile, StairsLoadProfile):
@@ -224,6 +185,46 @@ class LocustRunner:
                     f"BAXBENCH_SPIKE_INTERVAL_S={int(self.load_profile.interval_s)} "
                     f"BAXBENCH_SPIKE_DURATION_S={int(self.load_profile.duration_s)} "
                 )
+
+        if is_distributed:
+            # Distributed master/worker mode.
+            master_ip = remote_exec.resolve_remote_preferred_ipv4(
+                master_host, self.logger, preferred_prefixes=("10.233.",)
+            )
+            master_port = self._stable_port(15557, f"locust-master:{self.ctx.sample_slug}")
+            expect_workers = len(worker_hosts)
+
+            # Start workers in background (nohup) on each worker host.
+            for i, wh in enumerate(worker_hosts):
+                worker_key = f"{wh}#{i}"
+                pidfile = f"{self.ctx.remote_load_dir}/locust-worker-{host_slug(wh)}-{i}.pid"
+                logfile = f"{self.ctx.remote_load_dir}/locust-worker-{host_slug(wh)}-{i}.log"
+                worker_pidfiles[worker_key] = pidfile
+                worker_logfiles[worker_key] = logfile
+                locust_bin = remote_exec.ensure_remote_python_env(wh, self.ctx.remote_env_dir, self.logger)
+                ts = self.system_topology.load_resources.taskset_cpus
+                worker_exec = (
+                    # Don't use VAR=... cmd "$VAR" under `set -u` (the "$VAR" expands before the env assignment).
+                    f"nohup taskset -c {shlex.quote(ts)} {shlex.quote(locust_bin)} "
+                    if ts
+                    else f"nohup {shlex.quote(locust_bin)} "
+                )
+                w_cmd = (
+                    "set -euo pipefail; "
+                    f"cd {shlex.quote(self.ctx.remote_load_dir)}; "
+                    f"rm -f {shlex.quote(pidfile)} {shlex.quote(logfile)} || true; "
+                    f"{env_prefix}{worker_exec}"
+                    f"--worker --master-host {shlex.quote(master_ip)} --master-port {int(master_port)} "
+                    f"--locustfile {shlex.quote(self.ctx.locustfile.name)} "
+                    f"> {shlex.quote(logfile)} 2>&1 & "
+                    f"echo $! > {shlex.quote(pidfile)}"
+                )
+                remote_exec.ssh(wh, f"bash -lc {shlex.quote(w_cmd)}", self.logger).check_returncode()
+
+        # Run master in foreground for completion + CSVs.
+        connection = Connection(master_host)
+        locust_bin = remote_exec.ensure_remote_python_env(master_host, self.ctx.remote_env_dir, self.logger)
+
         load_ts = self.system_topology.load_resources.taskset_cpus
         locust_exec = f"{shlex.quote(locust_bin)}"
         if load_ts:
