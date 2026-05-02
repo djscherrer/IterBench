@@ -445,7 +445,44 @@ class Task:
         This supports the common workflow of skipping already-benched samples when re-running
         benches with the same profile.
         """
-        prefix = f"perf-{_slugify_run_part(topology)}-{_slugify_run_part(load_profile)}-"
+        # Prefer a config-based match when possible. The directory name is a convenience, but
+        # can drift if environment variables contain different formatting than the persisted config.
+        for run_dir in sample_dir.glob("perf-*"):
+            if not run_dir.is_dir():
+                continue
+            cfg_path = run_dir / "config.json"
+            if not cfg_path.exists():
+                continue
+            try:
+                with open(cfg_path, "r", encoding="utf-8") as f:
+                    cfg = json.load(f)
+            except Exception:
+                continue
+
+            def _get_str(*path: str) -> str | None:
+                cur: Any = cfg
+                for key in path:
+                    if not isinstance(cur, dict) or key not in cur:
+                        return None
+                    cur = cur[key]
+                if isinstance(cur, str):
+                    return cur.strip()
+                return None
+
+            # We accept either "requested_profiles" or "resolved_*" names (some runs may differ
+            # in what they persist depending on runner/version).
+            cfg_topo = _get_str("requested_profiles", "system_topology") or _get_str(
+                "resolved_system_topology", "name"
+            )
+            cfg_prof = _get_str("requested_profiles", "load_profile") or _get_str(
+                "resolved_load_profile", "name"
+            )
+
+            if cfg_topo == topology and cfg_prof == load_profile:
+                return True
+
+        # Fallback: match by directory prefix.
+        prefix = f"perf-{_slugify_run_part(topo_wanted)}-{_slugify_run_part(prof_wanted)}-"
         return any(p.is_dir() for p in sample_dir.glob(f"{prefix}*"))
 
     def has_any_bench_results(self, sample_dir: pathlib.Path, user: str) -> bool:
