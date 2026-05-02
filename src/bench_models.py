@@ -260,9 +260,7 @@ class DistributedBenchContext:
         remote_env_dir = plan.config.remote_dir("load", ".venv")
 
         container_name = f"baxbench-{sample_slug}-{uuid.uuid4().hex[:8]}"
-        # DB container name must be stable across runs when we reuse the DB.
-        # Otherwise `BAXBENCH_KEEP_DB=1` would keep an existing container but subsequent
-        # `docker exec <name> ...` calls would target a non-existent name.
+        # DB container name is stable so log collection and `docker exec` calls remain predictable.
         db_container_name = f"baxbench-{sample_slug}-db"
         lb_container_name = f"baxbench-{sample_slug}-lb"
 
