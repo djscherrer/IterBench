@@ -481,9 +481,7 @@ class Task:
             if cfg_topo == topology and cfg_prof == load_profile:
                 return True
 
-        # Fallback: match by directory prefix.
-        prefix = f"perf-{_slugify_run_part(topo_wanted)}-{_slugify_run_part(prof_wanted)}-"
-        return any(p.is_dir() for p in sample_dir.glob(f"{prefix}*"))
+        return False
 
     def has_any_bench_results(self, sample_dir: pathlib.Path, user: str) -> bool:
         """
@@ -1484,32 +1482,39 @@ class TaskHandler:
         with multiprocessing.Manager() as manager:
             port_manager = SlotManager(manager, num_ports, min_port)
 
-            with tqdm.tqdm(total=len(self.tasks)) as pbar:
+            total = len(self.tasks) * max(1, len(samples))
+            all_paths: list[pathlib.Path] = []
+            with tqdm.tqdm(total=total) as pbar:
+                # Run sequentially (max_workers was already 1) so the progress bar can show
+                # per-sample status deterministically.
+                for task in self.tasks:
+                    model_label = f"{task.model}"
+                    env_label = task.env.id  # e.g. "Rust-Actix"
+                    scenario_label = task.scenario.id
+                    openhands_label = "true" if task.use_openhands else "false"
 
-                def run_bench_task(index_and_task: tuple[int, Task]) -> list[pathlib.Path]:
-                    i, task = index_and_task
-                    with pbar.get_lock():
-                        pbar.set_description(
-                            f"{task.model} - {task.env.language}-{task.env.framework} - {task.scenario.id}"
+                    for si, sample in enumerate(samples):
+                        with pbar.get_lock():  # type: ignore[no-untyped-call]
+                            pbar.set_description(
+                                f"{model_label} - {scenario_label} - {env_label} - openhands={openhands_label} - sample {si + 1}/{len(samples)}"
+                            )
+                        all_paths.extend(
+                            task.bench_code(
+                                results_dir=self.results_dir,
+                                samples=[sample],
+                                port_manager=port_manager,
+                                timeout=timeout,
+                                force=force,
+                                remote_config=self.bench_remote_config,
+                                bench_users=bench_users,
+                                bench_spawn_rate=bench_spawn_rate,
+                                bench_run_time=bench_run_time,
+                            )
                         )
-                    paths = task.bench_code(
-                        results_dir=self.results_dir,
-                        samples=samples,
-                        port_manager=port_manager,
-                        timeout=timeout,
-                        force=force,
-                        remote_config=self.bench_remote_config,
-                        bench_users=bench_users,
-                        bench_spawn_rate=bench_spawn_rate,
-                        bench_run_time=bench_run_time,
-                    )
-                    with pbar.get_lock():  # type: ignore[no-untyped-call]
-                        pbar.update(1)
-                    return paths
+                        with pbar.get_lock():  # type: ignore[no-untyped-call]
+                            pbar.update(1)
 
-                with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-                    nested = list(executor.map(run_bench_task, enumerate(self.tasks)))
-                return [p for row in nested for p in row]
+            return all_paths
 
     def plot_bench(
         self,
