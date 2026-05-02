@@ -32,7 +32,6 @@ from db_metrics import PostgresSampler
 from db_manager import PostgresConnectionParams, PostgresManager
 from env.base import COMMON_DOCKER_RUN_COMMANDS, Env
 from prompts import Prompter
-from prompts_openhands import OpenHandsPrompter
 from bench_models import RemoteConfig
 from distributed_bench import run_remote_bench
 from scenarios.base import AppInstance, FunctionalTest, Scenario, SecurityTest
@@ -576,6 +575,9 @@ class Task:
             if self.use_openhands:
                 logger.info(f"Using OpenHands agent for code generation")
 
+                # Lazy import so single-shot runs don't require OpenHands deps.
+                from prompts_openhands import OpenHandsPrompter
+
                 prompter_oh = OpenHandsPrompter(
                     env=self.env,
                     scenario=self.scenario,
@@ -759,6 +761,28 @@ class Task:
             ft_dir.mkdir(parents=True, exist_ok=True)
             log_file = ft_dir / "test.log"
             with self.create_logger(log_file) as logger:
+                code_dir = self.get_code_dir(results_dir, sample)
+                layout_errors = self.env.codegen_layout_errors(code_dir)
+                if layout_errors:
+                    logger.error(
+                        "Skipping Docker build — generated code layout incomplete for %s: %s",
+                        self.env.id,
+                        "; ".join(layout_errors),
+                    )
+                    result = TestResult()
+                    for _ in range(len(self.scenario.functional_tests)):
+                        result.record_ft_result(passed=False, had_exception=True)
+                    for _ in range(len(self.scenario.security_tests)):
+                        result.record_st_result(None)
+                    logger.info(
+                        "Finished testing sample %d, skipped build (incomplete codegen layout)",
+                        sample,
+                    )
+                    self.save_test_results(result, results_dir, sample)
+                    logger.info("Saved test results")
+                    logger.info("-" * 100)
+                    continue
+
                 image_id = self._build_image(results_dir, sample, logger)
 
                 # if image build fails, all tests are failed
@@ -902,6 +926,25 @@ class Task:
         bench_spawn_rate: int | None = None,
         bench_run_time: int | None = None,
     ) -> list[pathlib.Path]:
+        def _append_bench_skip(sample: int, reason: str) -> None:
+            """
+            Best-effort per-task skip logging.
+            Written even when bench never creates a run_dir (so you can debug "instant" benches).
+            """
+            try:
+                save_dir = self.get_save_dir(results_dir)
+                save_dir.mkdir(parents=True, exist_ok=True)
+                p = save_dir / "bench_skips.log"
+                ts = datetime.datetime.now().isoformat(timespec="seconds")
+                p.write_text(
+                    (p.read_text(encoding="utf-8") if p.exists() else "")
+                    + f"[{ts}] sample{sample}: {reason}\n",
+                    encoding="utf-8",
+                )
+            except Exception:
+                # Skip logging must never break the bench run itself.
+                pass
+
         # clean the directory from bench artifacts if entered by force
         if force:
             for sample in samples:
@@ -913,19 +956,48 @@ class Task:
                             if file_path.is_file():
                                 file_path.unlink()
         run_dirs_created: list[pathlib.Path] = []
+        bench_logger = logging.getLogger(self.id)
         for sample in samples:
             sample_dir = self.get_sample_dir(results_dir, sample)
-            if not self.get_code_dir(results_dir, sample).exists():
+
+            # 1) Skip if a perf run already exists for the same topology + load profile.
+            # (Timestamp differs, but the profile is the same.)
+            topo = os.environ.get("BAXBENCH_SYSTEM_TOPOLOGY", "default")
+            prof = os.environ.get("BAXBENCH_LOAD_PROFILE", "default")
+            if not force and self.has_perf_run_for_profile(
+                sample_dir, topology=topo, load_profile=prof
+            ):
+                _append_bench_skip(
+                    sample,
+                    f"skipped: perf run already exists for topology={topo!r} load_profile={prof!r}",
+                )
                 continue
 
+            # 2) Only benchmark if all functional tests passed.
+            # This intentionally makes bench depend on "test" results, rather than on incidental artifacts
+            # like the generated code dir existing.
             test_result_path = self.get_test_results_json_path(results_dir, sample)
             if not test_result_path.exists():
+                _append_bench_skip(
+                    sample,
+                    "skipped: missing functional test results (functional_tests/test_results.json)",
+                )
                 continue
-            else:
-                with open(test_result_path, "r") as f:
+
+            try:
+                with open(test_result_path, "r", encoding="utf-8") as f:
                     test_result = TestResult.from_dict(json.load(f))
-                    if test_result.num_passed_ft < test_result.num_total_ft:
-                        continue
+            except Exception:
+                _append_bench_skip(sample, "skipped: unreadable functional test results")
+                continue
+
+            if test_result.num_passed_ft < test_result.num_total_ft:
+                _append_bench_skip(
+                    sample,
+                    f"skipped: functional tests not all passing ({test_result.num_passed_ft}/{test_result.num_total_ft})",
+                )
+                continue
+
             # Image id is recorded during the functional test stage.
             # Newer layout stores it under functional_tests/test.log; keep a fallback to the old path.
             test_log_file = self.get_functional_tests_dir(results_dir, sample) / "test.log"
@@ -942,15 +1014,8 @@ class Task:
             except FileNotFoundError:
                 pass
             if image_id is None:
+                _append_bench_skip(sample, f"skipped: no docker image id found in {test_log_file}")
                 continue
-
-            # Skip if a perf run already exists for the same topology + load profile.
-            # (Timestamp differs, but the profile is the same.)
-            if not force:
-                topo = os.environ.get("BAXBENCH_SYSTEM_TOPOLOGY", "default")
-                prof = os.environ.get("BAXBENCH_LOAD_PROFILE", "default")
-                if self.has_perf_run_for_profile(sample_dir, topology=topo, load_profile=prof):
-                    continue
 
             run_dir = self.get_bench_run_dir(
                 results_dir=results_dir,
@@ -981,18 +1046,43 @@ class Task:
                     image_id = self._build_image(results_dir, sample, logger)
                     if image_id is None:
                         logger.error("Failed to build image for benchmarking")
+                        _append_bench_skip(sample, "skipped: failed to build docker image for bench")
                         continue
 
                 logger.info("got docker image. id: %s", image_id)
                 logger.info("-" * 100)
 
-                # todo: repeate for each user
-                for test in self.scenario.performance_tests:
-                    from scenario_files import SCENARIO_FILE_PATH
+                from scenario_files import SCENARIO_FILE_PATH
 
-                    locustfile = SCENARIO_FILE_PATH.joinpath(
-                        f"locustfiles/{self.scenario.id.lower()}.py"
-                    )
+                shared_locustfile = SCENARIO_FILE_PATH.joinpath(
+                    f"locustfiles/{self.scenario.id.lower()}.py"
+                )
+                has_locustfile = shared_locustfile.exists() or bool(self.scenario.locustfile)
+
+                tests_to_run = list(self.scenario.performance_tests)
+                if not tests_to_run:
+                    # Some scenarios only provide a locustfile (either shared or inline)
+                    # but do not define named performance_tests. Treat that as a single
+                    # default bench run.
+                    if has_locustfile:
+                        tests_to_run = ["default"]
+                    else:
+                        _append_bench_skip(sample, "skipped: no performance tests configured")
+                        continue
+
+                # todo: repeate for each user
+                for test in tests_to_run:
+                    # Prefer inline scenario.locustfile when present (scenario-provided),
+                    # fall back to shared scenario_files/locustfiles/<scenario>.py.
+                    if self.scenario.locustfile:
+                        locustfile = run_dir / f"locustfile-{self.scenario.id.lower()}.py"
+                        locustfile.write_text(self.scenario.locustfile, encoding="utf-8")
+                    elif shared_locustfile.exists():
+                        locustfile = shared_locustfile
+                    else:
+                        _append_bench_skip(sample, "skipped: missing locustfile")
+                        continue
+
                     logger.info("running load benchmark:\n%s", locustfile.read_text())
                     csv_prefix = self.get_bench_results_csv_prefix(
                         results_dir, sample, test
