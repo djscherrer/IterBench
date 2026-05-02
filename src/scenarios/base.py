@@ -142,6 +142,10 @@ class Scenario:
     # If an app secret is needed, this will prompt the model to get one from an env variable.
     needs_secret: bool
 
+    # Optional load-test definition (e.g. locustfile content) bundled with scenario.
+    # If unset, benchmarking may fall back to scenario_files/locustfiles/.
+    locustfile: str | None = None
+
     # optional list of performance tests
     performance_tests: list[str] = field(default_factory=list)
 
