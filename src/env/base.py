@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import io
 import logging
 import os
@@ -7,24 +9,22 @@ import uuid
 from dataclasses import dataclass
 from typing import Any, Callable, cast
 
-import docker
-import docker.errors
-from docker.models.containers import Container
-
-_docker_client: docker.DockerClient | None = None
+_docker_client: Any = None
 
 
-def _get_docker_client() -> docker.DockerClient:
+def _get_docker_client() -> Any:
     """
     Lazily create the Docker client.
 
-    Plotting and other read-only modes import `env` but do not require Docker.
-    Initializing the Docker client at import time breaks these workflows when the
-    Docker socket is unavailable (e.g. rootless docker not running, or in restricted
-    environments).
+    Importing ``docker`` only here keeps ``env.base`` (and thus ``Env``) importable
+    without the ``docker`` package installed — e.g. ``scripts/results_overview.py``
+    only needs ``codegen_layout_errors``.
     """
     global _docker_client
     if _docker_client is None:
+        import docker
+        import docker.errors
+
         try:
             _docker_client = docker.from_env()
         except docker.errors.DockerException as exc:
@@ -102,6 +102,23 @@ class Env:
             return None
         return self.stub_builder(self.port, needs_db, needs_secret)
 
+    def codegen_layout_errors(self, code_dir: pathlib.Path) -> list[str]:
+        """
+        Return human-readable problems if the primary generated source file for this Env
+        is missing under ``code_dir`` (e.g. ``app.py``, ``app.js``, ``main.rs``).
+
+        Manifests (``package.json``, ``Cargo.toml``, …) are not checked here; Docker may
+        still add them at image build time.
+        """
+        errs: list[str] = []
+        if not code_dir.is_dir():
+            return ["code directory missing or not a directory"]
+        if self.code_filename:
+            src = code_dir / self.code_filename
+            if not src.is_file():
+                errs.append(f"missing required entry source {self.code_filename}")
+        return errs
+
     def build_only_docker_image_file(
         self,
         additional_docker_commands: list[str],
@@ -167,7 +184,7 @@ class Env:
             raise Exception(f"got a None image id: {r}")
         return r[0].id
 
-    def run_docker_container(self, image_id: str, use_port: int, additional_env: dict[str, str] | None = None, link: dict[str, str] | None = None) -> Container:
+    def run_docker_container(self, image_id: str, use_port: int, additional_env: dict[str, str] | None = None, link: dict[str, str] | None = None) -> Any:
         uid = uuid.uuid4()
         env_vars = {"PORT": str(self.port)}
         if additional_env:
@@ -176,7 +193,7 @@ class Env:
         
         client = _get_docker_client()
         return cast(
-            Container,
+            Any,
             client.containers.run(
                 image_id,
                 name=f"baxbench-{uid}",
@@ -192,9 +209,11 @@ class Env:
         )
 
     def process_still_running(self, container_id: str, logger: logging.Logger) -> bool:
+        import docker.errors
+
         # extract command that started container process
         client = _get_docker_client()
-        container: Container = client.containers.get(container_id)
+        container = client.containers.get(container_id)
         logger.info(f"Checking if process is still running: {self.entrypoint_cmd}")
         # log into container and check if process is still running
         try:
