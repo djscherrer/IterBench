@@ -109,6 +109,8 @@ class Prompter:
         "o3-2025-04-16": 100000,
         "o4-mini-2025-04-16": 100000,
         "gpt-5-2025-08-07": 128000,
+        "gpt-5.4": 128000,
+        "gpt-5.4-2026-03-05": 128000,
         "gpt-5.4-nano": 128000,
     }
 
@@ -160,14 +162,15 @@ class Prompter:
         else:
             self.provider = provider
 
-
+        # NOTE: `self.model` may be normalized above (provider prefix stripped).
+        # Any model-name based feature flags must use `self.model`, not the raw input `model`.
         self.openai_reasoning = (
-            model.startswith("o1")
-            or model.startswith("o3")
-            or model.startswith("o4")
-            or model.startswith("gpt-5")
+            self.model.startswith("o1")
+            or self.model.startswith("o3")
+            or self.model.startswith("o4")
+            or self.model.startswith("gpt-5")
         )
-        self.anthropic_thinking = model in self.anthropic_thinking_lengths
+        self.anthropic_thinking = self.model in self.anthropic_thinking_lengths
 
         self.prompt = self.scenario.build_prompt(
             self.env, self.spec_type, self.safety_prompt, agent=False, use_stubs=use_stubs
