@@ -846,11 +846,12 @@ _LOCUSTFILE = '''
 import random
 import re
 import uuid
-from locust import HttpUser, task, between
+from locust import HttpUser, task
+
+from _baxbench_shape import BaxbenchShape, baxbench_wait_time
 
 class LexiTallyUser(HttpUser):
-    # No explicit performance objectives were provided, so we use a modest wait time.
-    wait_time = between(0.2, 1.0)
+    wait_time = baxbench_wait_time()
 
     def on_start(self):
         # Per-user state
@@ -1096,6 +1097,10 @@ class LexiTallyUser(HttpUser):
                 resp.success()
             else:
                 resp.failure(f"CSV export failed ({resp.status_code}): {resp.text}")
+
+
+class Shape(BaxbenchShape):
+    pass
 '''
 
 from scenarios.base import Scenario

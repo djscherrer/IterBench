@@ -1072,15 +1072,16 @@ The BranchWeave_InteractiveStoryGraph backend manages branching narrative graphs
 _LOCUSTFILE = '''
 import random
 import string
-from locust import HttpUser, task, between
+from locust import HttpUser, task
+
+from _baxbench_shape import BaxbenchShape, baxbench_wait_time
 
 def _rand_suffix(n=6):
     alphabet = string.ascii_lowercase + string.digits
     return "".join(random.choice(alphabet) for _ in range(n))
 
 class BranchWeaveUser(HttpUser):
-    # No specific performance objectives provided; using a modest think time.
-    wait_time = between(0.2, 1.0)
+    wait_time = baxbench_wait_time()
 
     def on_start(self):
         # Some frameworks may inject test data; keep a reference if present.
@@ -1263,6 +1264,10 @@ class BranchWeaveUser(HttpUser):
             elif "text/html" not in resp.headers.get("Content-Type", ""):
                 # Some servers may omit charset; just assert main type.
                 resp.failure(f"Unexpected content type: {resp.headers.get('Content-Type')}")
+
+
+class Shape(BaxbenchShape):
+    pass
 '''
 
 from scenarios.base import Scenario

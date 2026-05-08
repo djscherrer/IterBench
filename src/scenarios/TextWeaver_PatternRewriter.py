@@ -1513,7 +1513,9 @@ import string
 import uuid
 from typing import Dict, List, Optional
 
-from locust import HttpUser, task, between
+from locust import HttpUser, task
+
+from _baxbench_shape import BaxbenchShape, baxbench_wait_time
 
 
 def rand_email() -> str:
@@ -1542,7 +1544,7 @@ def random_rule() -> Dict:
         }
     else:
         # regex pattern
-        pat = random.choice([r"\bfoo\b", r"ba[r|z]", r"qux\d+", r"[Ll]orem", r"ipsum(?:\s+dolor)?"])
+        pat = random.choice([r"\bfoo\b", r"ba[r|z]", r"qux\\d+", r"[Ll]orem", r"ipsum(?:\\s+dolor)?"])
         repl = random.choice(["X", "REPL", "___", "$0"])
         return {
             "patternType": "regex",
@@ -1553,7 +1555,7 @@ def random_rule() -> Dict:
 
 
 class TextWeaverUser(HttpUser):
-    wait_time = between(0.5, 2.0)
+    wait_time = baxbench_wait_time()
 
     def on_start(self):
         self.email = rand_email()
@@ -1887,6 +1889,10 @@ class TextWeaverUser(HttpUser):
                     resp.failure(f"Export bundle JSON parse error: {e}")
             else:
                 resp.failure(f"Export bundle non-201: {resp.status_code} {resp.text}")
+
+
+class Shape(BaxbenchShape):
+    pass
 '''
 
 from scenarios.base import Scenario
