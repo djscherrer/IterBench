@@ -41,6 +41,17 @@ LOAD_PROFILE_REGISTRY: dict[str, LoadProfile] = {
         wait_max_s=1.0,
         locust_processes=8,
     ),
+    "stairs-500-100-30-10": StairsLoadProfile(
+        name="stairs-500-100-30-10",
+        start_users=500,
+        step_users=100,
+        step_duration_s=30,
+        steps=10,
+        run_time_s=300,
+        wait_min_s=1.0,
+        wait_max_s=1.0,
+        locust_processes=8,
+    ),
     "spike-500-1000-30-10": SpikeLoadProfile(
         name="spike-500-1000-30-10",
         base_users=500,

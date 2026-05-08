@@ -9,24 +9,18 @@ SYSTEM_TOPOLOGY_REGISTRY: dict[str, SystemTopology] = {
     "2C-1B-1DB": SystemTopology(
         name="2C-1B-1DB",
         backend_hosts=("r630-03",),
-        load_hosts=("r630-08", "r630-02"),
+        load_master="r630-08",
+        load_workers=("r630-08", "r630-02",),
         lb_host="",
-        db_hosts=("r630-05",),
+        db_hosts=("r630-04",),
     ),
 
-    "2C-1LB-2B-1DB": SystemTopology(
+    "2C-2B-1DB": SystemTopology(
         name="2C-2B-1DB",
         backend_hosts=("r630-03", "r630-04"),
-        load_hosts=("r630-08", "r630-02"),
+        load_master="r630-08",
+        load_workers=("r630-08", "r630-02",),
         lb_host="r630-08",
-        db_hosts=("r630-05",),
-    ),
-
-    "multi-client": SystemTopology(
-        name="multi-client",
-        load_hosts=("r630-08", "r630-02", "r630-03"),
-        lb_host="",
-        backend_hosts=("r630-04",),
         db_hosts=("r630-05",),
     ),
 }
