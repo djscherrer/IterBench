@@ -30,8 +30,8 @@ def _plot_per_run_dir_best_effort(
     throughput_rps_bucket_width: float = 25.0,
 ) -> None:
     """Per-run plots matching ``--mode plot --plot-run-dir`` (skips missing metrics)."""
-    import plot as plot_mod
-    import plot_remote_perf as plot_remote_perf_mod
+    from distributed_bench.analysis import plot as plot_mod
+    from distributed_bench.analysis import plot_remote_perf as plot_remote_perf_mod
 
     run_dir = pathlib.Path(run_dir)
     for name, fn, extra_kwargs in (

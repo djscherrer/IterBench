@@ -27,7 +27,7 @@ import tqdm
 from docker.models.containers import Container
 
 import cwes as cwe
-import plot
+from distributed_bench.analysis import plot
 from db_metrics import PostgresSampler
 from db_manager import PostgresConnectionParams, PostgresManager
 from env.base import COMMON_DOCKER_RUN_COMMANDS, Env
