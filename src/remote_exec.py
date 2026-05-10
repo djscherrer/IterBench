@@ -55,6 +55,27 @@ _CAPTURE_PERCPU = os.environ.get("BAXBENCH_CAPTURE_PERCPU", "0").strip().lower()
     "on",
 )
 
+_AUTO_INSTALL_REMOTE_DEPS = os.environ.get("BAXBENCH_AUTO_INSTALL_REMOTE_DEPS", "").strip().lower() in (
+    "1",
+    "true",
+    "yes",
+    "on",
+)
+
+
+def _env_bool(name: str, default: bool) -> bool:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in ("1", "true", "yes", "on")
+
+
+_REMOTE_PRUNE_IMAGES = _env_bool("BAXBENCH_REMOTE_PRUNE_IMAGES", True)
+# Volume prune is potentially destructive (contains DB/state). Default to False.
+_REMOTE_PRUNE_VOLUMES = _env_bool("BAXBENCH_REMOTE_PRUNE_VOLUMES", False)
+_REMOTE_PRUNE_BUILD_CACHE = _env_bool("BAXBENCH_REMOTE_PRUNE_BUILD_CACHE", True)
+_REMOTE_REMOVE_NETWORKS = _env_bool("BAXBENCH_REMOTE_REMOVE_DOCKER_NETWORKS", True)
+
 
 def ssh_control_path(host: str) -> str:
     """
@@ -176,6 +197,137 @@ def ensure_rootless_docker(host: str, logger: logging.Logger) -> None:
         ) from exc
 
 
+def ensure_docker_access(host: str, logger: logging.Logger) -> str:
+    """
+    Ensure Docker is accessible on the remote host.
+    Prefer rootful Docker via sudo; if that fails, fall back to rootless mode.
+    Returns the selected mode: "rootful" or "rootless".
+    """
+    # Try rootful (sudo) first.
+    try:
+        cmd = "set -euo pipefail; sudo -n docker info >/dev/null 2>&1"
+        out = ssh(host, f"bash -lc {shlex.quote(cmd)}", logger)
+        out.check_returncode()
+        logger.info("Docker accessible (rootful) on %s", host)
+        return "rootful"
+    except Exception:
+        # Fallback: try rootless path (inline the previous ensure_rootless_docker logic).
+        try:
+            cmd = (
+                "set -euo pipefail; "
+                "if command -v loginctl >/dev/null 2>&1; then "
+                "  loginctl enable-linger \"$USER\" >/dev/null 2>&1 || true; "
+                "fi; "
+                "if command -v systemctl >/dev/null 2>&1; then "
+                "  systemctl --user is-active docker >/dev/null 2>&1 || systemctl --user start docker >/dev/null 2>&1 || true; "
+                "fi; "
+                # If Docker isn't reachable, fail early so later steps don't produce confusing
+                # "No such container" / readiness timeouts.
+                "docker info >/dev/null 2>&1"
+            )
+            out = ssh(host, f"bash -lc {shlex.quote(cmd)}", logger)
+            out.check_returncode()
+            logger.info("Docker accessible (rootless) on %s", host)
+            return "rootless"
+        except Exception as exc:
+            # Collect diagnostic output for both checks for clearer errors.
+            diag_cmd = (
+                "set -euo pipefail; "
+                'docker_sock="/run/user/$(id -u)/docker.sock"; '
+                'echo "=== sudo check ==="; if command -v sudo >/dev/null 2>&1; then sudo -n docker info >/dev/null 2>&1 && echo "OK" || echo "FAIL"; else echo "NO_SUDO"; fi; '
+                'echo "=== rootless check ==="; if [ -S "$docker_sock" ]; then DOCKER_HOST="unix://$docker_sock" docker info >/dev/null 2>&1 && echo "OK" || echo "FAIL"; else echo "NO_SOCK"; fi; '
+            )
+            out = ssh(host, f"bash -lc {shlex.quote(diag_cmd)}", logger)
+            msg = (out.stdout or b"").decode(errors="ignore").strip()
+            raise RuntimeError(
+                f"Docker not available on host {host}; attempted rootful then rootless. Details:\n{msg}"
+            ) from exc
+
+
+def cleanup_remote_docker_host(
+    host: str,
+    logger: logging.Logger,
+    *,
+    prune_images: bool = _REMOTE_PRUNE_IMAGES,
+    prune_volumes: bool = _REMOTE_PRUNE_VOLUMES,
+    prune_build_cache: bool = _REMOTE_PRUNE_BUILD_CACHE,
+    remove_networks: bool = _REMOTE_REMOVE_NETWORKS,
+) -> None:
+    # Aggressive pruning only when disk usage for Docker root exceeds threshold.
+    # Always remove containers. Default: avoid pruning volumes unless explicitly enabled.
+    threshold = 80
+    script = f"""
+    set -euo pipefail
+    docker_sock="/run/user/$(id -u)/docker.sock"
+    if [[ -z "${{DOCKER_HOST:-}}" && -S "$docker_sock" ]]; then export DOCKER_HOST="unix://$docker_sock"; fi
+    command -v docker >/dev/null 2>&1 || (echo "ERROR: docker missing" >&2; exit 51)
+    docker info >/dev/null 2>&1
+    # remove all containers (stopped/running)
+    ids=$(docker ps -aq || true)
+    if [[ -n "${{ids}}" ]]; then docker rm -f ${{ids}} >/dev/null; fi
+
+    # determine docker root and disk usage percent (integer)
+    docker_root=$(docker info --format '{{{{.DockerRootDir}}}}' 2>/dev/null || echo /var/lib/docker)
+    usage_pct=$(df -P "$docker_root" | awk 'NR==2 {{gsub("%","",$5); print int($5)}}' || echo 0)
+    build_cache_left=skipped
+    images_left=skipped
+    volumes_left=skipped
+    networks_left=skipped
+    if [ "$usage_pct" -ge {threshold} ]; then
+    echo "cleanup: disk usage $usage_pct% >= {threshold}%, performing aggressive cleanup"
+    # prune build cache
+    if [ "{str(prune_build_cache).lower()}" = "true" ]; then
+        if docker builder prune -af >/dev/null 2>&1; then :; elif docker buildx prune -af >/dev/null 2>&1; then :; else echo 'WARN: build cache prune unsupported'; fi
+        build_cache_left=unknown
+        if docker builder du >/tmp/baxbench-builder-du.$$ 2>/dev/null; then
+        build_cache_left=$(awk 'NR > 1 && NF {{count += 1}} END {{print count + 0}}' /tmp/baxbench-builder-du.$$)
+        elif docker buildx du >/tmp/baxbench-builder-du.$$ 2>/dev/null; then
+        build_cache_left=$(awk 'NR > 1 && NF {{count += 1}} END {{print count + 0}}' /tmp/baxbench-builder-du.$$)
+        fi
+        rm -f /tmp/baxbench-builder-du.$$ >/dev/null 2>&1 || true
+    fi
+
+    if [ "{str(prune_images).lower()}" = "true" ]; then
+        # prune unused images (aggressive)
+        docker image prune -af >/dev/null || true
+    fi
+
+    if [ "{str(prune_volumes).lower()}" = "true" ]; then
+        docker volume prune -f >/dev/null || true
+    fi
+
+    if [ "{str(remove_networks).lower()}" = "true" ]; then
+        nets=$(docker network ls --filter type=custom -q || true)
+        if [[ -n "${{nets}}" ]]; then docker network rm ${{nets}} >/dev/null; fi
+    fi
+    else
+    echo "cleanup: disk usage $usage_pct% < {threshold}%, skipping aggressive cleanup"
+    fi
+
+    # produce counts and summary
+    containers_left=$(docker ps -aq | wc -l | tr -d ' ')
+    networks_left=$(docker network ls --filter type=custom -q | wc -l | tr -d ' ' || true)
+    images_left=$(docker image ls -aq | wc -l | tr -d ' ' || true)
+    volumes_left=$(docker volume ls -q | wc -l | tr -d ' ' || true)
+    echo "cleanup-summary host=$(hostname) containers_left=${{containers_left}} networks_left=${{networks_left}} images_left=${{images_left}} volumes_left=${{volumes_left}} build_cache_left=${{build_cache_left}}"
+    if [ "${{containers_left}}" != "0" ]; then echo "ERROR: containers remain after cleanup" >&2; exit 61; fi
+    if [ "{str(remove_networks).lower()}" = "true" ] && [ "${{networks_left}}" != "0" ]; then echo "ERROR: docker networks remain after cleanup" >&2; exit 62; fi
+    if [ "{str(prune_images).lower()}" = "true" ] && [ "${{images_left}}" != "0" ]; then echo "ERROR: docker images remain after cleanup" >&2; exit 63; fi
+    if [ "{str(prune_volumes).lower()}" = "true" ] && [ "${{volumes_left}}" != "0" ]; then echo "ERROR: docker volumes remain after cleanup" >&2; exit 64; fi
+    """
+    out = ssh(host, f"bash -lc {shlex.quote(script)}", logger)
+    try:
+        out.check_returncode()
+    except Exception as exc:
+        msg = (out.stdout or b"").decode(errors="ignore").strip()
+        if not msg:
+            msg = f"exit {out.returncode}"
+        raise RuntimeError(f"Failed to clean Docker state on host {host}.\n{msg}") from exc
+    summary = (out.stdout or b"").decode(errors="ignore").strip()
+    if summary:
+        logger.info("%s", summary)
+
+
 def scp_to_remote(local_path: pathlib.Path, host: str, remote_path: str, logger: logging.Logger) -> None:
     scp_cmd = scp_base_cmd(host) + [str(local_path), f"{host}:{remote_path}"]
     run_subprocess(scp_cmd, logger).check_returncode()
@@ -248,9 +400,13 @@ def ensure_remote_python_env(load_host: str, remote_env_dir: str, logger: loggin
     setup_cmd = (
         "set -euo pipefail; "
         f"{mkdir_parent}"
+        "python3 -c 'import venv' >/dev/null 2>&1 || (echo 'ERROR: python3-venv missing' >&2; exit 42); "
         f"if [ ! -d {shlex.quote(str(env_path))} ]; then "
         f"python3 -m venv {shlex.quote(str(env_path))}; "
         "fi; "
+        f"({shlex.quote(venv_python)} -m pip --version >/dev/null 2>&1) "
+        f"|| ({shlex.quote(venv_python)} -m ensurepip --upgrade >/dev/null 2>&1) "
+        f"|| (echo 'ERROR: pip missing in venv (install python3-pip / ensurepip)' >&2; exit 43); "
         f"if [ ! -f {shlex.quote(marker)} ]; then "
         f"{shlex.quote(venv_python)} -m pip install --upgrade pip; "
         f"{shlex.quote(venv_python)} -m pip install {requirements}; "
@@ -258,8 +414,70 @@ def ensure_remote_python_env(load_host: str, remote_env_dir: str, logger: loggin
         "fi"
     )
 
-    ssh(load_host, f"bash -lc {shlex.quote(setup_cmd)}", logger)
+    out = ssh(load_host, f"bash -lc {shlex.quote(setup_cmd)}", logger)
+    try:
+        out.check_returncode()
+    except subprocess.CalledProcessError as exc:
+        msg = (out.stdout or b"").decode(errors="ignore").strip()
+        if not msg:
+            msg = f"exit {out.returncode}"
+        if _AUTO_INSTALL_REMOTE_DEPS and ("No module named pip" in msg or "pip missing in venv" in msg):
+            ensure_remote_python_tooling(load_host, logger)
+            ssh(load_host, f"bash -lc {shlex.quote(setup_cmd)}", logger).check_returncode()
+            return locust_bin
+        raise RuntimeError(
+            f"Failed to set up remote python env on {load_host} at {remote_env_dir}. "
+            f"Ensure python3, python3-venv, and pip are available.\n{msg}"
+        ) from exc
     return locust_bin
+
+
+def ensure_remote_python_tooling(host: str, logger: logging.Logger) -> None:
+    """
+    Ensure the remote host can create venvs and install Python packages.
+
+    Required on distributed load generator hosts (Locust master/workers).
+    """
+    check_cmd = (
+        "set -euo pipefail; "
+        "command -v python3 >/dev/null 2>&1 || (echo 'ERROR: python3 missing' >&2; exit 11); "
+        "python3 -c 'import venv' >/dev/null 2>&1 || (echo 'ERROR: python3-venv missing' >&2; exit 12); "
+        "python3 -m pip --version >/dev/null 2>&1 || (echo 'ERROR: pip missing for python3' >&2; exit 13); "
+        "echo OK"
+    )
+    out = ssh(host, f"bash -lc {shlex.quote(check_cmd)}", logger)
+    if out.returncode == 0:
+        return
+
+    msg = (out.stdout or b"").decode(errors="ignore").strip()
+    if not _AUTO_INSTALL_REMOTE_DEPS:
+        raise RuntimeError(
+            f"Remote host {host} is missing Python tooling required for distributed load generation.\n"
+            f"{msg}\n"
+            "Either install prerequisites on that host (python3, python3-venv, python3-pip), "
+            "or rerun with BAXBENCH_AUTO_INSTALL_REMOTE_DEPS=1 (requires sudo on the remote host)."
+        )
+
+    install_cmd = (
+        "set -euo pipefail; "
+        "if command -v sudo >/dev/null 2>&1; then SUDO='sudo -n'; else SUDO=''; fi; "
+        "if [ -z \"$SUDO\" ]; then echo 'ERROR: sudo not available for auto-install' >&2; exit 21; fi; "
+        "if command -v apt-get >/dev/null 2>&1; then "
+        "  $SUDO apt-get update -y >/dev/null; "
+        "  $SUDO apt-get install -y python3 python3-venv python3-pip >/dev/null; "
+        "elif command -v dnf >/dev/null 2>&1; then "
+        "  $SUDO dnf install -y python3 python3-pip python3-virtualenv >/dev/null || true; "
+        "elif command -v yum >/dev/null 2>&1; then "
+        "  $SUDO yum install -y python3 python3-pip python3-virtualenv >/dev/null || true; "
+        "else "
+        "  echo 'ERROR: no supported package manager (apt/dnf/yum) found for auto-install' >&2; exit 22; "
+        "fi; "
+        "python3 -c 'import venv' >/dev/null 2>&1 || (echo 'ERROR: python3-venv still missing after install' >&2; exit 23); "
+        "python3 -m pip --version >/dev/null 2>&1 || (echo 'ERROR: pip still missing after install' >&2; exit 24); "
+        "echo OK"
+    )
+    out2 = ssh(host, f"bash -lc {shlex.quote(install_cmd)}", logger)
+    out2.check_returncode()
 
 
 def save_image_tar(image_id: str, out_dir: pathlib.Path, logger: logging.Logger) -> pathlib.Path:
@@ -672,6 +890,7 @@ __all__ = [
     "RemoteConfig",
     "_COLLECT_DOCKER_LOGS",
     "collect_docker_logs_bundle",
+    "cleanup_remote_docker_host",
     "ensure_remote_python_env",
     "ensure_rootless_docker",
     "resolve_remote_primary_ipv4",

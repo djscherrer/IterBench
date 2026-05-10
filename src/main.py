@@ -56,6 +56,12 @@ class ArgFileParser(argparse.ArgumentParser):
 
 
 def main(args: Any) -> None:
+    if args.mode == "preflight":
+        # Import lazily so other modes don't depend on preflight code.
+        from distributed_bench.preflight import run_preflight_from_args
+
+        run_preflight_from_args(args)
+        return
     # ----- Preparation -----#
     # Override port for all environments with the value from args, if not provided defaults to 5001
     envs = [replace(e, port=args.port) for e in all_envs]
@@ -84,7 +90,7 @@ def main(args: Any) -> None:
             f"Got an empty/invalid list of scenarios, possible choices: {[s.id for s in all_scenarios]}",
         )
 
-    if not args.models:
+    if args.mode in ("generate", "test", "bench", "evaluate") and not args.models:
         raise Exception("Got an empty list of models")
 
     if args.only_samples:
@@ -244,12 +250,12 @@ def main(args: Any) -> None:
 if __name__ == "__main__":
     parser = ArgFileParser(fromfile_prefix_chars="@")
     parser.add_argument(
-        "--models", type=str, nargs="+", required=True, help="List of models"
+        "--models", type=str, nargs="+", default=[], help="List of models"
     )
     parser.add_argument(
         "--mode",
         type=str,
-        choices=["generate", "test", "bench", "plot", "evaluate"],
+        choices=["generate", "test", "bench", "plot", "evaluate", "preflight"],
         required=True,
         help="Mode in which to run the code.",
     )
