@@ -22,7 +22,6 @@ from .load_profiles import (
     SpikeLoadProfile,
     StairsLoadProfile,
     SteadyLoadProfile,
-    merge_load_profile_with_overrides,
     resolve_load_profile,
 )
 from .loadbalancer import LoadBalancerManager
@@ -52,11 +51,6 @@ def _write_run_config_snapshot(
         "resolved_system_topology": asdict(system_topology),
         "resolved_load_profile": asdict(load_profile),
         "effective_remote_config": asdict(effective_remote_config),
-        "bench_cli_overrides": {
-            "bench_users": bench_users_override,
-            "bench_spawn_rate": bench_spawn_rate_override,
-            "bench_run_time": bench_run_time_override,
-        },
         "runtime_toggles": asdict(toggles),
     }
 
@@ -114,13 +108,7 @@ def run_remote_bench(
     toggles = RuntimeToggles.from_env()
     system_topology = resolve_system_topology(toggles.system_topology)
     effective_remote_config = system_topology.apply_to_remote_config(config)
-    load_profile = merge_load_profile_with_overrides(
-        resolve_load_profile(toggles.load_profile),
-        bench_users=bench_users,
-        bench_spawn_rate=bench_spawn_rate,
-        bench_run_time=bench_run_time,
-        locust_processes=toggles.locust_processes,
-    )
+    load_profile = resolve_load_profile(toggles.load_profile)
 
     plan = DistributedBenchPlan.from_args(
         config=effective_remote_config,

@@ -6,7 +6,7 @@ from .models import (
     StairsLoadProfile,
     SteadyLoadProfile,
 )
-from .registry import LOAD_PROFILE_REGISTRY, merge_load_profile_with_overrides, resolve_load_profile
+from .registry import LOAD_PROFILE_REGISTRY, resolve_load_profile
 
 __all__ = [
     "BaseLoadProfile",
@@ -17,5 +17,4 @@ __all__ = [
     "SpikeLoadProfile",
     "LOAD_PROFILE_REGISTRY",
     "resolve_load_profile",
-    "merge_load_profile_with_overrides",
 ]

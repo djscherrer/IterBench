@@ -41,6 +41,28 @@ LOAD_PROFILE_REGISTRY: dict[str, LoadProfile] = {
         wait_max_s=1.0,
         locust_processes=8,
     ),
+    "stairs-800-100-30-12": StairsLoadProfile(
+        name="stairs-800-100-30-12",
+        start_users=800,
+        step_users=100,
+        step_duration_s=30,
+        steps=12,
+        run_time_s=360,
+        wait_min_s=1.0,
+        wait_max_s=1.0,
+        locust_processes=8,
+    ),
+    "stairs-1500-100-30-15": StairsLoadProfile(
+        name="stairs-1500-100-30-15",
+        start_users=1500,
+        step_users=100,
+        step_duration_s=30,
+        steps=15,
+        run_time_s=450,
+        wait_min_s=1.0,
+        wait_max_s=1.0,
+        locust_processes=8,
+    ),
     "stairs-500-100-30-10": StairsLoadProfile(
         name="stairs-500-100-30-10",
         start_users=500,
@@ -72,54 +94,3 @@ def resolve_load_profile(name: str | None) -> LoadProfile:
         known = ", ".join(sorted(LOAD_PROFILE_REGISTRY))
         raise ValueError(f"Unknown load profile '{key}'. Known profiles: {known}")
     return LOAD_PROFILE_REGISTRY[key]
-
-
-def merge_load_profile_with_overrides(
-    profile: LoadProfile,
-    *,
-    bench_users: int | None,
-    bench_spawn_rate: int | None,
-    bench_run_time: int | None,
-    locust_processes: int | None,
-) -> LoadProfile:
-    run_time_s = int(bench_run_time) if bench_run_time is not None else int(profile.run_time_s)
-    if isinstance(profile, StairsLoadProfile) and run_time_s <= 0:
-        run_time_s = int(profile.step_duration_s * profile.steps)
-    elif run_time_s <= 0:
-        run_time_s = int(profile.run_time_s)
-    common_updates = {
-        "run_time_s": int(run_time_s),
-        "wait_min_s": float(profile.wait_min_s),
-        "wait_max_s": float(profile.wait_max_s),
-        "locust_processes": int(locust_processes) if locust_processes is not None else int(profile.locust_processes),
-    }
-    if isinstance(profile, SteadyLoadProfile):
-        return replace(
-            profile,
-            users=int(bench_users) if bench_users is not None else int(profile.users),
-            **common_updates,
-        )
-    if isinstance(profile, ContinuousLoadProfile):
-        return replace(
-            profile,
-            target_users=int(bench_users) if bench_users is not None else int(profile.target_users),
-            spawn_rate=int(bench_spawn_rate) if bench_spawn_rate is not None else int(profile.spawn_rate),
-            **common_updates,
-        )
-    if isinstance(profile, StairsLoadProfile):
-        steps = int(profile.steps)
-        if bench_users is not None and int(profile.step_users) > 0:
-            needed_delta = max(0, int(bench_users) - int(profile.start_users))
-            steps = max(1, ceil(needed_delta / int(profile.step_users)))
-        return replace(
-            profile,
-            steps=steps,
-            **common_updates,
-        )
-    if isinstance(profile, SpikeLoadProfile):
-        return replace(
-            profile,
-            spike_users=int(bench_users) if bench_users is not None else int(profile.spike_users),
-            **common_updates,
-        )
-    raise TypeError(f"Unsupported load profile type: {type(profile)!r}")
