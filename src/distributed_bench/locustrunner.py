@@ -6,6 +6,7 @@ import pathlib
 import shlex
 import subprocess
 import threading
+import time
 
 from fabric import Connection
 
@@ -13,7 +14,7 @@ import remote_exec
 from bench_models import DistributedBenchContext, host_slug
 
 from .config import RuntimeToggles
-from .load_profiles import ContinuousLoadProfile, LoadProfile, SpikeLoadProfile, StairsLoadProfile
+from .load_profiles import AdaptiveLoadProfile, ContinuousLoadProfile, LoadProfile, SpikeLoadProfile, StairsLoadProfile
 from .system_configs import SystemTopology
 
 
@@ -146,7 +147,9 @@ class LocustRunner:
         master_port = 0
         expect_workers = 0
 
-        if isinstance(self.load_profile, ContinuousLoadProfile):
+        if isinstance(self.load_profile, AdaptiveLoadProfile):
+            load_mode = "adaptive"
+        elif isinstance(self.load_profile, ContinuousLoadProfile):
             load_mode = "continuous"
         elif isinstance(self.load_profile, StairsLoadProfile):
             load_mode = "stairs"
@@ -185,6 +188,20 @@ class LocustRunner:
                     f"BAXBENCH_SPIKE_INTERVAL_S={int(self.load_profile.interval_s)} "
                     f"BAXBENCH_SPIKE_DURATION_S={int(self.load_profile.duration_s)} "
                 )
+        elif load_mode == "adaptive":
+            if isinstance(self.load_profile, AdaptiveLoadProfile):
+                env_prefix += (
+                    f"BAXBENCH_ADAPTIVE_SLA_MS={float(self.load_profile.sla_ms)} "
+                    f"BAXBENCH_ADAPTIVE_START_USERS={int(self.load_profile.start_users)} "
+                    f"BAXBENCH_ADAPTIVE_MAX_USERS={int(self.load_profile.max_users)} "
+                    f"BAXBENCH_ADAPTIVE_MIN_STEP_USERS={int(self.load_profile.min_step_users)} "
+                    f"BAXBENCH_ADAPTIVE_MAX_STEP_USERS={int(self.load_profile.max_step_users)} "
+                    f"BAXBENCH_ADAPTIVE_STEP_DURATION_S={int(self.load_profile.step_duration_s)} "
+                    f"BAXBENCH_ADAPTIVE_TRIM_S={int(self.load_profile.trim_s)} "
+                    f"BAXBENCH_ADAPTIVE_SAMPLE_EVERY_S={int(self.load_profile.sample_every_s)} "
+                    f"BAXBENCH_ADAPTIVE_SETTLE_SAMPLES={int(self.load_profile.settle_samples)} "
+                    f"BAXBENCH_ADAPTIVE_QUANTILE={float(self.load_profile.quantile)} "
+                )
 
         if is_distributed:
             # Distributed master/worker mode.
@@ -221,8 +238,7 @@ class LocustRunner:
                 )
                 remote_exec.ssh(wh, f"bash -lc {shlex.quote(w_cmd)}", self.logger).check_returncode()
 
-        # Run master in foreground for completion + CSVs.
-        connection = Connection(master_host)
+        # Run master on the master host.
         locust_bin = remote_exec.ensure_remote_python_env(master_host, self.ctx.remote_env_dir, self.logger)
 
         load_ts = self.system_topology.load_resources.taskset_cpus
@@ -251,6 +267,8 @@ class LocustRunner:
             "--only-summary "
         )
 
+        # Run master in the foreground so this phase blocks until completion.
+        connection = Connection(master_host)
         locust_proc = connection.run(locust_cmd, hide=True, warn=True)
         self.logger.info(
             "Locust %s output (%s):\n%s",

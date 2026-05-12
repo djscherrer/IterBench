@@ -1,5 +1,6 @@
 from .models import (
     BaseLoadProfile,
+    AdaptiveLoadProfile,
     ContinuousLoadProfile,
     LoadProfile,
     SpikeLoadProfile,
@@ -15,6 +16,7 @@ __all__ = [
     "ContinuousLoadProfile",
     "StairsLoadProfile",
     "SpikeLoadProfile",
+    "AdaptiveLoadProfile",
     "LOAD_PROFILE_REGISTRY",
     "resolve_load_profile",
 ]

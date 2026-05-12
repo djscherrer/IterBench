@@ -119,4 +119,42 @@ class SpikeLoadProfile(BaseLoadProfile):
         return int(self.run_time_s)
 
 
-LoadProfile: TypeAlias = SteadyLoadProfile | ContinuousLoadProfile | StairsLoadProfile | SpikeLoadProfile
+@dataclass(frozen=True)
+class AdaptiveLoadProfile(BaseLoadProfile):
+    """
+    Adaptive load profile: Locust shape adjusts users based on live latency.
+
+    The actual control loop runs inside `_baxbench_shape.AdaptiveShape` using Locust Environment stats.
+    This profile only provides static configuration + a maximum runtime.
+    """
+
+    sla_ms: float
+    start_users: int
+    max_users: int
+    min_step_users: int
+    max_step_users: int
+    step_duration_s: int
+    trim_s: int
+    sample_every_s: int
+    settle_samples: int
+    quantile: float
+    run_time_s: int
+
+    @property
+    def effective_users(self) -> int:
+        # Planner still needs a final \"users\" number; use max_users as the ceiling.
+        return int(self.max_users)
+
+    @property
+    def effective_spawn_rate(self) -> int:
+        # Use max step as a reasonable upper bound for spawn changes.
+        return max(1, int(self.max_step_users))
+
+    @property
+    def effective_run_time_s(self) -> int:
+        return int(self.run_time_s)
+
+
+LoadProfile: TypeAlias = (
+    SteadyLoadProfile | ContinuousLoadProfile | StairsLoadProfile | SpikeLoadProfile | AdaptiveLoadProfile
+)
