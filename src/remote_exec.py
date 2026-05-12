@@ -253,8 +253,8 @@ def cleanup_remote_docker_host(
     prune_build_cache: bool = _REMOTE_PRUNE_BUILD_CACHE,
     remove_networks: bool = _REMOTE_REMOVE_NETWORKS,
 ) -> None:
-    # Aggressive pruning only when disk usage for Docker root exceeds threshold.
-    # Always remove containers. Default: avoid pruning volumes unless explicitly enabled.
+    # Always remove containers, then honor image/volume/network flags so post-checks match work done.
+    # Build-cache pruning is slow/noisy; only run when Docker root filesystem usage is high.
     threshold = 80
     script = f"""
     set -euo pipefail
@@ -266,16 +266,33 @@ def cleanup_remote_docker_host(
     ids=$(docker ps -aq || true)
     if [[ -n "${{ids}}" ]]; then docker rm -f ${{ids}} >/dev/null; fi
 
-    # determine docker root and disk usage percent (integer)
     docker_root=$(docker info --format '{{{{.DockerRootDir}}}}' 2>/dev/null || echo /var/lib/docker)
     usage_pct=$(df -P "$docker_root" | awk 'NR==2 {{gsub("%","",$5); print int($5)}}' || echo 0)
     build_cache_left=skipped
     images_left=skipped
     volumes_left=skipped
     networks_left=skipped
+    echo "cleanup: docker root $docker_root disk usage ${{usage_pct}}% (build-cache threshold {threshold}%)"
+
+    if [ "{str(prune_images).lower()}" = "true" ]; then
+        docker image prune -af >/dev/null || true
+    fi
+    if [ "{str(prune_volumes).lower()}" = "true" ]; then
+        # Only wipe baxbench-owned volumes. Hosts may legitimately have other volumes.
+        # `docker volume prune` is best-effort and may be blocked by volume drivers.
+        docker volume prune -f >/dev/null 2>&1 || true
+        bax_vols=$(docker volume ls -q | grep -E '^baxbench-' || true)
+        if [[ -n "${{bax_vols}}" ]]; then
+          docker volume rm -f ${{bax_vols}} >/dev/null 2>&1 || true
+        fi
+    fi
+    if [ "{str(remove_networks).lower()}" = "true" ]; then
+        nets=$(docker network ls --filter type=custom -q || true)
+        if [[ -n "${{nets}}" ]]; then docker network rm ${{nets}} >/dev/null; fi
+    fi
+
     if [ "$usage_pct" -ge {threshold} ]; then
-    echo "cleanup: disk usage $usage_pct% >= {threshold}%, performing aggressive cleanup"
-    # prune build cache
+    echo "cleanup: disk usage $usage_pct% >= {threshold}%, pruning build cache"
     if [ "{str(prune_build_cache).lower()}" = "true" ]; then
         if docker builder prune -af >/dev/null 2>&1; then :; elif docker buildx prune -af >/dev/null 2>&1; then :; else echo 'WARN: build cache prune unsupported'; fi
         build_cache_left=unknown
@@ -286,34 +303,21 @@ def cleanup_remote_docker_host(
         fi
         rm -f /tmp/baxbench-builder-du.$$ >/dev/null 2>&1 || true
     fi
-
-    if [ "{str(prune_images).lower()}" = "true" ]; then
-        # prune unused images (aggressive)
-        docker image prune -af >/dev/null || true
-    fi
-
-    if [ "{str(prune_volumes).lower()}" = "true" ]; then
-        docker volume prune -f >/dev/null || true
-    fi
-
-    if [ "{str(remove_networks).lower()}" = "true" ]; then
-        nets=$(docker network ls --filter type=custom -q || true)
-        if [[ -n "${{nets}}" ]]; then docker network rm ${{nets}} >/dev/null; fi
-    fi
     else
-    echo "cleanup: disk usage $usage_pct% < {threshold}%, skipping aggressive cleanup"
+    echo "cleanup: disk usage $usage_pct% < {threshold}%, skipping build-cache prune"
     fi
 
     # produce counts and summary
     containers_left=$(docker ps -aq | wc -l | tr -d ' ')
     networks_left=$(docker network ls --filter type=custom -q | wc -l | tr -d ' ' || true)
     images_left=$(docker image ls -aq | wc -l | tr -d ' ' || true)
-    volumes_left=$(docker volume ls -q | wc -l | tr -d ' ' || true)
+    # Count only baxbench volumes so we don't fail on unrelated host state.
+    volumes_left=$(docker volume ls -q | grep -E '^baxbench-' | wc -l | tr -d ' ' || true)
     echo "cleanup-summary host=$(hostname) containers_left=${{containers_left}} networks_left=${{networks_left}} images_left=${{images_left}} volumes_left=${{volumes_left}} build_cache_left=${{build_cache_left}}"
     if [ "${{containers_left}}" != "0" ]; then echo "ERROR: containers remain after cleanup" >&2; exit 61; fi
     if [ "{str(remove_networks).lower()}" = "true" ] && [ "${{networks_left}}" != "0" ]; then echo "ERROR: docker networks remain after cleanup" >&2; exit 62; fi
     if [ "{str(prune_images).lower()}" = "true" ] && [ "${{images_left}}" != "0" ]; then echo "ERROR: docker images remain after cleanup" >&2; exit 63; fi
-    if [ "{str(prune_volumes).lower()}" = "true" ] && [ "${{volumes_left}}" != "0" ]; then echo "ERROR: docker volumes remain after cleanup" >&2; exit 64; fi
+    if [ "{str(prune_volumes).lower()}" = "true" ] && [ "${{volumes_left}}" != "0" ]; then echo "ERROR: baxbench docker volumes remain after cleanup" >&2; exit 64; fi
     """
     out = ssh(host, f"bash -lc {shlex.quote(script)}", logger)
     try:
