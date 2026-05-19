@@ -57,10 +57,24 @@ class ArgFileParser(argparse.ArgumentParser):
 
 def main(args: Any) -> None:
     if args.mode == "preflight":
-        # Import lazily so other modes don't depend on preflight code.
         from distributed_bench.preflight import run_preflight_from_args
 
         run_preflight_from_args(args)
+        return
+    if args.mode == "k8s-preflight":
+        from k8s_bench.preflight import run_preflight_from_args as run_k8s_preflight_from_args
+
+        run_k8s_preflight_from_args(args)
+        return
+    if args.mode == "k8s-setup-cluster":
+        from k8s_bench.setup_cluster import run_setup_from_args
+
+        run_setup_from_args(args)
+        return
+    if args.mode == "k8s-setup-registry":
+        from k8s_bench.registry_lab import run_registry_setup_from_args
+
+        run_registry_setup_from_args(args)
         return
     # ----- Preparation -----#
     # Override port for all environments with the value from args, if not provided defaults to 5001
@@ -90,7 +104,7 @@ def main(args: Any) -> None:
             f"Got an empty/invalid list of scenarios, possible choices: {[s.id for s in all_scenarios]}",
         )
 
-    if args.mode in ("generate", "test", "bench", "evaluate") and not args.models:
+    if args.mode in ("generate", "test", "bench", "k8s-bench", "evaluate") and not args.models:
         raise Exception("Got an empty list of models")
 
     if args.only_samples:
@@ -229,6 +243,34 @@ def main(args: Any) -> None:
             for rd in bench_run_dirs:
                 print(f"[bench] Post-bench plots for {rd}")
                 _run_plotting(plot_run_dir=pathlib.Path(rd))
+    elif args.mode == "k8s-bench":
+        if getattr(args, "k8s_require_cluster", True):
+            import logging
+
+            from k8s_bench.preflight import ensure_k8s_cluster_ready
+
+            profile = getattr(args, "k8s_cluster", None) or os.environ.get("BAXBENCH_K8S_CLUSTER")
+            logging.basicConfig(level=logging.INFO)
+            ensure_k8s_cluster_ready(
+                logger=logging.getLogger("baxbench.k8s.bench"),
+                profile_name=str(profile).strip() if profile else None,
+            )
+        k8s_run_dirs = task_handler.run_k8s_bench(
+            samples=samples,
+            timeout=args.timeout,
+            force=args.force,
+            k8s_iteration=args.k8s_iteration,
+            k8s_wait_timeout=args.k8s_wait_timeout,
+            k8s_local_port=args.k8s_local_port,
+            k8s_auto_init=args.k8s_auto_init,
+            bench_users=args.bench_users,
+            bench_spawn_rate=args.bench_spawn_rate,
+            bench_run_time=args.bench_run_time,
+        )
+        if getattr(args, "plot_after_bench", False) and k8s_run_dirs:
+            for rd in k8s_run_dirs:
+                print(f"[k8s-bench] Post-bench plots for {rd}")
+                _run_plotting(plot_run_dir=pathlib.Path(rd))
     elif args.mode == "plot":
         run_dir = pathlib.Path(args.plot_run_dir) if getattr(args, "plot_run_dir", None) else None
         _run_plotting(plot_run_dir=run_dir)
@@ -255,7 +297,18 @@ if __name__ == "__main__":
     parser.add_argument(
         "--mode",
         type=str,
-        choices=["generate", "test", "bench", "plot", "evaluate", "preflight"],
+        choices=[
+            "generate",
+            "test",
+            "bench",
+            "k8s-bench",
+            "k8s-preflight",
+            "k8s-setup-cluster",
+            "k8s-setup-registry",
+            "plot",
+            "evaluate",
+            "preflight",
+        ],
         required=True,
         help="Mode in which to run the code.",
     )
@@ -471,6 +524,117 @@ if __name__ == "__main__":
         type=int,
         default=None,
         help="Duration of the benchmark in seconds (integer).",
+    )
+    parser.add_argument(
+        "--k8s-iteration",
+        type=str,
+        default=None,
+        help=(
+            "Kubernetes workload iteration under sampleN/k8s_configs/ (e.g. iteration-001). "
+            "If omitted, runs all iterations with spec.yaml, or auto-creates iteration-001."
+        ),
+    )
+    parser.add_argument(
+        "--k8s-wait-timeout",
+        type=int,
+        default=300,
+        help="Seconds to wait for Kubernetes deployments to become available.",
+    )
+    parser.add_argument(
+        "--k8s-require-cluster",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            "k8s-bench: verify kubeconfig, API, and all nodes Ready before benchmarking "
+            "(default: true). Use --no-k8s-require-cluster to skip."
+        ),
+    )
+    parser.add_argument(
+        "--k8s-local-port",
+        type=int,
+        default=None,
+        help="Local port for kubectl port-forward to the backend Service (default: ephemeral).",
+    )
+    parser.add_argument(
+        "--k8s-auto-init",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Create sampleN/k8s_configs/iteration-001/spec.yaml when none exists.",
+    )
+    parser.add_argument(
+        "--k8s-cluster",
+        type=str,
+        default=None,
+        help="Named profile from k8s_bench/cluster_configs/registry.py (also BAXBENCH_K8S_CLUSTER).",
+    )
+    parser.add_argument(
+        "--k8s-node-hosts",
+        type=str,
+        nargs="+",
+        default=None,
+        help="SSH hosts to check/install kubeadm node prerequisites (also BAXBENCH_K8S_NODE_HOSTS).",
+    )
+    parser.add_argument(
+        "--k8s-load-hosts",
+        type=str,
+        nargs="+",
+        default=None,
+        help="Locust-only SSH hosts: check/install python3+venv+pip (also BAXBENCH_K8S_LOAD_HOSTS).",
+    )
+    parser.add_argument(
+        "--k8s-install-prerequisites",
+        action="store_true",
+        help=(
+            "On --k8s-node-hosts: install containerd, kubelet, kubeadm, kubectl. "
+            "On --k8s-load-hosts: install python3 tooling. Does NOT run kubeadm init/join."
+        ),
+    )
+    parser.add_argument(
+        "--k8s-skip-cluster-checks",
+        action="store_true",
+        help="Skip kubectl cluster API checks (only run SSH node checks).",
+    )
+    parser.add_argument(
+        "--k8s-control-plane",
+        type=str,
+        default=None,
+        help="SSH hostname for kubeadm init (default: first --k8s-node-hosts or K8S_CONTROL_PLANE_HOST).",
+    )
+    parser.add_argument(
+        "--k8s-worker-hosts",
+        type=str,
+        nargs="+",
+        default=None,
+        help="Worker nodes to kubeadm join (default: node hosts except control-plane).",
+    )
+    parser.add_argument(
+        "--k8s-pod-network-cidr",
+        type=str,
+        default=None,
+        help="Pod network CIDR for kubeadm init (default: 10.244.0.0/16 for Flannel).",
+    )
+    parser.add_argument(
+        "--k8s-cni",
+        type=str,
+        default=None,
+        help="CNI plugin to install after init (default: flannel).",
+    )
+    parser.add_argument(
+        "--k8s-skip-cni",
+        action="store_true",
+        help="Skip CNI install (cluster already has networking).",
+    )
+    parser.add_argument(
+        "--k8s-registry-host",
+        type=str,
+        default=None,
+        help="Registry host IP/hostname (default: control-plane primary IP).",
+    )
+    parser.add_argument(
+        "--k8s-registry-port",
+        type=int,
+        default=None,
+        help="Registry port (default: 5000).",
     )
     parser.add_argument(
         "--force",

@@ -66,41 +66,21 @@ def run_bench_with_timeout(
     bench_users: int | None = None,
     bench_spawn_rate: int | None = None,
     bench_run_time: int | None = None,
+    host: str | None = None,
 ) -> bytes:
-    # Use current local defaults if not already provided
-    users = str(bench_users) if bench_users is not None else "1800"
-    spawn_rate = str(bench_spawn_rate) if bench_spawn_rate is not None else "10"
-    run_time_s = int(bench_run_time) if bench_run_time is not None else 180
-    run_time = f"{run_time_s}s"
+    from locust_bench import run_headless_locust
 
-    try:
-        result = subprocess.run(
-            [
-                "locust",
-                "--headless",
-                "--locustfile",
-                locustfile,
-                "--host",
-                f"http://localhost:{port}",
-                "--users",
-                users,
-                "--spawn-rate",
-                spawn_rate,
-                "--run-time",
-                run_time,
-                "--csv",
-                csv_prefix,
-                "--csv-full-history",
-                "--only-summary",
-                user,
-            ],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            timeout=timeout,
-        )
-        return result.stdout
-    except subprocess.TimeoutExpired:
-        raise TimeoutError("Benchmarking timed out")
+    target_host = host if host is not None else f"http://localhost:{port}"
+    return run_headless_locust(
+        locustfile=locustfile,
+        csv_prefix=csv_prefix,
+        target_host=target_host,
+        timeout=timeout,
+        locust_user=user,
+        bench_users=bench_users,
+        bench_spawn_rate=bench_spawn_rate,
+        bench_run_time=bench_run_time,
+    )
 
 
 def plot_requests_vs_percentile(
@@ -389,6 +369,49 @@ class Task:
 
     def get_sample_dir(self, results_dir: pathlib.Path, sample: int) -> pathlib.Path:
         return self.get_save_dir(results_dir) / f"sample{sample}"
+
+    def get_k8s_configs_dir(self, results_dir: pathlib.Path, sample: int) -> pathlib.Path:
+        """``sampleN/k8s_configs`` — one subfolder per agent iteration."""
+        from k8s_bench.paths import k8s_configs_root
+
+        return k8s_configs_root(self.get_sample_dir(results_dir, sample))
+
+    def get_k8s_iteration_dir(
+        self, results_dir: pathlib.Path, sample: int, iteration_id: str
+    ) -> pathlib.Path:
+        from k8s_bench.paths import iteration_dir
+
+        return iteration_dir(self.get_sample_dir(results_dir, sample), iteration_id)
+
+    def get_k8s_bench_run_dir(
+        self,
+        results_dir: pathlib.Path,
+        sample: int,
+        iteration_id: str,
+    ) -> pathlib.Path:
+        from k8s_bench.benchmark import make_k8s_perf_run_dir
+
+        return make_k8s_perf_run_dir(
+            self.get_sample_dir(results_dir, sample),
+            iteration_id,
+        )
+
+    def has_k8s_perf_run_for_iteration(
+        self,
+        sample_dir: pathlib.Path,
+        *,
+        iteration_id: str,
+        load_profile: str,
+    ) -> bool:
+        from k8s_bench.paths import normalize_iteration_id
+
+        iid = normalize_iteration_id(iteration_id)
+        safe_profile = _slugify_run_part(load_profile)
+        pattern = f"perf-k8s-{iid}-{safe_profile}-*"
+        for run_dir in sample_dir.glob(pattern):
+            if run_dir.is_dir() and (run_dir / "config.json").exists():
+                return True
+        return False
 
     def get_functional_tests_dir(
         self, results_dir: pathlib.Path, sample: int
@@ -1198,6 +1221,192 @@ class Task:
 
         return run_dirs_created
 
+    def bench_k8s_code(
+        self,
+        results_dir: pathlib.Path,
+        samples: list[int],
+        timeout: int,
+        force: bool,
+        *,
+        k8s_iteration: str | None = None,
+        k8s_wait_timeout: int = 300,
+        k8s_local_port: int | None = None,
+        k8s_auto_init: bool = True,
+        bench_users: int | None = None,
+        bench_spawn_rate: int | None = None,
+        bench_run_time: int | None = None,
+    ) -> list[pathlib.Path]:
+        from k8s_bench.benchmark import resolve_iterations_to_run, run_k8s_bench_iteration
+
+        def _append_k8s_skip(sample: int, reason: str) -> None:
+            try:
+                save_dir = self.get_save_dir(results_dir)
+                save_dir.mkdir(parents=True, exist_ok=True)
+                p = save_dir / "k8s_bench_skips.log"
+                ts = datetime.datetime.now().isoformat(timespec="seconds")
+                p.write_text(
+                    (p.read_text(encoding="utf-8") if p.exists() else "")
+                    + f"[{ts}] sample{sample}: {reason}\n",
+                    encoding="utf-8",
+                )
+            except Exception:
+                pass
+
+        run_dirs_created: list[pathlib.Path] = []
+        load_profile = os.environ.get("BAXBENCH_LOAD_PROFILE", "default")
+        k8s_iteration = k8s_iteration or os.environ.get("BAXBENCH_K8S_ITERATION") or None
+
+        for sample in samples:
+            sample_dir = self.get_sample_dir(results_dir, sample)
+            test_result_path = self.get_test_results_json_path(results_dir, sample)
+            if not test_result_path.exists():
+                _append_k8s_skip(
+                    sample,
+                    "skipped: missing functional test results (functional_tests/test_results.json)",
+                )
+                continue
+            try:
+                with open(test_result_path, "r", encoding="utf-8") as f:
+                    test_result = TestResult.from_dict(json.load(f))
+            except Exception:
+                _append_k8s_skip(sample, "skipped: unreadable functional test results")
+                continue
+            if test_result.num_passed_ft < test_result.num_total_ft:
+                _append_k8s_skip(
+                    sample,
+                    f"skipped: functional tests not all passing ({test_result.num_passed_ft}/{test_result.num_total_ft})",
+                )
+                continue
+
+            test_log_file = self.get_functional_tests_dir(results_dir, sample) / "test.log"
+            pattern = re.compile(r"sha256:[0-9a-f]{64}")
+            image_id = None
+            try:
+                with open(test_log_file, "r", encoding="utf-8") as f:
+                    for line in f:
+                        match = pattern.search(line)
+                        if match:
+                            image_id = match.group(0)
+                            break
+            except FileNotFoundError:
+                pass
+            if image_id is None:
+                _append_k8s_skip(sample, f"skipped: no docker image id found in {test_log_file}")
+                continue
+
+            try:
+                iteration_paths = resolve_iterations_to_run(
+                    sample_dir,
+                    iteration_id=k8s_iteration,
+                    auto_init=k8s_auto_init,
+                )
+            except FileNotFoundError as exc:
+                _append_k8s_skip(sample, f"skipped: {exc}")
+                continue
+
+            for iteration_path in iteration_paths:
+                iteration_id = iteration_path.name
+                if not force and self.has_k8s_perf_run_for_iteration(
+                    sample_dir,
+                    iteration_id=iteration_id,
+                    load_profile=load_profile,
+                ):
+                    _append_k8s_skip(
+                        sample,
+                        f"skipped: k8s perf run already exists for iteration={iteration_id!r} load_profile={load_profile!r}",
+                    )
+                    continue
+
+                run_dir = self.get_k8s_bench_run_dir(results_dir, sample, iteration_id)
+                run_dir.mkdir(parents=True, exist_ok=True)
+                run_dirs_created.append(run_dir)
+                log_file = run_dir / "bench.log"
+                with self.create_logger(log_file) as logger:
+                    image_exists = False
+                    if image_id:
+                        try:
+                            client = docker.from_env()
+                            client.images.get(image_id)
+                            image_exists = True
+                        except Exception:
+                            logger.warning(
+                                "Image %s found in logs but not in Docker. Rebuilding...",
+                                image_id,
+                            )
+                    if not image_exists:
+                        logger.info("Image not found or missing. Building...")
+                        image_id = self._build_image(results_dir, sample, logger)
+                        if image_id is None:
+                            _append_k8s_skip(sample, "skipped: failed to build docker image for k8s bench")
+                            continue
+
+                    from scenario_files import SCENARIO_FILE_PATH
+
+                    shared_locustfile = SCENARIO_FILE_PATH.joinpath(
+                        f"locustfiles/{self.scenario.id.lower()}.py"
+                    )
+                    has_locustfile = shared_locustfile.exists() or bool(self.scenario.locustfile)
+                    tests_to_run = list(self.scenario.performance_tests)
+                    if not tests_to_run:
+                        if has_locustfile:
+                            tests_to_run = ["default"]
+                        else:
+                            _append_k8s_skip(sample, "skipped: no performance tests configured")
+                            continue
+
+                    sample_slug = (
+                        f"{esc(self.model)}-{esc(self.env.id)}-{esc(self.scenario.id)}-sample{sample}"
+                    )
+                    for test in tests_to_run:
+                        if self.scenario.locustfile:
+                            locustfile = run_dir / f"locustfile-{self.scenario.id.lower()}.py"
+                            locustfile.write_text(self.scenario.locustfile, encoding="utf-8")
+                        elif shared_locustfile.exists():
+                            locustfile = shared_locustfile
+                        else:
+                            _append_k8s_skip(sample, "skipped: missing locustfile")
+                            continue
+
+                        csv_prefix = run_dir / f"bench_results_{test}"
+                        logger.info(
+                            "running k8s bench iteration=%s locustfile=%s",
+                            iteration_id,
+                            locustfile,
+                        )
+                        try:
+                            run_k8s_bench_iteration(
+                                iteration_path=iteration_path,
+                                run_dir=run_dir,
+                                image_id=image_id,
+                                sample_slug=sample_slug,
+                                app_port=self.env.port,
+                                needs_db=self.scenario.needs_db,
+                                locustfile=locustfile,
+                                csv_prefix=csv_prefix,
+                                timeout=timeout,
+                                locust_user=test,
+                                bench_users=bench_users,
+                                bench_spawn_rate=bench_spawn_rate,
+                                bench_run_time=bench_run_time,
+                                wait_timeout_s=k8s_wait_timeout,
+                                local_port=k8s_local_port,
+                                labels={
+                                    "baxbench.dev/model": esc(self.model),
+                                    "baxbench.dev/scenario": esc(self.scenario.id),
+                                    "baxbench.dev/env": esc(self.env.id),
+                                },
+                                logger=logger,
+                            )
+                        except Exception as exc:
+                            logger.exception("k8s bench failed: %s", exc, exc_info=exc)
+                        logger.info(
+                            "finished k8s bench sample=%d iteration=%s",
+                            sample,
+                            iteration_id,
+                        )
+
+        return run_dirs_created
+
     def evaluate_results(
         self, results_dir: pathlib.Path, samples: list[int], ks: list[int]
     ) -> "SampleTestResult":
@@ -1515,6 +1724,52 @@ class TaskHandler:
                             pbar.update(1)
 
             return all_paths
+
+    def run_k8s_bench(
+        self,
+        samples: list[int],
+        timeout: int,
+        force: bool,
+        *,
+        k8s_iteration: str | None = None,
+        k8s_wait_timeout: int = 300,
+        k8s_local_port: int | None = None,
+        k8s_auto_init: bool = True,
+        bench_users: int | None = None,
+        bench_spawn_rate: int | None = None,
+        bench_run_time: int | None = None,
+    ) -> list[pathlib.Path]:
+        total = len(self.tasks) * max(1, len(samples))
+        all_paths: list[pathlib.Path] = []
+        with tqdm.tqdm(total=total) as pbar:
+            for task in self.tasks:
+                model_label = f"{task.model}"
+                env_label = task.env.id
+                scenario_label = task.scenario.id
+                openhands_label = "true" if task.use_openhands else "false"
+                for si, sample in enumerate(samples):
+                    with pbar.get_lock():  # type: ignore[no-untyped-call]
+                        pbar.set_description(
+                            f"k8s {model_label} - {scenario_label} - {env_label} - openhands={openhands_label} - sample {si + 1}/{len(samples)}"
+                        )
+                    all_paths.extend(
+                        task.bench_k8s_code(
+                            results_dir=self.results_dir,
+                            samples=[sample],
+                            timeout=timeout,
+                            force=force,
+                            k8s_iteration=k8s_iteration,
+                            k8s_wait_timeout=k8s_wait_timeout,
+                            k8s_local_port=k8s_local_port,
+                            k8s_auto_init=k8s_auto_init,
+                            bench_users=bench_users,
+                            bench_spawn_rate=bench_spawn_rate,
+                            bench_run_time=bench_run_time,
+                        )
+                    )
+                    with pbar.get_lock():  # type: ignore[no-untyped-call]
+                        pbar.update(1)
+        return all_paths
 
     def plot_bench(
         self,
