@@ -126,3 +126,37 @@ This keeps:
 5. Telemetry collection
 6. Iterative optimization loop
 7. Dynamic load / failure scenarios
+
+---
+
+# K8s iterative benchmarking (implemented)
+
+**`--mode k8s-bench`** (default) runs the full loop per phase:
+
+1. **LLM spec generation** → `k8s_configs/iteration-NNN/spec.yaml`
+2. **Render** Deployment/Service manifests
+3. **Deploy** + **Locust** benchmark
+4. **Feedback** written to `perf-k8s-…/iteration_feedback.json` for the next phase
+
+After **generate** + **test**:
+
+```bash
+./scripts/bench_k8s.sh
+# or: --k8s-iterations 3  for iteration-001 .. iteration-003
+```
+
+### CLI
+
+| Flag | Default | Meaning |
+|------|---------|---------|
+| `--k8s-iterations N` | 1 | Phases `iteration-001` … `iteration-NNN` |
+| `--k8s-spec-gen` / `--no-k8s-spec-gen` | on | LLM specs vs deploy-only |
+| `--k8s-iteration iteration-001` | — | Pin a single phase (ignores N) |
+| `--force` | — | Regenerate specs and re-bench |
+
+Phase 1 prompt: scenario, framework, `high_performance`, app code excerpt, cluster capacity.
+
+Phase 2+ prompt adds **feedback**: Locust aggregated stats, error report excerpt,
+`kubectl top pods`, previous `spec.yaml`.
+
+Standalone spec-only (no deploy): `--mode k8s-spec-gen` or `./scripts/generate_k8s_spec.sh`.

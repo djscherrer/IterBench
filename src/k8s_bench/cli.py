@@ -5,11 +5,11 @@ import logging
 import sys
 from pathlib import Path
 
-from .deploy import delete_iteration_namespace, deploy_iteration
-from .models import BackendSpec, DatabaseSpec, K8sWorkloadSpec
-from .paths import iteration_dir, normalize_iteration_id
-from .render import render_iteration
-from .runner import prepare_iteration, render_and_deploy
+from .cluster.deploy import delete_iteration_namespace, deploy_iteration, render_and_deploy
+from .paths import iteration_dir, new_iteration_id, normalize_iteration_id
+from .spec.dirs import prepare_iteration
+from .spec.models import BackendSpec, DatabaseSpec, K8sWorkloadSpec
+from .spec.render import render_iteration
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -91,8 +91,6 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "init":
         iid = args.iteration or None
         sample_dir = args.sample_dir
-        from .paths import new_iteration_id
-
         resolved_id = normalize_iteration_id(iid or new_iteration_id(sample_dir))
         spec = _default_spec(
             resolved_id,
@@ -121,8 +119,6 @@ def main(argv: list[str] | None = None) -> int:
         render_and_deploy(iteration_path, wait_timeout_s=args.wait_timeout)
         return 0
     if args.command == "delete":
-        from .models import K8sWorkloadSpec
-
         spec = K8sWorkloadSpec.from_yaml_file(iteration_path / "spec.yaml")
         delete_iteration_namespace(spec.namespace)
         return 0

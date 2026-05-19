@@ -62,17 +62,17 @@ def main(args: Any) -> None:
         run_preflight_from_args(args)
         return
     if args.mode == "k8s-preflight":
-        from k8s_bench.preflight import run_preflight_from_args as run_k8s_preflight_from_args
+        from k8s_bench.cluster import run_preflight_from_args as run_k8s_preflight_from_args
 
         run_k8s_preflight_from_args(args)
         return
     if args.mode == "k8s-setup-cluster":
-        from k8s_bench.setup_cluster import run_setup_from_args
+        from k8s_bench.cluster import run_setup_from_args
 
         run_setup_from_args(args)
         return
     if args.mode == "k8s-setup-registry":
-        from k8s_bench.registry_lab import run_registry_setup_from_args
+        from k8s_bench.cluster import run_registry_setup_from_args
 
         run_registry_setup_from_args(args)
         return
@@ -104,7 +104,14 @@ def main(args: Any) -> None:
             f"Got an empty/invalid list of scenarios, possible choices: {[s.id for s in all_scenarios]}",
         )
 
-    if args.mode in ("generate", "test", "bench", "k8s-bench", "evaluate") and not args.models:
+    if args.mode in (
+        "generate",
+        "test",
+        "bench",
+        "k8s-bench",
+        "k8s-spec-gen",
+        "evaluate",
+    ) and not args.models:
         raise Exception("Got an empty list of models")
 
     if args.only_samples:
@@ -243,11 +250,36 @@ def main(args: Any) -> None:
             for rd in bench_run_dirs:
                 print(f"[bench] Post-bench plots for {rd}")
                 _run_plotting(plot_run_dir=pathlib.Path(rd))
+    elif args.mode == "k8s-spec-gen":
+        if getattr(args, "k8s_require_cluster", True):
+            import logging
+
+            from k8s_bench.cluster import ensure_k8s_cluster_ready
+
+            profile = getattr(args, "k8s_cluster", None) or os.environ.get("BAXBENCH_K8S_CLUSTER")
+            logging.basicConfig(level=logging.INFO)
+            ensure_k8s_cluster_ready(
+                logger=logging.getLogger("baxbench.k8s.spec-gen"),
+                profile_name=str(profile).strip() if profile else None,
+            )
+        from k8s_bench.handler import run_k8s_spec_gen
+
+        run_k8s_spec_gen(
+            task_handler.tasks,
+            task_handler.results_dir,
+            samples=samples,
+            force=args.force,
+            k8s_iteration=args.k8s_iteration,
+            max_retries=args.max_retries,
+            base_delay=args.base_delay,
+            max_delay=args.max_delay,
+            vllm_port=args.vllm_port,
+        )
     elif args.mode == "k8s-bench":
         if getattr(args, "k8s_require_cluster", True):
             import logging
 
-            from k8s_bench.preflight import ensure_k8s_cluster_ready
+            from k8s_bench.cluster import ensure_k8s_cluster_ready
 
             profile = getattr(args, "k8s_cluster", None) or os.environ.get("BAXBENCH_K8S_CLUSTER")
             logging.basicConfig(level=logging.INFO)
@@ -255,17 +287,27 @@ def main(args: Any) -> None:
                 logger=logging.getLogger("baxbench.k8s.bench"),
                 profile_name=str(profile).strip() if profile else None,
             )
-        k8s_run_dirs = task_handler.run_k8s_bench(
+        from k8s_bench.handler import run_k8s_bench
+
+        k8s_run_dirs = run_k8s_bench(
+            task_handler.tasks,
+            task_handler.results_dir,
             samples=samples,
             timeout=args.timeout,
             force=args.force,
             k8s_iteration=args.k8s_iteration,
+            k8s_iterations=getattr(args, "k8s_iterations", 1),
+            k8s_spec_gen=getattr(args, "k8s_spec_gen", True),
             k8s_wait_timeout=args.k8s_wait_timeout,
             k8s_local_port=args.k8s_local_port,
             k8s_auto_init=args.k8s_auto_init,
             bench_users=args.bench_users,
             bench_spawn_rate=args.bench_spawn_rate,
             bench_run_time=args.bench_run_time,
+            max_retries=args.max_retries,
+            base_delay=args.base_delay,
+            max_delay=args.max_delay,
+            vllm_port=args.vllm_port,
         )
         if getattr(args, "plot_after_bench", False) and k8s_run_dirs:
             for rd in k8s_run_dirs:
@@ -302,6 +344,7 @@ if __name__ == "__main__":
             "test",
             "bench",
             "k8s-bench",
+            "k8s-spec-gen",
             "k8s-preflight",
             "k8s-setup-cluster",
             "k8s-setup-registry",
@@ -530,8 +573,27 @@ if __name__ == "__main__":
         type=str,
         default=None,
         help=(
-            "Kubernetes workload iteration under sampleN/k8s_configs/ (e.g. iteration-001). "
-            "If omitted, runs all iterations with spec.yaml, or auto-creates iteration-001."
+            "Pin a single Kubernetes iteration (e.g. iteration-001). "
+            "If omitted, --k8s-iterations controls iteration-001..NNN."
+        ),
+    )
+    parser.add_argument(
+        "--k8s-iterations",
+        type=int,
+        default=1,
+        help=(
+            "K8s iterative benchmark: number of phases (iteration-001, iteration-002, …). "
+            "Phase 1: LLM spec from scenario/code/cluster capacity. "
+            "Later phases: refine spec using Locust summary + pod utilization feedback."
+        ),
+    )
+    parser.add_argument(
+        "--k8s-spec-gen",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            "k8s-bench: LLM-generate spec.yaml before each phase (default: true). "
+            "Use --no-k8s-spec-gen for deploy-only using existing specs."
         ),
     )
     parser.add_argument(
@@ -558,14 +620,17 @@ if __name__ == "__main__":
     parser.add_argument(
         "--k8s-auto-init",
         action=argparse.BooleanOptionalAction,
-        default=True,
-        help="Create sampleN/k8s_configs/iteration-001/spec.yaml when none exists.",
+        default=False,
+        help=(
+            "Deploy-only fallback: create a default spec.yaml when missing "
+            "(only with --no-k8s-spec-gen). Default: false."
+        ),
     )
     parser.add_argument(
         "--k8s-cluster",
         type=str,
         default=None,
-        help="Named profile from k8s_bench/cluster_configs/registry.py (also BAXBENCH_K8S_CLUSTER).",
+        help="Named profile from k8s_bench/cluster/profiles.py (also BAXBENCH_K8S_CLUSTER).",
     )
     parser.add_argument(
         "--k8s-node-hosts",

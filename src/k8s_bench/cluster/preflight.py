@@ -11,7 +11,7 @@ from typing import Any, Sequence
 
 import remote_exec
 
-from .cluster_configs import resolve_cluster_profile
+from .profiles import resolve_cluster_profile
 
 
 @dataclass(frozen=True)

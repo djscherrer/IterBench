@@ -17,9 +17,9 @@ import textwrap
 from dataclasses import dataclass
 from typing import Sequence
 
-from .cluster_configs import resolve_cluster_profile
+from .profiles import resolve_cluster_profile
 from .preflight import _dedupe_hosts, _is_local_host, _run_shell_on_host
-from .setup_cluster import _control_plane_ip
+from .setup import _control_plane_ip
 
 
 @dataclass(frozen=True)

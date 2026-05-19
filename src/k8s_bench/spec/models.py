@@ -6,7 +6,10 @@ from typing import Any
 
 import yaml
 
-from .constants import POSTGRES_DATABASE, POSTGRES_PASSWORD, POSTGRES_USER
+POSTGRES_USER = "postgres"
+POSTGRES_PASSWORD = "postgres"
+POSTGRES_DATABASE = "testdb"
+
 
 
 @dataclass(frozen=True)

@@ -19,7 +19,7 @@ from typing import Any, Sequence
 
 import remote_exec
 
-from .cluster_configs import resolve_cluster_profile
+from .profiles import resolve_cluster_profile
 from .preflight import (
     _dedupe_hosts,
     _is_local_host,

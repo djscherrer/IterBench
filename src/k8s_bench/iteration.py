@@ -8,9 +8,9 @@ import re
 from pathlib import Path
 from typing import Any
 
-from .deploy import DeployResult, deploy_iteration
-from .images import prepare_image_for_k8s
-from .models import BackendSpec, DatabaseSpec, K8sWorkloadSpec
+from .cluster.deploy import DeployResult, deploy_iteration
+from .cluster.images import prepare_image_for_k8s
+from .spec.models import BackendSpec, DatabaseSpec, K8sWorkloadSpec
 from .paths import (
     iteration_spec_path,
     k8s_configs_root,
@@ -19,8 +19,8 @@ from .paths import (
     normalize_iteration_id,
     perf_run_dir_for_iteration,
 )
-from .portforward import kubectl_port_forward
-from .render import render_iteration
+from .cluster.portforward import kubectl_port_forward
+from .spec.render import render_iteration
 
 
 def _slugify_run_part(s: str) -> str:

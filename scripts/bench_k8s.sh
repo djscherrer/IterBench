@@ -1,8 +1,10 @@
 #!/bin/bash
-# BaxBench - Kubernetes benchmarking mode
+# BaxBench - Kubernetes iterative benchmarking
 #
-# Runs `python src/main.py --mode k8s-bench`: deploy workloads from
-# sampleN/k8s_configs/<iteration>/spec.yaml, then Locust via kubectl port-forward.
+# Runs `python src/main.py --mode k8s-bench` for each phase:
+#   1. LLM generates k8s_configs/iteration-NNN/spec.yaml (replicas, CPU/memory)
+#   2. Render manifests → deploy to cluster → Locust via port-forward
+#   3. Optional further phases (iteration-002+) use feedback from prior Locust run
 #
 # Prerequisites:
 #   1. generate + test already ran for the samples you benchmark
@@ -10,8 +12,11 @@
 #   3. ./scripts/k8s_setup_registry.sh  (once; images push/pull via node0:5000)
 #   4. Docker on node0 for build + push
 #
-# Quick smoke (one sample):
+# Quick smoke (one sample, one phase):
 #   ONLY_SAMPLES="0" FORCE="true" ./scripts/bench_k8s.sh
+#
+# Three improvement phases after the initial deploy (iteration-001..004):
+#   K8S_ITERATIONS="4" ONLY_SAMPLES="0" FORCE="true" ./scripts/bench_k8s.sh
 
 set -euo pipefail
 
@@ -19,8 +24,8 @@ set -euo pipefail
 MODELS="anthropic/claude-opus-4-6"
 USE_OPENHANDS_MODES="false"
 USE_OPENHANDS=""
-ONLY_SAMPLES="${ONLY_SAMPLES:-}"   # e.g. "0"; empty → N_SAMPLES
-N_SAMPLES="${N_SAMPLES:-5}"
+ONLY_SAMPLES=""   # e.g. "0"; empty → N_SAMPLES
+N_SAMPLES="5"
 
 # --- 2. Project Scope ---
 ENVS="JavaScript-express"
@@ -40,20 +45,21 @@ BENCH_RUN_TIME=""
 # --- 4. Kubernetes settings ---
 BAXBENCH_K8S_CLUSTER="baxbench-emulab"
 KUBECONFIG_PATH=""              # empty = path from cluster profile
-K8S_ITERATION=""                # e.g. "iteration-001"; empty = all iterations or auto-init
+K8S_ITERATION=""                # pin one iteration; empty = use K8S_ITERATIONS
+K8S_ITERATIONS="1"              # phases: iteration-001 .. iteration-NNN
+K8S_SPEC_GEN="true"             # false = deploy-only with existing spec.yaml files
 K8S_WAIT_TIMEOUT="300"
 K8S_LOCAL_PORT=""               # fixed local port for port-forward; empty = ephemeral
-K8S_AUTO_INIT="true"
-# Registry push is automatic when profile has registry_enabled=true (baxbench-emulab)
-# Fail fast if cluster API / nodes are not healthy (same checks as preflight cluster phase)
+K8S_AUTO_INIT="false"           # only used with K8S_SPEC_GEN=false
 K8S_REQUIRE_CLUSTER="true"
 K8S_NODE_HOSTS="node0 node2 node3 node4 node5"
 
 # --- 5. Bench configuration ---
 TIMEOUT="600"
-FORCE="${FORCE:-false}"
+FORCE="true"
 MAX_CONCURRENT_RUNS=""
 PORT="5001"
+MAX_RETRIES="3"
 
 # --- 6. Global settings ---
 RESULTS_DIR=""
@@ -90,7 +96,7 @@ export MPLCONFIGDIR
 
 if [ -n "$BAXBENCH_K8S_CLUSTER" ]; then
   _kc=$(cd "$ROOT" && pipenv run python -c "
-from k8s_bench.cluster_configs import resolve_cluster_profile
+from k8s_bench.cluster import resolve_cluster_profile
 import os
 p = resolve_cluster_profile('${BAXBENCH_K8S_CLUSTER}')
 print(os.path.expanduser(p.kubeconfig_path) if p.kubeconfig_path else '')
@@ -106,7 +112,7 @@ if [ -n "$KUBECONFIG_PATH" ]; then
 fi
 
 echo "kubectl context: $(kubectl config current-context 2>/dev/null || echo '(not configured)')"
-echo "KUBECONFIG=${KUBECONFIG:-<default>}  require_cluster=${K8S_REQUIRE_CLUSTER}"
+echo "KUBECONFIG=${KUBECONFIG:-<default>}  iterations=${K8S_ITERATIONS}  spec_gen=${K8S_SPEC_GEN}"
 
 BASE_ENV=()
 RUN_I=0
@@ -132,13 +138,18 @@ for _model in $MODELS; do
 
     add_arg "--k8s-cluster" "$BAXBENCH_K8S_CLUSTER"
     add_arg "--k8s-iteration" "$K8S_ITERATION"
+    add_arg "--k8s-iterations" "$K8S_ITERATIONS"
     add_arg "--k8s-wait-timeout" "$K8S_WAIT_TIMEOUT"
     add_arg "--k8s-local-port" "$K8S_LOCAL_PORT"
+    add_arg "--max_retries" "$MAX_RETRIES"
     if [ "$K8S_REQUIRE_CLUSTER" == "false" ]; then
       ARGS+=("--no-k8s-require-cluster")
     fi
-    if [ "$K8S_AUTO_INIT" == "false" ]; then
-      ARGS+=("--no-k8s-auto-init")
+    if [ "$K8S_SPEC_GEN" == "false" ]; then
+      ARGS+=("--no-k8s-spec-gen")
+    fi
+    if [ "$K8S_AUTO_INIT" == "true" ]; then
+      ARGS+=("--k8s-auto-init")
     fi
 
     add_arg "--timeout" "$TIMEOUT"
@@ -174,7 +185,7 @@ for _model in $MODELS; do
       fi
 
       echo ""
-      echo "=== K8s bench run #$RUN_I: model='${_model}' openhands='${_openhands}' load_profile='$profile' ==="
+      echo "=== K8s iterative bench run #$RUN_I: model='${_model}' openhands='${_openhands}' load_profile='$profile' iterations=$K8S_ITERATIONS ==="
       echo "Command: pipenv run python src/main.py ${ARGS[*]}"
       (cd "$ROOT" && env "${EXTRA_ENV[@]}" pipenv run python src/main.py "${ARGS[@]}")
       RC=$?

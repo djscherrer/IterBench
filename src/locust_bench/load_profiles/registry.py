@@ -20,6 +20,8 @@ LOAD_PROFILE_REGISTRY: dict[str, LoadProfile] = {
     "quick-check": SteadyLoadProfile(
         name="quick-check", users=200, run_time_s=30, wait_min_s=1.0, wait_max_s=1.0, locust_processes=8
     ),
+
+    # Load profiles for the BaxBench benchmark.
     "cont-20000": ContinuousLoadProfile(
         name="cont-20000",
         start_users=0,

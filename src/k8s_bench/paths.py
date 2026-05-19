@@ -39,6 +39,13 @@ def normalize_iteration_id(raw: str) -> str:
     return f"{ITERATION_PREFIX}{slug}"
 
 
+def iteration_id_for_phase(phase_index: int) -> str:
+    """1-based phase index → ``iteration-001``, ``iteration-002``, …"""
+    if phase_index < 1:
+        raise ValueError("phase_index must be >= 1")
+    return f"{ITERATION_PREFIX}{phase_index:03d}"
+
+
 def new_iteration_id(sample_dir: Path) -> str:
     """Return the next ``iteration-NNN`` id under ``sample_dir/k8s_configs``."""
     root = k8s_configs_root(sample_dir)

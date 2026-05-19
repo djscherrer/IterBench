@@ -73,7 +73,7 @@ if [ -n "$KUBECONFIG_PATH" ]; then
     EXTRA_ENV+=("KUBECONFIG=$KUBECONFIG_PATH")
 elif [ -n "$BAXBENCH_K8S_CLUSTER" ]; then
     _kc=$(cd "$ROOT" && pipenv run python -c "
-from k8s_bench.cluster_configs import resolve_cluster_profile
+from k8s_bench.cluster import resolve_cluster_profile
 import os
 p = resolve_cluster_profile('${BAXBENCH_K8S_CLUSTER}')
 print(os.path.expanduser(p.kubeconfig_path) if p.kubeconfig_path else '')

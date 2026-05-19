@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from typing import Sequence
 
 from .preflight import _dedupe_hosts, _is_local_host
-from .registry_lab import (
+from .registry import (
     preload_registry_image_on_nodes,
     push_image_to_registry,
     resolve_k8s_node_hosts,

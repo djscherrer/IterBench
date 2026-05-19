@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Sequence
 
-from .paths import deploy_record_path, iteration_manifests_dir
+from ..paths import deploy_record_path, iteration_manifests_dir
 
 
 @dataclass(frozen=True)
@@ -155,7 +155,7 @@ def deploy_iteration(
     wait_timeout_s: int = 300,
     logger: logging.Logger | None = None,
 ) -> DeployResult:
-    from .models import K8sWorkloadSpec
+    from ..spec.models import K8sWorkloadSpec
 
     spec = K8sWorkloadSpec.from_yaml_file(iteration_path / "spec.yaml")
     manifest_file = iteration_manifests_dir(iteration_path) / "all.yaml"
@@ -174,4 +174,19 @@ def deploy_iteration(
         logger=logger,
     )
     write_deploy_record(iteration_path, result)
+    return result
+
+
+def render_and_deploy(
+    iteration_path: Path,
+    *,
+    wait_timeout_s: int = 300,
+    logger: logging.Logger | None = None,
+) -> DeployResult:
+    from ..spec.render import render_iteration
+
+    render_iteration(iteration_path)
+    result = deploy_iteration(iteration_path, wait_timeout_s=wait_timeout_s, logger=logger)
+    if not result.success:
+        raise RuntimeError(f"K8s deploy failed for {iteration_path}; see deploy.json")
     return result

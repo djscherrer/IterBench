@@ -79,7 +79,7 @@ _resolve_kubeconfig() {
     fi
     if [ -n "$BAXBENCH_K8S_CLUSTER" ]; then
         (cd "$ROOT" && pipenv run python -c "
-from k8s_bench.cluster_configs import resolve_cluster_profile
+from k8s_bench.cluster import resolve_cluster_profile
 import os
 p = resolve_cluster_profile('${BAXBENCH_K8S_CLUSTER}')
 path = p.kubeconfig_path

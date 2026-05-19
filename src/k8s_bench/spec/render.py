@@ -5,10 +5,13 @@ from typing import Any
 
 import yaml
 
-from .constants import POSTGRES_DATABASE, POSTGRES_PASSWORD, POSTGRES_USER
-
-from .models import K8sWorkloadSpec
-from .paths import iteration_manifests_dir, iteration_spec_path
+from .models import (
+    K8sWorkloadSpec,
+    POSTGRES_DATABASE,
+    POSTGRES_PASSWORD,
+    POSTGRES_USER,
+)
+from ..paths import iteration_manifests_dir, iteration_spec_path
 
 
 def _common_labels(spec: K8sWorkloadSpec) -> dict[str, str]:
