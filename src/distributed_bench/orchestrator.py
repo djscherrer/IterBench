@@ -17,15 +17,16 @@ from .backend import BackendManager
 from .common import ensure_docker_and_warm_ssh, phase, preclean_hosts, stage_image_to_backends
 from .config import RuntimeToggles
 from .database import DatabaseManager
-from .load_profiles import (
+from locust_bench.load_profiles import (
     ContinuousLoadProfile,
     SpikeLoadProfile,
     StairsLoadProfile,
     SteadyLoadProfile,
     resolve_load_profile,
 )
+from locust_bench.runner import LocustRunner
+
 from .loadbalancer import LoadBalancerManager
-from .locustrunner import LocustRunner
 from .runtime import RemoteRuntime
 from .system_configs import resolve_system_topology
 

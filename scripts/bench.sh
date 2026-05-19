@@ -22,7 +22,7 @@ TEMPERATURE="0.2"
 SAFETY_PROMPT="high_performance"    # none, generic, specific, high-performance
 
 # --- 3. Benchmark Profile ---
-# Named load profile from src/distributed_bench/load_profiles/registry.py
+# Named load profile from src/locust_bench/load_profiles/registry.py
 # Example values currently available: default, quick-check, stress-heavy
 # Bash "tuple" (array): each load profile will be run against each system topology.
 # NOTE: Bash arrays are space-separated (NO commas). Good:

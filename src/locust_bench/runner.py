@@ -13,12 +13,21 @@ from fabric import Connection
 import remote_exec
 from bench_models import DistributedBenchContext, host_slug
 
-from .config import RuntimeToggles
-from .load_profiles import AdaptiveLoadProfile, ContinuousLoadProfile, LoadProfile, SpikeLoadProfile, StairsLoadProfile
-from .system_configs import SystemTopology
+from distributed_bench.config import RuntimeToggles
+from distributed_bench.system_configs import SystemTopology
+
+from .load_profiles import LoadProfile
+from .load_profiles.env import format_baxbench_locust_env_shell
 
 
 class LocustRunner:
+    """
+    Run Locust on remote SSH load-generator hosts (distributed bench).
+
+    For Locust on the orchestrator machine (k8s-bench, local docker bench), use
+    ``local_runner.run_headless_locust`` instead.
+    """
+
     def __init__(
         self,
         *,
@@ -112,7 +121,7 @@ class LocustRunner:
             remote_locustfile = f"{self.ctx.remote_load_dir}/{self.ctx.locustfile.name}"
             remote_exec.scp_to_remote(self.ctx.locustfile, h, remote_locustfile, self.logger)
             # Shared load-shaping helper; locustfiles import this by filename from the load dir.
-            local_shape = pathlib.Path(__file__).parent / "load_profiles" / "_baxbench_shape.py"
+            local_shape = pathlib.Path(__file__).resolve().parent / "load_profiles" / "_baxbench_shape.py"
             if local_shape.is_file():
                 remote_exec.scp_to_remote(
                     local_shape,
@@ -147,61 +156,11 @@ class LocustRunner:
         master_port = 0
         expect_workers = 0
 
-        if isinstance(self.load_profile, AdaptiveLoadProfile):
-            load_mode = "adaptive"
-        elif isinstance(self.load_profile, ContinuousLoadProfile):
-            load_mode = "continuous"
-        elif isinstance(self.load_profile, StairsLoadProfile):
-            load_mode = "stairs"
-        elif isinstance(self.load_profile, SpikeLoadProfile):
-            load_mode = "spike"
-        else:
-            load_mode = "steady"
-        env_prefix = (
-            f"BAXBENCH_LOCUST_WAIT_MIN_S={self.load_profile.wait_min_s} "
-            f"BAXBENCH_LOCUST_WAIT_MAX_S={self.load_profile.wait_max_s} "
-            f"BAXBENCH_LOAD_MODE={shlex.quote(load_mode)} "
-            f"BAXBENCH_RUN_TIME_S={int(self.plan.bench_run_time_s)} "
+        env_prefix = format_baxbench_locust_env_shell(
+            self.load_profile,
+            bench_run_time_s=int(self.plan.bench_run_time_s),
+            bench_users=int(self.plan.bench_users),
         )
-        if load_mode == "steady":
-            env_prefix += f"BAXBENCH_STEADY_USERS={int(self.plan.bench_users)} "
-        elif load_mode == "continuous":
-            if isinstance(self.load_profile, ContinuousLoadProfile):
-                env_prefix += (
-                    f"BAXBENCH_CONTINUOUS_SPAWN_RATE={int(self.load_profile.spawn_rate)} "
-                    f"BAXBENCH_CONTINUOUS_START_USERS={int(self.load_profile.start_users)} "
-                    f"BAXBENCH_CONTINUOUS_TARGET_USERS={int(self.load_profile.target_users)} "
-                )
-        elif load_mode == "stairs":
-            if isinstance(self.load_profile, StairsLoadProfile):
-                env_prefix += (
-                    f"BAXBENCH_STAIRS_START_USERS={int(self.load_profile.start_users)} "
-                    f"BAXBENCH_STAIRS_STEP_USERS={int(self.load_profile.step_users)} "
-                    f"BAXBENCH_STAIRS_STEP_DURATION_S={int(self.load_profile.step_duration_s)} "
-                    f"BAXBENCH_STAIRS_STEPS={int(self.load_profile.steps)} "
-                )
-        elif load_mode == "spike":
-            if isinstance(self.load_profile, SpikeLoadProfile):
-                env_prefix += (
-                    f"BAXBENCH_SPIKE_BASE_USERS={int(self.load_profile.base_users)} "
-                    f"BAXBENCH_SPIKE_USERS={int(self.load_profile.spike_users)} "
-                    f"BAXBENCH_SPIKE_INTERVAL_S={int(self.load_profile.interval_s)} "
-                    f"BAXBENCH_SPIKE_DURATION_S={int(self.load_profile.duration_s)} "
-                )
-        elif load_mode == "adaptive":
-            if isinstance(self.load_profile, AdaptiveLoadProfile):
-                env_prefix += (
-                    f"BAXBENCH_ADAPTIVE_SLA_MS={float(self.load_profile.sla_ms)} "
-                    f"BAXBENCH_ADAPTIVE_START_USERS={int(self.load_profile.start_users)} "
-                    f"BAXBENCH_ADAPTIVE_MAX_USERS={int(self.load_profile.max_users)} "
-                    f"BAXBENCH_ADAPTIVE_MIN_STEP_USERS={int(self.load_profile.min_step_users)} "
-                    f"BAXBENCH_ADAPTIVE_MAX_STEP_USERS={int(self.load_profile.max_step_users)} "
-                    f"BAXBENCH_ADAPTIVE_STEP_DURATION_S={int(self.load_profile.step_duration_s)} "
-                    f"BAXBENCH_ADAPTIVE_TRIM_S={int(self.load_profile.trim_s)} "
-                    f"BAXBENCH_ADAPTIVE_SAMPLE_EVERY_S={int(self.load_profile.sample_every_s)} "
-                    f"BAXBENCH_ADAPTIVE_SETTLE_SAMPLES={int(self.load_profile.settle_samples)} "
-                    f"BAXBENCH_ADAPTIVE_QUANTILE={float(self.load_profile.quantile)} "
-                )
 
         if is_distributed:
             # Distributed master/worker mode.
