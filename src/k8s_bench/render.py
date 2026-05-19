@@ -1,0 +1,191 @@
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Any
+
+import yaml
+
+from .constants import POSTGRES_DATABASE, POSTGRES_PASSWORD, POSTGRES_USER
+
+from .models import K8sWorkloadSpec
+from .paths import iteration_manifests_dir, iteration_spec_path
+
+
+def _common_labels(spec: K8sWorkloadSpec) -> dict[str, str]:
+    labels = {
+        "app.kubernetes.io/managed-by": "baxbench-k8s-bench",
+        "baxbench.dev/iteration": spec.iteration_id,
+    }
+    labels.update(spec.labels)
+    return labels
+
+
+def _namespace_manifest(spec: K8sWorkloadSpec) -> dict[str, Any]:
+    return {
+        "apiVersion": "v1",
+        "kind": "Namespace",
+        "metadata": {
+            "name": spec.namespace,
+            "labels": _common_labels(spec),
+        },
+    }
+
+
+def _postgres_manifests(spec: K8sWorkloadSpec) -> list[dict[str, Any]]:
+    name = spec.database.service_name
+    labels = {**_common_labels(spec), "baxbench.dev/role": "db"}
+    selector = {"app": name}
+    return [
+        {
+            "apiVersion": "apps/v1",
+            "kind": "Deployment",
+            "metadata": {
+                "name": name,
+                "namespace": spec.namespace,
+                "labels": labels,
+            },
+            "spec": {
+                "replicas": 1,
+                "selector": {"matchLabels": selector},
+                "template": {
+                    "metadata": {"labels": {**selector, **labels}},
+                    "spec": {
+                        "containers": [
+                            {
+                                "name": "postgres",
+                                "image": spec.database.image,
+                                "ports": [{"containerPort": spec.database.port}],
+                                "env": [
+                                    {"name": "POSTGRES_USER", "value": POSTGRES_USER},
+                                    {"name": "POSTGRES_PASSWORD", "value": POSTGRES_PASSWORD},
+                                    {"name": "POSTGRES_DB", "value": POSTGRES_DATABASE},
+                                ],
+                                "resources": spec.database.resources.to_k8s_resources(),
+                                "readinessProbe": {
+                                    "exec": {
+                                        "command": [
+                                            "sh",
+                                            "-c",
+                                            f"pg_isready -U {POSTGRES_USER} -d {POSTGRES_DATABASE}",
+                                        ]
+                                    },
+                                    "initialDelaySeconds": 5,
+                                    "periodSeconds": 5,
+                                },
+                            }
+                        ]
+                    },
+                },
+            },
+        },
+        {
+            "apiVersion": "v1",
+            "kind": "Service",
+            "metadata": {
+                "name": name,
+                "namespace": spec.namespace,
+                "labels": labels,
+            },
+            "spec": {
+                "selector": selector,
+                "ports": [{"port": spec.database.port, "targetPort": spec.database.port}],
+            },
+        },
+    ]
+
+
+def _backend_manifests(spec: K8sWorkloadSpec) -> list[dict[str, Any]]:
+    name = "backend"
+    labels = {**_common_labels(spec), "baxbench.dev/role": "app"}
+    selector = {"app": name}
+    env_list = [{"name": k, "value": v} for k, v in spec.backend_env().items()]
+    port = spec.backend.port
+    return [
+        {
+            "apiVersion": "apps/v1",
+            "kind": "Deployment",
+            "metadata": {
+                "name": name,
+                "namespace": spec.namespace,
+                "labels": labels,
+            },
+            "spec": {
+                "replicas": spec.backend.replicas,
+                "selector": {"matchLabels": selector},
+                "template": {
+                    "metadata": {"labels": {**selector, **labels}},
+                    "spec": {
+                        "containers": [
+                            {
+                                "name": "app",
+                                "image": spec.backend.image,
+                                "imagePullPolicy": (
+                                    "Never"
+                                    if spec.backend.image.startswith("baxbench-local/")
+                                    else "IfNotPresent"
+                                ),  # registry + docker hub: pull once, reuse on node
+                                "ports": [{"containerPort": port}],
+                                "env": env_list,
+                                "resources": spec.backend.resources.to_k8s_resources(),
+                                "readinessProbe": {
+                                    "tcpSocket": {"port": port},
+                                    "initialDelaySeconds": 3,
+                                    "periodSeconds": 5,
+                                },
+                            }
+                        ]
+                    },
+                },
+            },
+        },
+        {
+            "apiVersion": "v1",
+            "kind": "Service",
+            "metadata": {
+                "name": name,
+                "namespace": spec.namespace,
+                "labels": labels,
+            },
+            "spec": {
+                "selector": selector,
+                "ports": [{"port": port, "targetPort": port}],
+            },
+        },
+    ]
+
+
+def build_manifest_documents(spec: K8sWorkloadSpec) -> list[dict[str, Any]]:
+    docs: list[dict[str, Any]] = [_namespace_manifest(spec)]
+    if spec.database.enabled:
+        docs.extend(_postgres_manifests(spec))
+    docs.extend(_backend_manifests(spec))
+    return docs
+
+
+def render_manifests(
+    spec: K8sWorkloadSpec,
+    out_dir: Path,
+    *,
+    combined_filename: str = "all.yaml",
+) -> Path:
+    """
+    Write generated manifests under ``out_dir``.
+
+    Returns path to the combined multi-document YAML file.
+    """
+    out_dir.mkdir(parents=True, exist_ok=True)
+    docs = build_manifest_documents(spec)
+    combined_path = out_dir / combined_filename
+    with open(combined_path, "w", encoding="utf-8") as f:
+        yaml.safe_dump_all(docs, f, sort_keys=False, default_flow_style=False)
+    for i, doc in enumerate(docs):
+        kind = str(doc.get("kind", "resource")).lower()
+        name = doc.get("metadata", {}).get("name", str(i))
+        single = out_dir / f"{i:02d}-{kind}-{name}.yaml"
+        single.write_text(yaml.safe_dump(doc, sort_keys=False), encoding="utf-8")
+    return combined_path
+
+
+def render_iteration(iteration_path: Path) -> Path:
+    spec = K8sWorkloadSpec.from_yaml_file(iteration_spec_path(iteration_path))
+    return render_manifests(spec, iteration_manifests_dir(iteration_path))
