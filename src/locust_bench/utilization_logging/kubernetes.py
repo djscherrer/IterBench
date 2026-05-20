@@ -63,19 +63,28 @@ def _capture_kubectl_top_series(
 
 
 def _parse_pod_line(ts_epoch: float, ts: str, line: str) -> str | None:
+    """``kubectl top pods``: NAME, CPU (e.g. 80m), MEMORY (e.g. 809Mi)."""
     parts = line.split()
     if len(parts) < 3:
         return None
-    name, cpu, mem = parts[0], parts[1], parts[2]
-    return f"{ts_epoch:.3f},{ts},{name},{cpu},{mem}\n"
+    name, cpu, memory = parts[0], parts[1], parts[2]
+    return f"{ts_epoch:.3f},{ts},{name},{cpu},{memory}\n"
 
 
 def _parse_node_line(ts_epoch: float, ts: str, line: str) -> str | None:
+    """``kubectl top nodes``: NAME, CPU, CPU%, MEMORY, MEMORY%."""
     parts = line.split()
     if len(parts) < 3:
         return None
-    name, cpu, mem = parts[0], parts[1], parts[2]
-    return f"{ts_epoch:.3f},{ts},{name},{cpu},{mem}\n"
+    name = parts[0]
+    if len(parts) >= 5:
+        cpu, cpu_pct, memory, memory_pct = parts[1], parts[2], parts[3], parts[4]
+    else:
+        # Older BaxBench CSVs only stored CPU + CPU%; keep parsing compatible.
+        cpu, cpu_pct, memory, memory_pct = parts[1], parts[2], "", ""
+    return (
+        f"{ts_epoch:.3f},{ts},{name},{cpu},{cpu_pct},{memory},{memory_pct}\n"
+    )
 
 
 class KubernetesUtilizationLogger(UtilizationLogger):
@@ -119,7 +128,7 @@ class KubernetesUtilizationLogger(UtilizationLogger):
                 kwargs={
                     "args": ("top", "nodes", "--no-headers"),
                     "out_csv": node_csv,
-                    "header": "ts_epoch_s,ts,node,cpu,memory\n",
+                    "header": "ts_epoch_s,ts,node,cpu,cpu_pct,memory,memory_pct\n",
                     "stop_event": self._stop_event,
                     "interval_s": self._interval_s,
                     "logger": self._log,

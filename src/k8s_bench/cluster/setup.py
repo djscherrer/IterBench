@@ -19,6 +19,7 @@ from typing import Any, Sequence
 
 import remote_exec
 
+from .metrics_server import install_metrics_server
 from .profiles import resolve_cluster_profile, selected_cluster_profile
 from .preflight import (
     _dedupe_hosts,
@@ -277,6 +278,8 @@ def run_k8s_setup_cluster(
 
     expected_nodes = 1 + len(workers)
     _wait_nodes_ready(kubeconfig, expected_nodes, logger, timeout_s=wait_timeout_s)
+
+    install_metrics_server(kubeconfig, logger, wait_timeout_s=min(wait_timeout_s, 180))
 
     logger.info("Cluster setup complete. Set K8S_SKIP_CLUSTER_CHECKS=false and re-run k8s_preflight.")
     return SetupClusterResult(

@@ -20,6 +20,11 @@ Written under each perf run directory (``stats/``):
 | ``DistributedBenchUtilizationLogger`` | distributed bench only | ``stats/<app-host>/host_performance.csv``, ``socket_queue.csv`` |
 | ``KubernetesUtilizationLogger`` | k8s-bench only | ``stats/kubernetes/pod_top.csv``, ``node_top.csv`` |
 
+Kubernetes CSV columns (from ``kubectl top --no-headers``):
+
+- **pod_top**: ``ts_epoch_s``, ``ts``, ``pod``, ``cpu`` (millicores, e.g. ``80m``), ``memory`` (e.g. ``809Mi``)
+- **node_top**: ``ts_epoch_s``, ``ts``, ``node``, ``cpu`` (millicores), ``cpu_pct``, ``memory`` (e.g. ``15341Mi``), ``memory_pct``
+
 **Load-host logging** runs in every mode. **K8s vs distributed workload logging** is mutually exclusive — use ``utilization_session_for_k8s`` or ``utilization_session_for_distributed`` (see ``locust_run.LocustRunner``, ``k8s_bench/iteration.py``).
 
 ### Load profiles and `BAXBENCH_*` env vars

@@ -11,6 +11,7 @@ from typing import Any, Sequence
 
 import remote_exec
 
+from .metrics_server import warn_if_metrics_api_unavailable
 from .profiles import K8sClusterProfile, resolve_cluster_profile, selected_cluster_profile
 
 
@@ -168,6 +169,7 @@ def ensure_k8s_cluster_ready(
     context = _check_cluster_api(log)
     _check_kube_system(log)
     _check_dry_run_apply(log)
+    warn_if_metrics_api_unavailable(log)
     log.info("Kubernetes cluster OK (context=%s)", context)
     return context
 
@@ -403,6 +405,7 @@ def run_k8s_preflight(
         _check_cluster_api(logger)
         _check_kube_system(logger)
         _check_dry_run_apply(logger)
+        warn_if_metrics_api_unavailable(logger)
 
     hosts = profile.k8s_ssh_hosts
 
