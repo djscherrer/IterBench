@@ -35,12 +35,32 @@ _SSH_MULTIPLEX = os.environ.get("BAXBENCH_SSH_MULTIPLEX", "").strip().lower() in
     "yes",
     "on",
 )
-_LOG_COMMANDS = os.environ.get("BAXBENCH_LOG_COMMANDS", "1").strip().lower() in (
-    "1",
-    "true",
-    "yes",
-    "on",
-)
+def _log_commands_enabled() -> bool:
+    return os.environ.get("BAXBENCH_LOG_COMMANDS", "1").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
+
+
+def format_command_for_log(cmd: list[str]) -> str:
+    """One-line summary for bench logs (avoids multi-line ssh/bash -lc dumps)."""
+    if len(cmd) >= 2 and cmd[0] == "ssh":
+        host = cmd[1]
+        remote = cmd[2] if len(cmd) > 2 else ""
+        if "ctr" in remote and "images pull" in remote:
+            m = re.search(r"--plain-http\s+(\S+)", remote)
+            ref = m.group(1) if m else "…"
+            short = ref.rsplit("/", 1)[-1] if len(ref) > 80 else ref
+            return f"ssh {host}: ctr pull --plain-http {short}"
+        if remote.startswith("bash"):
+            return f"ssh {host}: remote script"
+        snippet = remote.replace("\n", " ")[:100]
+        return f"ssh {host}: {snippet}{'…' if len(remote) > 100 else ''}"
+    if len(cmd) >= 1 and cmd[0] == "scp":
+        return " ".join(shlex.quote(x) for x in cmd[:6]) + (" …" if len(cmd) > 6 else "")
+    return " ".join(shlex.quote(x) for x in cmd)
 _COLLECT_DOCKER_LOGS = os.environ.get("BAXBENCH_COLLECT_DOCKER_LOGS", "1").strip().lower() in (
     "1",
     "true",
@@ -120,10 +140,11 @@ def run_subprocess(
     cwd: pathlib.Path | None = None,
     timeout: int | None = None,
 ) -> subprocess.CompletedProcess:
-    if _LOG_COMMANDS:
-        logger.info("Running command: %s", " ".join(shlex.quote(x) for x in cmd))
+    summary = format_command_for_log(cmd)
+    if _log_commands_enabled():
+        logger.info("%s", summary)
     else:
-        logger.debug("Running command: %s", " ".join(shlex.quote(x) for x in cmd))
+        logger.debug("%s", summary)
     result = subprocess.run(
         cmd,
         stdout=subprocess.PIPE,
@@ -132,10 +153,10 @@ def run_subprocess(
         timeout=timeout,
         check=False,
     )
-    if _LOG_COMMANDS:
-        logger.info("Command finished with code %s", result)
+    if _log_commands_enabled():
+        logger.info("Finished (exit %s): %s", result.returncode, summary)
     else:
-        logger.debug("Command finished with code %s", result)
+        logger.debug("Finished (exit %s): %s", result.returncode, summary)
     if result.stdout:
         logger.debug("Command output:\n%s", result.stdout.decode(errors="ignore"))
     return result

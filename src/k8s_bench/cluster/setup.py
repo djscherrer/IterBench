@@ -19,7 +19,7 @@ from typing import Any, Sequence
 
 import remote_exec
 
-from .profiles import resolve_cluster_profile
+from .profiles import resolve_cluster_profile, selected_cluster_profile
 from .preflight import (
     _dedupe_hosts,
     _is_local_host,
@@ -291,40 +291,25 @@ def run_setup_from_args(args: Any) -> None:
     logging.basicConfig(level=logging.INFO)
     logger = logging.getLogger("baxbench.k8s.setup_cluster")
 
-    profile = os.environ.get("BAXBENCH_K8S_CLUSTER", "").strip() or getattr(args, "k8s_cluster", None)
-    if profile:
-        apply_cluster_profile_to_env(str(profile).strip())
+    prof = selected_cluster_profile(args=args)
+    apply_cluster_profile_to_env(prof.name)
 
-    node_hosts = _dedupe_hosts(getattr(args, "k8s_node_hosts", None) or ())
-    if not node_hosts:
-        env_hosts = os.environ.get("BAXBENCH_K8S_NODE_HOSTS", "").strip()
-        if env_hosts:
-            node_hosts = _dedupe_hosts(env_hosts.replace(",", " ").split())
-
-    cp = (getattr(args, "k8s_control_plane", None) or os.environ.get("K8S_CONTROL_PLANE_HOST", "")).strip()
-    if not cp and node_hosts:
-        cp = node_hosts[0]
-
-    workers = list(getattr(args, "k8s_worker_hosts", None) or ())
+    if not prof.control_node.strip():
+        raise ValueError(f"Profile '{prof.name}' has no control_node")
+    workers = list(prof.worker_nodes)
     if not workers:
-        env_w = os.environ.get("K8S_WORKER_HOSTS", "").strip()
-        if env_w:
-            workers = env_w.replace(",", " ").split()
-    if not workers and node_hosts:
-        workers = [h for h in node_hosts if h != cp]
+        raise ValueError(f"Profile '{prof.name}' has no worker_nodes")
 
-    pod_cidr = (
-        getattr(args, "k8s_pod_network_cidr", None)
-        or os.environ.get("K8S_POD_NETWORK_CIDR", "10.244.0.0/16")
-    ).strip()
+    pod_cidr = (getattr(args, "k8s_pod_network_cidr", None) or "10.244.0.0/16").strip()
+    cni = (getattr(args, "k8s_cni", None) or "flannel").strip()
 
     run_k8s_setup_cluster(
         logger=logger,
-        control_plane=cp,
+        control_plane=prof.control_node,
         worker_hosts=workers,
-        profile_name=str(profile).strip() if profile else None,
+        profile_name=prof.name,
         pod_network_cidr=pod_cidr,
-        cni=(getattr(args, "k8s_cni", None) or os.environ.get("K8S_CNI", "flannel")).strip(),
+        cni=cni,
         skip_cni=bool(getattr(args, "k8s_skip_cni", False)),
         wait_timeout_s=int(getattr(args, "k8s_wait_timeout", None) or 600),
     )

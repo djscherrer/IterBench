@@ -6,26 +6,17 @@
 #   3. ./scripts/k8s_setup_registry.sh — private image registry on node0:5000
 #   4. THIS SCRIPT  — K8S_SKIP_CLUSTER_CHECKS=false to verify the cluster (optional)
 #
-# Usage: edit variables below, then ./scripts/k8s_preflight.sh
+# Topology: edit K8S_CLUSTER_REGISTRY in src/k8s_bench/cluster/profiles.py
+# Select profile: BAXBENCH_K8S_CLUSTER below.
 
 set -euo pipefail
 
-# --- 1. Cluster access ---
+# --- Cluster profile (single selector; hosts live in profiles.py) ---
 BAXBENCH_K8S_CLUSTER="baxbench-emulab"
 KUBECONFIG_PATH=""
 
-# --- 2. Kubernetes cluster members (control-plane + workers) ---
-# node0 = control-plane + BaxBench; node2–5 = workers
-K8S_NODE_HOSTS="node0 node2 node3 node4 node5"
-
-# --- 3. Locust-only hosts (never kubeadm-join) ---
-K8S_LOAD_HOSTS="node1"
-
-# --- 4. Preflight behaviour ---
-# First run: true to install packages on all hosts above. Later runs: false (check only).
+# --- Preflight behaviour ---
 K8S_INSTALL_PREREQUISITES="true"
-
-# true until after kubeadm init + kubeconfig copied; then false
 K8S_SKIP_CLUSTER_CHECKS="false"
 
 # Optional: Kubernetes apt channel (pkgs.k8s.io), e.g. v1.29
@@ -37,17 +28,6 @@ export PYTHONPATH="${ROOT}/src${PYTHONPATH:+:${PYTHONPATH}}"
 
 ARGS=("--mode" "k8s-preflight")
 
-add_arg() {
-    local flag=$1
-    local value=$2
-    if [ -n "$value" ]; then
-        ARGS+=("$flag")
-        for part in $value; do
-            ARGS+=("$part")
-        done
-    fi
-}
-
 add_flag() {
     if [ "$2" == "true" ]; then
         ARGS+=("$1")
@@ -55,10 +35,8 @@ add_flag() {
 }
 
 if [ -n "$BAXBENCH_K8S_CLUSTER" ]; then
-    add_arg "--k8s-cluster" "$BAXBENCH_K8S_CLUSTER"
+    ARGS+=("--k8s-cluster" "$BAXBENCH_K8S_CLUSTER")
 fi
-add_arg "--k8s-node-hosts" "$K8S_NODE_HOSTS"
-add_arg "--k8s-load-hosts" "$K8S_LOAD_HOSTS"
 add_flag "--k8s-install-prerequisites" "$K8S_INSTALL_PREREQUISITES"
 add_flag "--k8s-skip-cluster-checks" "$K8S_SKIP_CLUSTER_CHECKS"
 
@@ -66,7 +44,6 @@ EXTRA_ENV=()
 if [ -n "$BAXBENCH_K8S_CLUSTER" ]; then
     EXTRA_ENV+=("BAXBENCH_K8S_CLUSTER=$BAXBENCH_K8S_CLUSTER")
 fi
-# Host lists are passed only via --k8s-node-hosts / --k8s-load-hosts (not duplicated in env).
 if [ "$K8S_INSTALL_PREREQUISITES" == "true" ]; then
     EXTRA_ENV+=("BAXBENCH_AUTO_INSTALL_REMOTE_DEPS=1")
 fi
@@ -95,9 +72,8 @@ if [ -n "$_KUBECONFIG_RESOLVED" ]; then
 fi
 
 echo "=== BaxBench k8s-preflight ==="
-echo "Phase 1: install/check SSH hosts (install=${K8S_INSTALL_PREREQUISITES})"
-echo "  K8s nodes: ${K8S_NODE_HOSTS:-<none>}"
-echo "  Locust:    ${K8S_LOAD_HOSTS:-<none>}"
+echo "Profile:   ${BAXBENCH_K8S_CLUSTER} (hosts in src/k8s_bench/cluster/profiles.py)"
+echo "Install:   ${K8S_INSTALL_PREREQUISITES}"
 echo "Next: ./scripts/k8s_setup_cluster.sh (after packages OK)"
 echo "kubectl:   skip_cluster_checks=${K8S_SKIP_CLUSTER_CHECKS} KUBECONFIG=${KUBECONFIG:-<default>}"
 echo "Command: pipenv run python src/main.py ${ARGS[*]}"

@@ -11,7 +11,7 @@ from typing import Any, Sequence
 
 import remote_exec
 
-from .profiles import resolve_cluster_profile
+from .profiles import K8sClusterProfile, resolve_cluster_profile, selected_cluster_profile
 
 
 @dataclass(frozen=True)
@@ -335,7 +335,16 @@ def _run_shell_on_host(host: str, cmd: str, logger: logging.Logger) -> subproces
                 check=False,
             )
         logger.info("  → ssh %s", host)
-        return remote_exec.ssh(host, f"bash -lc {shlex.quote(cmd)}", logger)
+        result = remote_exec.ssh(host, f"bash -lc {shlex.quote(cmd)}", logger)
+        if result.returncode == 0:
+            lines = (result.stdout or b"").decode(errors="replace").strip().splitlines()
+            if lines:
+                logger.info("  ✓ %s: %s", host, lines[-1][:200])
+        else:
+            tail = (result.stdout or b"").decode(errors="replace").strip().splitlines()
+            msg = tail[-1] if tail else f"exit {result.returncode}"
+            logger.warning("  ✗ %s: %s", host, msg[:300])
+        return result
     finally:
         if prev is None:
             os.environ.pop("BAXBENCH_LOG_COMMANDS", None)
@@ -368,15 +377,24 @@ def _check_ssh_node(
 def run_k8s_preflight(
     *,
     logger: logging.Logger,
-    node_hosts: Sequence[str] | None = None,
-    load_hosts: Sequence[str] | None = None,
+    profile: K8sClusterProfile,
     install_prerequisites: bool = False,
     skip_cluster_checks: bool = False,
 ) -> K8sPreflightResult:
-    profile_name = os.environ.get("BAXBENCH_K8S_CLUSTER", "").strip() or None
-    apply_cluster_profile_to_env(profile_name)
-    if profile_name:
-        logger.info("Using K8s cluster profile: %s", profile_name)
+    apply_cluster_profile_to_env(profile.name)
+    logger.info("Using K8s cluster profile: %s", profile.name)
+    if profile.has_k8s_topology():
+        logger.info(
+            "Profile topology: control=%s workers=[%s]",
+            profile.control_node,
+            ", ".join(profile.worker_nodes),
+        )
+    if profile.has_load_topology():
+        logger.info(
+            "Profile Locust: master=%s workers=[%s]",
+            profile.load_master,
+            ", ".join(profile.load_workers) or "(none)",
+        )
 
     _require_kubectl(logger)
 
@@ -386,20 +404,7 @@ def run_k8s_preflight(
         _check_kube_system(logger)
         _check_dry_run_apply(logger)
 
-    raw_hosts = list(node_hosts or ())
-    hosts = _dedupe_hosts(raw_hosts)
-    if not hosts and profile_name:
-        try:
-            profile = resolve_cluster_profile(profile_name)
-            hosts = _dedupe_hosts(profile.node_hosts or ())
-        except Exception:
-            hosts = ()
-    if len(raw_hosts) != len(hosts):
-        logger.warning(
-            "Removed duplicate K8s node host entries (had %d, using %d unique).",
-            len(raw_hosts),
-            len(hosts),
-        )
+    hosts = profile.k8s_ssh_hosts
 
     if hosts:
         total = len(hosts)
@@ -428,15 +433,12 @@ def run_k8s_preflight(
                     fut.result()
     elif install_prerequisites:
         raise ValueError(
-            "install_prerequisites requires node hosts (--k8s-node-hosts or profile.node_hosts)"
+            f"install_prerequisites requires control_node and worker_nodes in profile '{profile.name}'"
         )
 
-    load = _dedupe_hosts(load_hosts or ())
+    load = profile.locust_hosts
     if load:
-        logger.info(
-            "Locust load host(s): %s",
-            ", ".join(load),
-        )
+        logger.info("Locust host(s): %s", ", ".join(load))
         for i, h in enumerate(load, start=1):
             logger.info("[%d/%d] Locust host %s", i, len(load), h)
             _prepare_load_host(h, logger, install=install_prerequisites)
@@ -448,26 +450,10 @@ def run_k8s_preflight(
 def run_preflight_from_args(args: Any) -> None:
     logging.basicConfig(level=logging.INFO)
     logger = logging.getLogger("baxbench.k8s.preflight")
-    profile = os.environ.get("BAXBENCH_K8S_CLUSTER", "").strip() or getattr(args, "k8s_cluster", None)
-    if profile:
-        apply_cluster_profile_to_env(str(profile).strip())
-
-    node_hosts: list[str] = list(getattr(args, "k8s_node_hosts", None) or ())
-    if not node_hosts:
-        env_hosts = os.environ.get("BAXBENCH_K8S_NODE_HOSTS", "").strip()
-        if env_hosts:
-            node_hosts.extend(h for h in env_hosts.replace(",", " ").split() if h)
-
-    load_hosts: list[str] = list(getattr(args, "k8s_load_hosts", None) or ())
-    if not load_hosts:
-        env_load = os.environ.get("BAXBENCH_K8S_LOAD_HOSTS", "").strip()
-        if env_load:
-            load_hosts.extend(h for h in env_load.replace(",", " ").split() if h)
-
+    prof = selected_cluster_profile(args=args)
     run_k8s_preflight(
         logger=logger,
-        node_hosts=node_hosts,
-        load_hosts=load_hosts,
+        profile=prof,
         install_prerequisites=bool(getattr(args, "k8s_install_prerequisites", False)),
         skip_cluster_checks=bool(getattr(args, "k8s_skip_cluster_checks", False)),
     )

@@ -30,7 +30,6 @@ from ..cluster.capacity import (
 from .models import BackendSpec, DatabaseSpec, K8sWorkloadSpec, ResourceSpec
 from ..paths import iteration_spec_path, new_iteration_id, normalize_iteration_id
 from .render import render_iteration
-from ..util.sample import functional_tests_gate
 
 _IMAGE_PLACEHOLDER = "baxbench/pending-at-bench:latest"
 
@@ -362,15 +361,13 @@ def generate_k8s_specs_for_task(
     prior_feedback: Any | None = None,
     phase_index: int = 1,
 ) -> list[Path]:
+    """LLM spec per sample. Callers must run ``functional_tests_gate`` before calling."""
     from tasks import esc
 
     written: list[Path] = []
     capacity = collect_cluster_capacity()
 
     for sample in samples:
-        if not functional_tests_gate(task, results_dir, sample):
-            continue
-
         sample_dir = task.get_sample_dir(results_dir, sample)
         iid = normalize_iteration_id(
             k8s_iteration

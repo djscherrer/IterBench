@@ -3,32 +3,20 @@
 #
 # Run FROM node0 (control-plane) AFTER ./scripts/k8s_preflight.sh succeeds.
 #
-#   1. ./scripts/k8s_preflight.sh     # install containerd, kubeadm, …
-#   2. ./scripts/k8s_setup_cluster.sh # kubeadm init on node0, join node2–5
-#   3. ./scripts/k8s_setup_registry.sh
-#   4. ./scripts/k8s_preflight.sh     # K8S_SKIP_CLUSTER_CHECKS=false (optional)
-#
-# Edit variables below, then run from the repo root.
+# Topology: src/k8s_bench/cluster/profiles.py (control_node, worker_nodes)
+# Select profile: BAXBENCH_K8S_CLUSTER below.
 
 set -euo pipefail
 
-# --- Cluster profile (kubeconfig destination) ---
 BAXBENCH_K8S_CLUSTER="baxbench-emulab"
-KUBECONFIG_PATH=""              # empty = profile default (/tmp/dscherre/.kube/...)
+KUBECONFIG_PATH=""
 
-# --- Topology ---
-K8S_CONTROL_PLANE_HOST="node0"
-K8S_WORKER_HOSTS="node2 node3 node4 node5"
-# Optional fallback if workers empty: all K8S_NODE_HOSTS except control-plane
-K8S_NODE_HOSTS="node0 node2 node3 node4 node5"
-
-# --- kubeadm / CNI ---
-K8S_POD_NETWORK_CIDR="10.244.0.0/16"   # must match Flannel default
+# kubeadm / CNI (not host topology)
+K8S_POD_NETWORK_CIDR="10.244.0.0/16"
 K8S_CNI="flannel"
 K8S_SKIP_CNI="false"
 K8S_WAIT_TIMEOUT="600"
 
-# --- Execution ---
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 export PYTHONPATH="${ROOT}/src${PYTHONPATH:+:${PYTHONPATH}}"
 
@@ -38,10 +26,7 @@ add_arg() {
     local flag=$1
     local value=$2
     if [ -n "$value" ]; then
-        ARGS+=("$flag")
-        for part in $value; do
-            ARGS+=("$part")
-        done
+        ARGS+=("$flag" "$value")
     fi
 }
 
@@ -52,11 +37,8 @@ add_flag() {
 }
 
 if [ -n "$BAXBENCH_K8S_CLUSTER" ]; then
-    add_arg "--k8s-cluster" "$BAXBENCH_K8S_CLUSTER"
+    ARGS+=("--k8s-cluster" "$BAXBENCH_K8S_CLUSTER")
 fi
-add_arg "--k8s-control-plane" "$K8S_CONTROL_PLANE_HOST"
-add_arg "--k8s-worker-hosts" "$K8S_WORKER_HOSTS"
-add_arg "--k8s-node-hosts" "$K8S_NODE_HOSTS"
 add_arg "--k8s-pod-network-cidr" "$K8S_POD_NETWORK_CIDR"
 add_arg "--k8s-cni" "$K8S_CNI"
 add_arg "--k8s-wait-timeout" "$K8S_WAIT_TIMEOUT"
@@ -85,10 +67,9 @@ print(os.path.expanduser(p.kubeconfig_path) if p.kubeconfig_path else '')
 fi
 
 echo "=== BaxBench k8s-setup-cluster ==="
-echo "Control-plane: ${K8S_CONTROL_PLANE_HOST}"
-echo "Workers:       ${K8S_WORKER_HOSTS}"
-echo "Pod CIDR:      ${K8S_POD_NETWORK_CIDR}  CNI: ${K8S_CNI}"
-echo "Kubeconfig:    ${KUBECONFIG:-<from profile>}"
+echo "Profile:   ${BAXBENCH_K8S_CLUSTER} (control/workers in profiles.py)"
+echo "Pod CIDR:  ${K8S_POD_NETWORK_CIDR}  CNI: ${K8S_CNI}"
+echo "Kubeconfig: ${KUBECONFIG:-<from profile>}"
 echo "Command: pipenv run python src/main.py ${ARGS[*]}"
 echo ""
 

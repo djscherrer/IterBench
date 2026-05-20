@@ -27,15 +27,11 @@ def _slug_ref(text: str) -> str:
     return slug[:96] or "sample"
 
 
-def resolve_image_worker_hosts() -> tuple[str, ...]:
-    """SSH hosts for legacy docker-save distribution (disabled when registry is enabled)."""
-    raw = (
-        os.environ.get("BAXBENCH_K8S_WORKER_HOSTS", "").strip()
-        or os.environ.get("K8S_WORKER_HOSTS", "").strip()
-    )
-    if not raw:
-        return ()
-    return _dedupe_hosts(raw.replace(",", " ").split())
+def resolve_image_worker_hosts(profile_name: str) -> tuple[str, ...]:
+    """SSH hosts for legacy docker-save distribution (profile worker_nodes)."""
+    from .profiles import resolve_cluster_profile
+
+    return resolve_cluster_profile(profile_name).worker_nodes
 
 
 def distribute_image_to_hosts(
@@ -134,13 +130,16 @@ def prepare_image_for_k8s(
     log.info("Tagged image for Kubernetes: %s", reference)
 
     if distribute_to_workers:
-        hosts = tuple(worker_hosts or ()) or resolve_image_worker_hosts()
+        hosts = tuple(worker_hosts or ())
+        if not hosts and profile:
+            hosts = resolve_image_worker_hosts(profile)
         if hosts:
             distribute_image_to_hosts(reference, hosts, logger=log)
         else:
             log.warning(
-                "No registry and no K8S_WORKER_HOSTS — image only on this machine. "
-                "Run ./scripts/k8s_setup_registry.sh or set K8S_WORKER_HOSTS."
+                "No registry and profile '%s' has no worker_nodes — image only on this machine. "
+                "Run ./scripts/k8s_setup_registry.sh or enable registry in the profile.",
+                profile or "?",
             )
 
     return PreparedImage(reference=reference)

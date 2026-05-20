@@ -17,8 +17,13 @@ import textwrap
 from dataclasses import dataclass
 from typing import Sequence
 
-from .profiles import resolve_cluster_profile
-from .preflight import _dedupe_hosts, _is_local_host, _run_shell_on_host
+from .profiles import resolve_cluster_profile, selected_cluster_profile
+from .preflight import (
+    _dedupe_hosts,
+    _is_local_host,
+    _run_shell_on_host,
+    apply_cluster_profile_to_env,
+)
 from .setup import _control_plane_ip
 
 
@@ -195,22 +200,10 @@ def _configure_containerd_on_host(host: str, registry: RegistryConfig, logger: l
 
 
 def resolve_k8s_node_hosts(profile_name: str | None = None) -> tuple[str, ...]:
-    """Cluster nodes for image preload (env, then profile.node_hosts)."""
-    raw = (
-        os.environ.get("BAXBENCH_K8S_NODE_HOSTS", "").strip()
-        or os.environ.get("K8S_NODE_HOSTS", "").strip()
-    )
-    if raw:
-        return _dedupe_hosts(raw.replace(",", " ").split())
-    name = (profile_name or os.environ.get("BAXBENCH_K8S_CLUSTER", "") or "").strip()
-    if name:
-        try:
-            profile = resolve_cluster_profile(name)
-            if profile.node_hosts:
-                return _dedupe_hosts(profile.node_hosts)
-        except ValueError:
-            pass
-    return ()
+    """Cluster nodes for image preload (profile control + workers)."""
+    if not profile_name:
+        return ()
+    return resolve_cluster_profile(profile_name).k8s_ssh_hosts
 
 
 def preload_registry_image_on_nodes(
@@ -228,7 +221,7 @@ def preload_registry_image_on_nodes(
     hosts = _dedupe_hosts(node_hosts)
     if not hosts:
         logger.warning(
-            "No K8s node hosts for image preload (set BAXBENCH_K8S_NODE_HOSTS). "
+            "No K8s node hosts for image preload (profile has no control_node/worker_nodes). "
             "Pods may hit ImagePullBackOff on HTTP registry %s",
             image_ref.split("/", 1)[0],
         )
@@ -373,23 +366,17 @@ def run_registry_setup(
 def run_registry_setup_from_args(args) -> None:
     logging.basicConfig(level=logging.INFO)
     logger = logging.getLogger("baxbench.k8s.registry")
-    profile = os.environ.get("BAXBENCH_K8S_CLUSTER", "").strip() or getattr(args, "k8s_cluster", None)
+    prof = selected_cluster_profile(args=args)
+    apply_cluster_profile_to_env(prof.name)
 
-    cp = (getattr(args, "k8s_control_plane", None) or os.environ.get("K8S_CONTROL_PLANE_HOST", "node0")).strip()
-    node_hosts = list(getattr(args, "k8s_node_hosts", None) or ())
-    if not node_hosts:
-        env = os.environ.get("BAXBENCH_K8S_NODE_HOSTS", "").strip()
-        if env:
-            node_hosts = env.replace(",", " ").split()
-
-    reg_host = getattr(args, "k8s_registry_host", None) or os.environ.get("K8S_REGISTRY_HOST", "").strip() or None
-    port = int(getattr(args, "k8s_registry_port", None) or os.environ.get("K8S_REGISTRY_PORT", "5000"))
+    reg_host = prof.registry_host.strip() or None
+    port = prof.registry_port
 
     run_registry_setup(
         logger=logger,
-        profile_name=str(profile).strip() if profile else None,
-        control_plane=cp,
-        node_hosts=node_hosts,
+        profile_name=prof.name,
+        control_plane=prof.control_node,
+        node_hosts=list(prof.k8s_ssh_hosts),
         registry_host=reg_host,
         registry_port=port,
     )

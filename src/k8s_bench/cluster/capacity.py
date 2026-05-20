@@ -190,9 +190,11 @@ def collect_cluster_capacity(
         total_worker_cpu_millicores=total_cpu,
         total_worker_memory_bytes=total_mem,
     )
+    budget_cores = cap.budget_cpu_millicores / 1000.0
     log.info(
-        "Cluster capacity: %d worker(s), budget ~%s CPU / ~%.1f Gi memory after reserve",
+        "Cluster capacity: %d worker(s), budget ~%.1f CPU cores (%dm) / ~%.1f Gi memory after reserve",
         cap.worker_count,
+        budget_cores,
         cap.budget_cpu_millicores,
         cap.budget_memory_bytes / (2**30),
     )
