@@ -156,7 +156,11 @@ After **generate** + **test**:
 
 Phase 1 prompt: scenario, framework, `high_performance`, app code excerpt, cluster capacity.
 
-Phase 2+ prompt adds **feedback**: Locust aggregated stats, error report excerpt,
-`kubectl top pods`, previous `spec.yaml`.
+Phase 2+ prompt adds **feedback**: Locust per-endpoint stats as a markdown table
+(from ``bench_results_*_stats.csv``), Locust top errors, Kubernetes pod/node
+utilization aggregated over the run (min/avg/max from ``stats/kubernetes/*.csv``),
+previous ``spec.yaml``. The full LLM prompt is logged in
+``k8s_configs/<iteration>/spec_gen_prompt.log``; feedback-only text is in
+``perf-.../iteration_feedback.txt``.
 
 Standalone spec-only (no deploy): `--mode k8s-spec-gen` or `./scripts/generate_k8s_spec.sh`.
