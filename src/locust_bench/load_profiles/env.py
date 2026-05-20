@@ -58,6 +58,7 @@ def build_baxbench_locust_env(
         env["BAXBENCH_ADAPTIVE_MAX_USERS"] = str(int(load_profile.max_users))
         env["BAXBENCH_ADAPTIVE_MIN_STEP_USERS"] = str(int(load_profile.min_step_users))
         env["BAXBENCH_ADAPTIVE_MAX_STEP_USERS"] = str(int(load_profile.max_step_users))
+        env["BAXBENCH_ADAPTIVE_SPAWN_RATE"] = str(int(load_profile.spawn_rate))
         env["BAXBENCH_ADAPTIVE_STEP_DURATION_S"] = str(int(load_profile.step_duration_s))
         env["BAXBENCH_ADAPTIVE_TRIM_S"] = str(int(load_profile.trim_s))
         env["BAXBENCH_ADAPTIVE_SAMPLE_EVERY_S"] = str(int(load_profile.sample_every_s))

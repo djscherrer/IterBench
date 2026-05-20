@@ -133,6 +133,7 @@ class AdaptiveLoadProfile(BaseLoadProfile):
     max_users: int
     min_step_users: int
     max_step_users: int
+    spawn_rate: int
     step_duration_s: int
     trim_s: int
     sample_every_s: int
@@ -147,8 +148,7 @@ class AdaptiveLoadProfile(BaseLoadProfile):
 
     @property
     def effective_spawn_rate(self) -> int:
-        # Use max step as a reasonable upper bound for spawn changes.
-        return max(1, int(self.max_step_users))
+        return max(1, int(self.spawn_rate))
 
     @property
     def effective_run_time_s(self) -> int:

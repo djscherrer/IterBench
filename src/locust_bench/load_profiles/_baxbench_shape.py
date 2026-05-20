@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import logging
 import os
 import statistics
 from dataclasses import dataclass
 
 from locust import LoadTestShape, between
+
+_LOG = logging.getLogger("baxbench.adaptive")
 
 
 def _get_int(name: str, default: int) -> int:
@@ -40,6 +43,13 @@ def baxbench_wait_time():
     return between(lo, hi)
 
 
+def _env_bool(name: str, default: bool) -> bool:
+    v = os.getenv(name, "").strip().lower()
+    if not v:
+        return default
+    return v in ("1", "true", "yes", "on")
+
+
 @dataclass(frozen=True)
 class _AdaptiveParams:
     sla_ms: float
@@ -47,25 +57,32 @@ class _AdaptiveParams:
     max_users: int
     min_step_users: int
     max_step_users: int
+    spawn_rate: int
     step_duration_s: int
     trim_s: int
     sample_every_s: int
     settle_samples: int
     quantile: float
+    health_grace_s: int
+    abort_on_no_users: bool
 
 
 def _adaptive_params_from_env() -> _AdaptiveParams:
+    trim_s = max(0, _get_int("BAXBENCH_ADAPTIVE_TRIM_S", 20))
     return _AdaptiveParams(
         sla_ms=float(_get_float("BAXBENCH_ADAPTIVE_SLA_MS", 300.0)),
         start_users=max(0, _get_int("BAXBENCH_ADAPTIVE_START_USERS", 500)),
         max_users=max(1, _get_int("BAXBENCH_ADAPTIVE_MAX_USERS", 20_000)),
         min_step_users=max(1, _get_int("BAXBENCH_ADAPTIVE_MIN_STEP_USERS", 50)),
         max_step_users=max(1, _get_int("BAXBENCH_ADAPTIVE_MAX_STEP_USERS", 400)),
+        spawn_rate=max(1, _get_int("BAXBENCH_ADAPTIVE_SPAWN_RATE", 50)),
         step_duration_s=max(5, _get_int("BAXBENCH_ADAPTIVE_STEP_DURATION_S", 45)),
-        trim_s=max(0, _get_int("BAXBENCH_ADAPTIVE_TRIM_S", 20)),
+        trim_s=trim_s,
         sample_every_s=max(1, _get_int("BAXBENCH_ADAPTIVE_SAMPLE_EVERY_S", 5)),
         settle_samples=max(1, _get_int("BAXBENCH_ADAPTIVE_SETTLE_SAMPLES", 3)),
         quantile=float(_get_float("BAXBENCH_ADAPTIVE_QUANTILE", 0.95)),
+        health_grace_s=max(5, _get_int("BAXBENCH_ADAPTIVE_HEALTH_GRACE_S", max(15, trim_s))),
+        abort_on_no_users=_env_bool("BAXBENCH_ADAPTIVE_ABORT_NO_USERS", True),
     )
 
 
@@ -147,9 +164,83 @@ class AdaptiveShape(_BaseShape):
         self._low_ok: int | None = None
         self._high_bad: int | None = None
         self._done = False
+        self._abort_logged = False
+        _LOG.info(
+            "adaptive start: users=%s spawn_rate=%s sla_ms=%s step_duration_s=%s trim_s=%s "
+            "quantile=%s health_grace_s=%s abort_on_no_users=%s",
+            self._users,
+            self._p.spawn_rate,
+            self._p.sla_ms,
+            self._p.step_duration_s,
+            self._p.trim_s,
+            self._p.quantile,
+            self._p.health_grace_s,
+            self._p.abort_on_no_users,
+        )
+
+    def _locust_environment(self):
+        env = getattr(self, "environment", None)
+        if env is not None:
+            return env
+        runner = getattr(self, "runner", None)
+        return getattr(runner, "environment", None) if runner is not None else None
+
+    def _active_user_count(self) -> int | None:
+        runner = getattr(self, "runner", None)
+        if runner is None:
+            return None
+        try:
+            return int(self.get_current_user_count())
+        except Exception:
+            return None
+
+    def _should_abort_no_healthy_users(self, t: float) -> bool:
+        """
+        Stop the shape early when all Locust users have died (e.g. bootstrap hard-fail).
+
+        Waits ``health_grace_s`` after each level starts so spawn is not mistaken for failure.
+        """
+        if not self._p.abort_on_no_users:
+            return False
+        if int(self._users) <= 0:
+            return False
+        if (t - self._level_start_t) < float(self._p.health_grace_s):
+            return False
+
+        active = self._active_user_count()
+        if active is None:
+            return False
+        if active > 0:
+            return False
+
+        if not self._abort_logged:
+            self._abort_logged = True
+            _LOG.error(
+                "adaptive abort at t=%.0fs: zero active users (target=%s, grace=%ss); %s",
+                t,
+                self._users,
+                self._p.health_grace_s,
+                self._stats_snapshot(),
+            )
+        self._done = True
+        return True
+
+    def _stats_snapshot(self) -> str:
+        env = self._locust_environment()
+        if env is None:
+            return "stats=n/a"
+        total = getattr(getattr(env, "stats", None), "total", None)
+        if total is None:
+            return "stats=n/a"
+        reqs = int(getattr(total, "num_requests", 0) or 0)
+        fails = int(getattr(total, "num_failures", 0) or 0)
+        fail_pct = f"{100.0 * fails / reqs:.1f}%" if reqs else "n/a"
+        lat = self._read_latency_ms()
+        lat_s = f"{lat:.0f}ms" if lat is not None else "n/a"
+        return f"reqs={reqs} fail={fails} ({fail_pct}) p{int(self._p.quantile * 100)}={lat_s}"
 
     def _read_latency_ms(self) -> float | None:
-        env = getattr(self, "environment", None)
+        env = self._locust_environment()
         if env is None:
             return None
         stats = getattr(env, "stats", None)
@@ -173,10 +264,13 @@ class AdaptiveShape(_BaseShape):
         self._level_start_t = t
         self._next_sample_t = t
         self._p95_samples = []
+        self._abort_logged = False
 
-    def _decide_and_advance(self, summary_p95_ms: float) -> None:
+    def _decide_and_advance(self, summary_p95_ms: float) -> str:
         sla = float(self._p.sla_ms)
         below = summary_p95_ms <= sla
+        prev_users = int(self._users)
+        action = ""
 
         if below:
             self._low_ok = int(self._users)
@@ -188,24 +282,31 @@ class AdaptiveShape(_BaseShape):
             gap = int(self._high_bad - self._low_ok)
             if gap <= int(self._p.min_step_users):
                 self._done = True
-                return
+                action = f"bracket narrow (low={self._low_ok} high={self._high_bad}); stopping shape"
+                return action
             self._step = max(int(self._p.min_step_users), min(int(self._p.max_step_users), int(gap // 2)))
             self._users = min(int(self._p.max_users), int(self._low_ok + self._step))
-            return
+            action = f"bracket refine low={self._low_ok} high={self._high_bad} -> users={self._users} step={self._step}"
+            return action
 
         # No bracket yet: explore.
         if below:
-            # When comfortably below SLA, be more aggressive.
             margin = max(0.0, sla - summary_p95_ms)
             if margin >= 0.5 * sla:
                 self._step = min(int(self._p.max_step_users), int(self._step * 2))
             elif margin <= 0.15 * sla:
                 self._step = max(int(self._p.min_step_users), int(self._step // 2))
             self._users = min(int(self._p.max_users), int(self._users + self._step))
+            action = f"below SLA (p95={summary_p95_ms:.0f}ms) ramp +{self._users - prev_users} -> users={self._users}"
         else:
-            # First failure: back off and start bracketing.
             self._step = max(int(self._p.min_step_users), int(self._step // 2))
             self._users = max(0, int(self._users - self._step))
+            action = f"above SLA (p95={summary_p95_ms:.0f}ms) backoff -> users={self._users} step={self._step}"
+        return action
+
+    def _spawn_rate(self) -> int:
+        """Cap spawn rate so we do not spawn hundreds of users in sub-second bursts."""
+        return max(1, min(int(self._p.spawn_rate), int(self._step), int(self._users)))
 
     def tick(self):
         if self._should_stop() or self._done:
@@ -214,6 +315,9 @@ class AdaptiveShape(_BaseShape):
         t = float(self.get_run_time())
         if self._level_start_t <= 0.0:
             self._enter_level(t)
+
+        if self._should_abort_no_healthy_users(t):
+            return None
 
         # Sample latency periodically.
         if t >= self._next_sample_t:
@@ -229,11 +333,27 @@ class AdaptiveShape(_BaseShape):
             samples = self._p95_samples
             if len(samples) >= int(self._p.settle_samples):
                 summary = statistics.median(samples[-int(self._p.settle_samples) :])
-                self._decide_and_advance(float(summary))
-            # Enter next level regardless (if we had no samples, we still move on but keep step).
+                action = self._decide_and_advance(float(summary))
+                _LOG.info(
+                    "adaptive phase end t=%.0fs: %s | %s | %s",
+                    t,
+                    action,
+                    self._stats_snapshot(),
+                    f"samples={samples[-int(self._p.settle_samples) :]}",
+                )
+            else:
+                _LOG.warning(
+                    "adaptive phase end t=%.0fs: insufficient latency samples (%d/%d after trim); "
+                    "users stay %s | %s",
+                    t,
+                    len(samples),
+                    int(self._p.settle_samples),
+                    self._users,
+                    self._stats_snapshot(),
+                )
             self._enter_level(t)
 
-        return int(self._users), max(1, int(self._step))
+        return int(self._users), self._spawn_rate()
 
 
 def _selected_shape_class() -> type[_BaseShape]:

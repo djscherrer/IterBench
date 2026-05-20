@@ -4,6 +4,7 @@ from dataclasses import replace
 from math import ceil
 
 from .models import (
+    AdaptiveLoadProfile,
     ContinuousLoadProfile,
     LoadProfile,
     SpikeLoadProfile,
@@ -19,6 +20,25 @@ LOAD_PROFILE_REGISTRY: dict[str, LoadProfile] = {
     ),
     "quick-check": SteadyLoadProfile(
         name="quick-check", users=200, run_time_s=30, wait_min_s=1.0, wait_max_s=1.0, locust_processes=8
+    ),
+
+    "k8s-adaptive": AdaptiveLoadProfile(
+        name="k8s-adaptive",
+        sla_ms=300,
+        start_users=50,
+        max_users=10000,
+        min_step_users=25,
+        max_step_users=500,
+        spawn_rate=50,
+        step_duration_s=30,
+        trim_s=10,
+        sample_every_s=5,
+        settle_samples=3,
+        quantile=0.95,
+        run_time_s=180,        
+        wait_min_s=1.0,
+        wait_max_s=1.0,
+        locust_processes=32,
     ),
 
     # Load profiles for the BaxBench benchmark.
