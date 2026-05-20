@@ -39,7 +39,7 @@ class IterationFeedback:
             self.locust_summary or "(no Locust stats found)",
             "",
             "## Kubernetes utilization (aggregated over benchmark run)",
-            "From periodic ``kubectl top`` samples during the run (min / avg / max per role or node).",
+            "From periodic ``kubectl top`` samples during the run (min / avg / max per pod and per node).",
             self.pod_utilization or "(kubernetes metrics unavailable)",
             "",
             "## Top errors",
@@ -239,14 +239,6 @@ def _min_avg_max_f(values: list[float]) -> str:
     )
 
 
-def _pod_workload_role(pod_name: str) -> str:
-    if pod_name.startswith("postgres"):
-        return "postgres"
-    if pod_name.startswith("backend"):
-        return "backend"
-    return pod_name.split("-", 1)[0] if "-" in pod_name else pod_name
-
-
 def _summarize_pod_top_csv(path: Path) -> str:
     if not path.is_file():
         return ""
@@ -256,31 +248,31 @@ def _summarize_pod_top_csv(path: Path) -> str:
         return ""
 
     samples = len({r.get("ts_epoch_s", "") for r in rows})
-    cpu_by_role: dict[str, list[int]] = defaultdict(list)
-    mem_by_role: dict[str, list[int]] = defaultdict(list)
+    cpu_by_pod: dict[str, list[int]] = defaultdict(list)
+    mem_by_pod: dict[str, list[int]] = defaultdict(list)
 
     for row in rows:
         pod = (row.get("pod") or "").strip()
         if not pod:
             continue
-        role = _pod_workload_role(pod)
         cpu = _parse_cpu_millicores(row.get("cpu") or "")
         mem = _parse_memory_mi(row.get("memory") or "")
         if cpu is not None:
-            cpu_by_role[role].append(cpu)
+            cpu_by_pod[pod].append(cpu)
         if mem is not None:
-            mem_by_role[role].append(mem)
+            mem_by_pod[pod].append(mem)
 
+    pod_names = sorted(cpu_by_pod.keys() | mem_by_pod.keys())
     lines = [
-        f"kubectl top pods: {samples} sample(s), {len(rows)} pod reading(s)",
+        f"kubectl top pods: {samples} sample(s), {len(pod_names)} pod(s)",
         "",
-        "| Workload | CPU m (min/avg/max) | Memory Mi (min/avg/max) |",
+        "| Pod | CPU m (min/avg/max) | Memory Mi (min/avg/max) |",
         "|---|---:|---:|",
     ]
-    for role in sorted(cpu_by_role.keys() | mem_by_role.keys()):
+    for pod in pod_names:
         lines.append(
-            f"| {role} | {_min_avg_max(cpu_by_role[role])} | "
-            f"{_min_avg_max(mem_by_role[role])} |"
+            f"| {pod} | {_min_avg_max(cpu_by_pod[pod])} | "
+            f"{_min_avg_max(mem_by_pod[pod])} |"
         )
     return "\n".join(lines)
 
