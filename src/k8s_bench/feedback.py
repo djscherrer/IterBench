@@ -91,6 +91,30 @@ def _kubectl_top_pods(namespace: str, logger: logging.Logger) -> str:
     return (proc.stdout or "").strip()
 
 
+def _summarize_k8s_utilization_csv(perf_run_dir: Path) -> str:
+    """Last sample from utilization_logging ``stats/kubernetes/*.csv``."""
+    k8s_dir = perf_run_dir / "stats" / "kubernetes"
+    pod_csv = k8s_dir / "pod_top.csv"
+    node_csv = k8s_dir / "node_top.csv"
+    parts: list[str] = []
+
+    def _tail_by_ts(path: Path, label: str) -> None:
+        if not path.is_file():
+            return
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+        if len(lines) <= 1:
+            return
+        last_ts = lines[-1].split(",", 2)[0]
+        rows = [ln for ln in lines[1:] if ln.startswith(f"{last_ts},")]
+        if rows:
+            parts.append(f"### {label} (last sample ts={last_ts})")
+            parts.extend(rows[:20])
+
+    _tail_by_ts(pod_csv, "Pods")
+    _tail_by_ts(node_csv, "Nodes")
+    return "\n".join(parts)
+
+
 def collect_iteration_feedback(
     *,
     perf_run_dir: Path,
@@ -124,7 +148,9 @@ def collect_iteration_feedback(
         except ValueError:
             pass
 
-    pod_top = _kubectl_top_pods(ns, log) if ns else ""
+    pod_top = _summarize_k8s_utilization_csv(perf_run_dir)
+    if not pod_top and ns:
+        pod_top = _kubectl_top_pods(ns, log)
 
     return IterationFeedback(
         iteration_id=iteration_path.name,

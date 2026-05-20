@@ -4,10 +4,23 @@ All Locust code is under **`src/locust_bench/`**.
 
 | Module | When it runs |
 |--------|----------------|
-| **`runner.py`** — `LocustRunner` | **Remote** load hosts over SSH (`distributed_bench` orchestrator) |
-| **`local_runner.py`** — `run_headless_locust` | **This machine** (`k8s-bench` via port-forward, local docker bench) |
+| **`locust_run.py`** — `DistributedLocustSession`, `LocustRunner` | **SSH load hosts** (k8s-bench + `distributed_bench`) |
+| **`tasks.py`** — `run_bench_with_timeout` | **Local docker** `bench` mode only (Locust on this machine → `localhost`) |
+| **`utilization_logging/`** | Per-run metrics under ``stats/`` (see below) |
 
 Deploy/orchestration: **`distributed_bench/`** (SSH + Docker) or **`k8s_bench/`** (Kubernetes).
+
+### Utilization logging (`utilization_logging/`)
+
+Written under each perf run directory (``stats/``):
+
+| Logger | Used by | Output |
+|--------|---------|--------|
+| ``LoadHostUtilizationLogger`` | k8s-bench + distributed bench | ``stats/<load-host>/host_performance.csv`` |
+| ``DistributedBenchUtilizationLogger`` | distributed bench only | ``stats/<app-host>/host_performance.csv``, ``socket_queue.csv`` |
+| ``KubernetesUtilizationLogger`` | k8s-bench only | ``stats/kubernetes/pod_top.csv``, ``node_top.csv`` |
+
+**Load-host logging** runs in every mode. **K8s vs distributed workload logging** is mutually exclusive — use ``utilization_session_for_k8s`` or ``utilization_session_for_distributed`` (see ``locust_run.LocustRunner``, ``k8s_bench/iteration.py``).
 
 ### Load profiles and `BAXBENCH_*` env vars
 
@@ -25,8 +38,6 @@ At run time, `load_profiles/env.py` sets environment variables read by `_baxbenc
 
 Common to all modes: `BAXBENCH_RUN_TIME_S`, `BAXBENCH_LOCUST_WAIT_MIN_S` / `MAX_S`.
 
-These are **not removed** — they were moved from inline code in the old `locustrunner.py` into `load_profiles/env.py` so local and remote runners share one definition.
-
 ### Data produced
 
-See per-run `perf-*` / `perf-k8s-*` directories: Locust CSVs, `bench.log`, and (remote bench only) `stats/<host>/` telemetry collected alongside `LocustRunner.run`.
+Locust CSVs land under the sample perf run directory; distributed runs also copy worker logs from SSH hosts.

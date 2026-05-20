@@ -150,6 +150,7 @@ def _backend_manifests(spec: K8sWorkloadSpec) -> list[dict[str, Any]]:
                 "labels": labels,
             },
             "spec": {
+                "type": "NodePort",
                 "selector": selector,
                 "ports": [{"port": port, "targetPort": port}],
             },

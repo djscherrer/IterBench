@@ -68,19 +68,60 @@ def run_bench_with_timeout(
     bench_run_time: int | None = None,
     host: str | None = None,
 ) -> bytes:
-    from locust_bench import run_headless_locust
+    """Local docker ``bench`` mode only (Locust on this machine → localhost container)."""
+    import os
+    import subprocess
 
-    target_host = host if host is not None else f"http://localhost:{port}"
-    return run_headless_locust(
-        locustfile=locustfile,
-        csv_prefix=csv_prefix,
-        target_host=target_host,
-        timeout=timeout,
-        locust_user=user,
-        bench_users=bench_users,
-        bench_spawn_rate=bench_spawn_rate,
-        bench_run_time=bench_run_time,
+    from locust_bench.load_profiles import resolve_load_profile
+    from locust_bench.load_profiles.env import build_baxbench_locust_env
+    from locust_bench.locust_run import prepare_locust_run_dir, resolve_locust_user_class
+
+    profile = resolve_load_profile(os.environ.get("BAXBENCH_LOAD_PROFILE", "default"))
+    run_time_s = (
+        int(bench_run_time) if bench_run_time is not None else int(profile.effective_run_time_s)
     )
+    users = int(bench_users) if bench_users is not None else int(profile.effective_users)
+    spawn_rate = (
+        int(bench_spawn_rate) if bench_spawn_rate is not None else int(profile.effective_spawn_rate)
+    )
+    target_host = host if host is not None else f"http://localhost:{port}"
+    run_dir = csv_prefix.parent
+    locustfile = prepare_locust_run_dir(run_dir, locustfile)
+    user_class = resolve_locust_user_class(locustfile, user)
+    proc_env = os.environ.copy()
+    proc_env.update(
+        build_baxbench_locust_env(profile, bench_run_time_s=run_time_s, bench_users=users)
+    )
+    try:
+        result = subprocess.run(
+            [
+                "locust",
+                "--headless",
+                "--locustfile",
+                str(locustfile),
+                "--host",
+                target_host,
+                "--users",
+                str(users),
+                "--spawn-rate",
+                str(spawn_rate),
+                "--run-time",
+                f"{run_time_s}s",
+                "--csv",
+                str(csv_prefix),
+                "--csv-full-history",
+                "--only-summary",
+                user_class,
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            timeout=timeout,
+            env=proc_env,
+            cwd=str(run_dir),
+        )
+        return result.stdout
+    except subprocess.TimeoutExpired:
+        raise TimeoutError("Benchmarking timed out") from None
 
 
 def plot_requests_vs_percentile(

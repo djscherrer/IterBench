@@ -3,7 +3,7 @@
 #
 # Runs `python src/main.py --mode k8s-bench` for each phase:
 #   1. LLM generates k8s_configs/iteration-NNN/spec.yaml (replicas, CPU/memory)
-#   2. Render manifests → deploy to cluster → Locust via port-forward
+#   2. Render manifests → deploy to cluster → distributed Locust (profile load_master/workers)
 #   3. Optional further phases (iteration-002+) use feedback from prior Locust run
 #
 # Prerequisites:
@@ -49,10 +49,9 @@ K8S_ITERATION=""                # pin one iteration; empty = use K8S_ITERATIONS
 K8S_ITERATIONS="1"              # phases: iteration-001 .. iteration-NNN
 K8S_SPEC_GEN="true"             # false = deploy-only with existing spec.yaml files
 K8S_WAIT_TIMEOUT="300"
-K8S_LOCAL_PORT=""               # fixed local port for port-forward; empty = ephemeral
+# Locust runs on profile load_master/workers; backend exposed via NodePort
 K8S_AUTO_INIT="false"           # only used with K8S_SPEC_GEN=false
 K8S_REQUIRE_CLUSTER="true"
-K8S_NODE_HOSTS="node0 node2 node3 node4 node5"
 
 # --- 5. Bench configuration ---
 TIMEOUT="600"
@@ -140,7 +139,6 @@ for _model in $MODELS; do
     add_arg "--k8s-iteration" "$K8S_ITERATION"
     add_arg "--k8s-iterations" "$K8S_ITERATIONS"
     add_arg "--k8s-wait-timeout" "$K8S_WAIT_TIMEOUT"
-    add_arg "--k8s-local-port" "$K8S_LOCAL_PORT"
     add_arg "--max_retries" "$MAX_RETRIES"
     if [ "$K8S_REQUIRE_CLUSTER" == "false" ]; then
       ARGS+=("--no-k8s-require-cluster")
@@ -177,13 +175,6 @@ for _model in $MODELS; do
       if [ -n "${KUBECONFIG:-}" ]; then
         EXTRA_ENV+=("KUBECONFIG=$KUBECONFIG")
       fi
-      if [ -n "${K8S_WORKER_HOSTS:-}" ]; then
-        EXTRA_ENV+=("BAXBENCH_K8S_WORKER_HOSTS=$K8S_WORKER_HOSTS")
-      fi
-      if [ -n "${K8S_NODE_HOSTS:-}" ]; then
-        EXTRA_ENV+=("BAXBENCH_K8S_NODE_HOSTS=$K8S_NODE_HOSTS")
-      fi
-
       echo ""
       echo "=== K8s iterative bench run #$RUN_I: model='${_model}' openhands='${_openhands}' load_profile='$profile' iterations=$K8S_ITERATIONS ==="
       echo "Command: pipenv run python src/main.py ${ARGS[*]}"

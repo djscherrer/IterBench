@@ -1,4 +1,4 @@
-"""Run K8s bench modes across a BaxBench task list (progress + per-task dispatch)."""
+"""Tqdm over all BaxBench tasks × samples; delegates to ``loop`` or ``spec.generation``."""
 
 from __future__ import annotations
 
@@ -9,6 +9,7 @@ import tqdm
 
 from .loop import bench_k8s_for_task
 from .spec.generation import generate_k8s_specs_for_task
+from .util.sample import functional_tests_gate
 
 
 def run_k8s_bench(
@@ -22,7 +23,6 @@ def run_k8s_bench(
     k8s_iterations: int = 1,
     k8s_spec_gen: bool = True,
     k8s_wait_timeout: int = 300,
-    k8s_local_port: int | None = None,
     k8s_auto_init: bool = False,
     bench_users: int | None = None,
     bench_spawn_rate: int | None = None,
@@ -56,7 +56,6 @@ def run_k8s_bench(
                         k8s_iterations=k8s_iterations,
                         k8s_spec_gen=k8s_spec_gen,
                         k8s_wait_timeout=k8s_wait_timeout,
-                        k8s_local_port=k8s_local_port,
                         k8s_auto_init=k8s_auto_init,
                         bench_users=bench_users,
                         bench_spawn_rate=bench_spawn_rate,
@@ -96,6 +95,8 @@ def run_k8s_spec_gen(
                     pbar.set_description(
                         f"k8s-spec {model_label} - {scenario_label} - {env_label} - sample {si + 1}/{len(samples)}"
                     )
+                if not functional_tests_gate(task, results_dir, sample):
+                    continue
                 all_paths.extend(
                     generate_k8s_specs_for_task(
                         task,

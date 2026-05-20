@@ -24,7 +24,7 @@ from locust_bench.load_profiles import (
     SteadyLoadProfile,
     resolve_load_profile,
 )
-from locust_bench.runner import LocustRunner
+from locust_bench.locust_run import LocustRunner
 
 from .loadbalancer import LoadBalancerManager
 from .runtime import RemoteRuntime

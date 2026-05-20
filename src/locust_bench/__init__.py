@@ -1,11 +1,18 @@
 """
 Locust load generation for BaxBench.
 
-- ``load_profiles/`` — named load shapes (steady, stairs, …) and ``_baxbench_shape.py``
-- ``runner.py`` — ``LocustRunner``: run Locust on **remote SSH load hosts** (distributed bench)
-- ``local_runner.py`` — ``run_headless_locust``: run Locust **on this machine** (k8s-bench, local docker bench)
+- ``locust_run.py`` — remote master/worker Locust + ``LocustRunner`` (distributed bench)
+- ``utilization_logging/`` — per-run host/pod metrics
+- ``load_profiles/`` — load shapes
 """
 
+from .locust_run import (
+    DistributedLocustConfig,
+    DistributedLocustSession,
+    LocustRunner,
+    prepare_locust_run_dir,
+    resolve_locust_user_class,
+)
 from .load_profiles import (
     LOAD_PROFILE_REGISTRY,
     AdaptiveLoadProfile,
@@ -17,20 +24,38 @@ from .load_profiles import (
     SteadyLoadProfile,
     resolve_load_profile,
 )
-from .local_runner import resolve_locust_user_class, run_headless_locust
-from .runner import LocustRunner
+from .load_topology import LoadTopology
+from .utilization_logging import (
+    DistributedBenchUtilizationLogger,
+    KubernetesUtilizationLogger,
+    LoadHostUtilizationLogger,
+    UtilizationLogger,
+    UtilizationSession,
+    utilization_session_for_distributed,
+    utilization_session_for_k8s,
+)
 
 __all__ = [
     "LOAD_PROFILE_REGISTRY",
     "AdaptiveLoadProfile",
     "BaseLoadProfile",
     "ContinuousLoadProfile",
+    "DistributedBenchUtilizationLogger",
+    "DistributedLocustConfig",
+    "DistributedLocustSession",
+    "KubernetesUtilizationLogger",
+    "LoadHostUtilizationLogger",
     "LoadProfile",
+    "LoadTopology",
+    "LocustRunner",
     "SpikeLoadProfile",
     "StairsLoadProfile",
     "SteadyLoadProfile",
-    "LocustRunner",
+    "UtilizationLogger",
+    "UtilizationSession",
+    "prepare_locust_run_dir",
     "resolve_load_profile",
     "resolve_locust_user_class",
-    "run_headless_locust",
+    "utilization_session_for_distributed",
+    "utilization_session_for_k8s",
 ]

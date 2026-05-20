@@ -299,7 +299,6 @@ def main(args: Any) -> None:
             k8s_iterations=getattr(args, "k8s_iterations", 1),
             k8s_spec_gen=getattr(args, "k8s_spec_gen", True),
             k8s_wait_timeout=args.k8s_wait_timeout,
-            k8s_local_port=args.k8s_local_port,
             k8s_auto_init=args.k8s_auto_init,
             bench_users=args.bench_users,
             bench_spawn_rate=args.bench_spawn_rate,
@@ -612,12 +611,6 @@ if __name__ == "__main__":
         ),
     )
     parser.add_argument(
-        "--k8s-local-port",
-        type=int,
-        default=None,
-        help="Local port for kubectl port-forward to the backend Service (default: ephemeral).",
-    )
-    parser.add_argument(
         "--k8s-auto-init",
         action=argparse.BooleanOptionalAction,
         default=False,
@@ -630,47 +623,23 @@ if __name__ == "__main__":
         "--k8s-cluster",
         type=str,
         default=None,
-        help="Named profile from k8s_bench/cluster/profiles.py (also BAXBENCH_K8S_CLUSTER).",
-    )
-    parser.add_argument(
-        "--k8s-node-hosts",
-        type=str,
-        nargs="+",
-        default=None,
-        help="SSH hosts to check/install kubeadm node prerequisites (also BAXBENCH_K8S_NODE_HOSTS).",
-    )
-    parser.add_argument(
-        "--k8s-load-hosts",
-        type=str,
-        nargs="+",
-        default=None,
-        help="Locust-only SSH hosts: check/install python3+venv+pip (also BAXBENCH_K8S_LOAD_HOSTS).",
+        help=(
+            "Select cluster profile from k8s_bench/cluster/profiles.py "
+            "(also BAXBENCH_K8S_CLUSTER). Topology comes only from the profile."
+        ),
     )
     parser.add_argument(
         "--k8s-install-prerequisites",
         action="store_true",
         help=(
-            "On --k8s-node-hosts: install containerd, kubelet, kubeadm, kubectl. "
-            "On --k8s-load-hosts: install python3 tooling. Does NOT run kubeadm init/join."
+            "Install packages on profile hosts: kubeadm stack on control+workers, "
+            "python tooling on Locust hosts. Does NOT run kubeadm init/join."
         ),
     )
     parser.add_argument(
         "--k8s-skip-cluster-checks",
         action="store_true",
         help="Skip kubectl cluster API checks (only run SSH node checks).",
-    )
-    parser.add_argument(
-        "--k8s-control-plane",
-        type=str,
-        default=None,
-        help="SSH hostname for kubeadm init (default: first --k8s-node-hosts or K8S_CONTROL_PLANE_HOST).",
-    )
-    parser.add_argument(
-        "--k8s-worker-hosts",
-        type=str,
-        nargs="+",
-        default=None,
-        help="Worker nodes to kubeadm join (default: node hosts except control-plane).",
     )
     parser.add_argument(
         "--k8s-pod-network-cidr",
@@ -688,18 +657,6 @@ if __name__ == "__main__":
         "--k8s-skip-cni",
         action="store_true",
         help="Skip CNI install (cluster already has networking).",
-    )
-    parser.add_argument(
-        "--k8s-registry-host",
-        type=str,
-        default=None,
-        help="Registry host IP/hostname (default: control-plane primary IP).",
-    )
-    parser.add_argument(
-        "--k8s-registry-port",
-        type=int,
-        default=None,
-        help="Registry port (default: 5000).",
     )
     parser.add_argument(
         "--force",

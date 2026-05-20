@@ -1,5 +1,13 @@
 """
-Iterative K8s benchmark: phase planning, deploy+Locust, multi-phase orchestration.
+Bench policy for one BaxBench task: phases, skips, spec generation, feedback.
+
+Call stack (see also ``handler.py`` and ``iteration.py``)::
+
+    handler.run_k8s_bench          # tqdm over tasks × samples
+      → bench_k8s_for_task         # iterative vs deploy-only
+        → run_iterative_k8s_bench  # per sample: phases
+          → generate_k8s_specs_for_task   # spec/generation.py (LLM)
+          → run_locust_for_iteration      # iteration.py (kubectl + Locust)
 """
 
 from __future__ import annotations
@@ -58,7 +66,7 @@ def find_latest_perf_run_dir(
     return max(candidates, key=lambda p: p.stat().st_mtime)
 
 
-def run_deploy_bench_phase(
+def run_locust_for_iteration(
     task: Any,
     results_dir: Path,
     sample: int,
@@ -71,7 +79,6 @@ def run_deploy_bench_phase(
     bench_spawn_rate: int | None,
     bench_run_time: int | None,
     k8s_wait_timeout: int,
-    k8s_local_port: int | None,
     phase_index: int | None = None,
     logger: logging.Logger,
 ) -> bool:
@@ -134,7 +141,6 @@ def run_deploy_bench_phase(
                 bench_spawn_rate=bench_spawn_rate,
                 bench_run_time=bench_run_time,
                 wait_timeout_s=k8s_wait_timeout,
-                local_port=k8s_local_port,
                 labels=labels,
                 logger=logger,
             )
@@ -154,7 +160,6 @@ def run_iterative_k8s_bench(
     k8s_iteration: str | None = None,
     k8s_iterations: int = 1,
     k8s_wait_timeout: int = 300,
-    k8s_local_port: int | None = None,
     bench_users: int | None = None,
     bench_spawn_rate: int | None = None,
     bench_run_time: int | None = None,
@@ -169,9 +174,9 @@ def run_iterative_k8s_bench(
         num_iterations=k8s_iterations,
         explicit_iteration=k8s_iteration or os.environ.get("BAXBENCH_K8S_ITERATION") or None,
     )
-    save_dir = task.get_save_dir(results_dir)
 
     for sample in samples:
+        save_dir = task.get_save_dir(results_dir)
         if not functional_tests_gate(task, results_dir, sample):
             continue
 
@@ -248,7 +253,7 @@ def run_iterative_k8s_bench(
                     )
                     continue
 
-                run_deploy_bench_phase(
+                run_locust_for_iteration(
                     task,
                     results_dir,
                     sample,
@@ -260,7 +265,6 @@ def run_iterative_k8s_bench(
                     bench_spawn_rate=bench_spawn_rate,
                     bench_run_time=bench_run_time,
                     k8s_wait_timeout=k8s_wait_timeout,
-                    k8s_local_port=k8s_local_port,
                     phase_index=phase_index,
                     logger=logger,
                 )
@@ -294,7 +298,6 @@ def run_deploy_only_k8s_bench(
     *,
     k8s_iteration: str | None = None,
     k8s_wait_timeout: int = 300,
-    k8s_local_port: int | None = None,
     k8s_auto_init: bool = False,
     bench_users: int | None = None,
     bench_spawn_rate: int | None = None,
@@ -303,9 +306,9 @@ def run_deploy_only_k8s_bench(
     run_dirs_created: list[Path] = []
     load_profile = os.environ.get("BAXBENCH_LOAD_PROFILE", "default")
     k8s_iteration = k8s_iteration or os.environ.get("BAXBENCH_K8S_ITERATION") or None
-    save_dir = task.get_save_dir(results_dir)
 
     for sample in samples:
+        save_dir = task.get_save_dir(results_dir)
         if not functional_tests_gate(task, results_dir, sample):
             continue
 
@@ -350,7 +353,7 @@ def run_deploy_only_k8s_bench(
             log_file = run_dir / "bench.log"
 
             with task.create_logger(log_file) as logger:
-                run_deploy_bench_phase(
+                run_locust_for_iteration(
                     task,
                     results_dir,
                     sample,
@@ -362,7 +365,6 @@ def run_deploy_only_k8s_bench(
                     bench_spawn_rate=bench_spawn_rate,
                     bench_run_time=bench_run_time,
                     k8s_wait_timeout=k8s_wait_timeout,
-                    k8s_local_port=k8s_local_port,
                     logger=logger,
                 )
                 logger.info(
@@ -385,7 +387,6 @@ def bench_k8s_for_task(
     k8s_iterations: int = 1,
     k8s_spec_gen: bool = True,
     k8s_wait_timeout: int = 300,
-    k8s_local_port: int | None = None,
     k8s_auto_init: bool = False,
     bench_users: int | None = None,
     bench_spawn_rate: int | None = None,
@@ -405,7 +406,6 @@ def bench_k8s_for_task(
             k8s_iteration=k8s_iteration,
             k8s_iterations=k8s_iterations,
             k8s_wait_timeout=k8s_wait_timeout,
-            k8s_local_port=k8s_local_port,
             bench_users=bench_users,
             bench_spawn_rate=bench_spawn_rate,
             bench_run_time=bench_run_time,
@@ -422,7 +422,6 @@ def bench_k8s_for_task(
         force,
         k8s_iteration=k8s_iteration,
         k8s_wait_timeout=k8s_wait_timeout,
-        k8s_local_port=k8s_local_port,
         k8s_auto_init=k8s_auto_init,
         bench_users=bench_users,
         bench_spawn_rate=bench_spawn_rate,
