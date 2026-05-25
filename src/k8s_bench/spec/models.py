@@ -11,7 +11,6 @@ POSTGRES_PASSWORD = "postgres"
 POSTGRES_DATABASE = "testdb"
 
 
-
 @dataclass(frozen=True)
 class ResourceSpec:
     cpu_request: str = "250m"
@@ -51,15 +50,31 @@ class BackendSpec:
     resources: ResourceSpec = field(default_factory=ResourceSpec)
     # Env vars passed to the app container (DB_* added automatically when DB enabled).
     env: dict[str, str] = field(default_factory=dict)
+    # Kubernetes node hostnames (from cluster capacity) allowed for backend pods.
+    placement_workers: tuple[str, ...] = ()
+    # When true, prefer spreading replicas across nodes (pod anti-affinity).
+    spread_replicas: bool = True
 
     @classmethod
     def from_mapping(cls, data: dict[str, Any]) -> BackendSpec:
+        placement_raw = data.get("placement") or {}
+        workers: list[str] = []
+        spread = True
+        if isinstance(placement_raw, dict):
+            raw_workers = placement_raw.get("workers") or placement_raw.get(
+                "worker_nodes"
+            ) or []
+            if isinstance(raw_workers, (list, tuple)):
+                workers = [str(w) for w in raw_workers if str(w).strip()]
+            spread = bool(placement_raw.get("spread_replicas", True))
         return cls(
             image=str(data["image"]),
             replicas=int(data.get("replicas", 1)),
             port=int(data.get("port", 8080)),
             resources=ResourceSpec.from_mapping(data.get("resources")),
             env={str(k): str(v) for k, v in (data.get("env") or {}).items()},
+            placement_workers=tuple(workers),
+            spread_replicas=spread,
         )
 
 
@@ -69,6 +84,13 @@ class DatabaseSpec:
     image: str = "postgres:17-alpine"
     service_name: str = "postgres"
     port: int = 5432
+    # replicas=1: standalone Deployment. replicas>1: primary + (N-1) read replicas.
+    replicas: int = 1
+    max_connections: int = 100
+    # Exact pin (one node). Takes precedence over placement_workers when set.
+    placement_worker: str | None = None
+    # Allow-list: scheduler picks one node from this set (single postgres pod).
+    placement_workers: tuple[str, ...] = ()
     resources: ResourceSpec = field(
         default_factory=lambda: ResourceSpec(
             cpu_request="500m",
@@ -82,13 +104,38 @@ class DatabaseSpec:
     def from_mapping(cls, data: dict[str, Any] | None) -> DatabaseSpec:
         if not data:
             return cls()
+        placement_raw = data.get("placement") or {}
+        pin_worker: str | None = None
+        workers: list[str] = []
+        if isinstance(placement_raw, dict):
+            w = placement_raw.get("worker") or placement_raw.get("worker_node")
+            if w is not None and str(w).strip():
+                pin_worker = str(w).strip()
+            raw_workers = placement_raw.get("workers") or placement_raw.get(
+                "worker_nodes"
+            ) or []
+            if isinstance(raw_workers, (list, tuple)):
+                workers = [str(x).strip() for x in raw_workers if str(x).strip()]
+        max_conn = int(data.get("max_connections", cls.max_connections))
         return cls(
             enabled=bool(data.get("enabled", True)),
             image=str(data.get("image", cls.image)),
             service_name=str(data.get("service_name", cls.service_name)),
             port=int(data.get("port", cls.port)),
+            replicas=max(1, int(data.get("replicas", cls.replicas))),
+            max_connections=max(1, max_conn),
+            placement_worker=pin_worker,
+            placement_workers=tuple(workers),
             resources=ResourceSpec.from_mapping(data.get("resources")),
         )
+
+
+def _database_placement_yaml(db: DatabaseSpec) -> dict[str, Any]:
+    if db.placement_worker:
+        return {"worker": db.placement_worker}
+    if db.placement_workers:
+        return {"workers": list(db.placement_workers)}
+    return {}
 
 
 @dataclass(frozen=True)
@@ -145,12 +192,19 @@ class K8sWorkloadSpec:
                 "port": self.backend.port,
                 "resources": asdict(self.backend.resources),
                 "env": dict(self.backend.env),
+                "placement": {
+                    "workers": list(self.backend.placement_workers),
+                    "spread_replicas": self.backend.spread_replicas,
+                },
             },
             "database": {
                 "enabled": self.database.enabled,
                 "image": self.database.image,
                 "service_name": self.database.service_name,
                 "port": self.database.port,
+                "replicas": self.database.replicas,
+                "max_connections": self.database.max_connections,
+                "placement": _database_placement_yaml(self.database),
                 "resources": asdict(self.database.resources),
             },
         }

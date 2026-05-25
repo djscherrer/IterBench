@@ -20,3 +20,12 @@ database:
   image: postgres:17-alpine
   service_name: postgres
   port: 5432
+  replicas: 1
+  max_connections: 100
+  placement:
+    worker: node5   # optional pin; or workers: [node3, node4] for allow-list
+  resources:
+    cpu_request: "500m"
+    cpu_limit: "2"
+    memory_request: "512Mi"
+    memory_limit: "2Gi"

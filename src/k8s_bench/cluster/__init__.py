@@ -1,4 +1,11 @@
 from .capacity import ClusterCapacity, collect_cluster_capacity
+from .cleanup import (
+    cleanup_baxbench_namespaces,
+    cleanup_baxbench_namespaces_after_bench,
+    cleanup_baxbench_namespaces_before_deploy,
+    list_baxbench_namespaces,
+    resolve_k8s_cleanup_mode,
+)
 from .deploy import (
     DeployResult,
     delete_iteration_namespace,
@@ -19,8 +26,13 @@ __all__ = [
     "ClusterCapacity",
     "DeployResult",
     "K8sClusterProfile",
+    "cleanup_baxbench_namespaces",
+    "cleanup_baxbench_namespaces_after_bench",
+    "cleanup_baxbench_namespaces_before_deploy",
     "collect_cluster_capacity",
     "delete_iteration_namespace",
+    "list_baxbench_namespaces",
+    "resolve_k8s_cleanup_mode",
     "deploy_iteration",
     "ensure_k8s_cluster_ready",
     "render_and_deploy",

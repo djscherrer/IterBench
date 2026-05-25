@@ -138,6 +138,70 @@ This keeps:
 3. **Deploy** + **Locust** benchmark
 4. **Feedback** written to `perf-k8s-…/iteration_feedback.json` for the next phase
 
+**Experiment slug** (optional): set `K8S_EXPERIMENT` / `--k8s-experiment` /
+`BAXBENCH_K8S_EXPERIMENT` to group configs and perf runs under
+`sampleN/k8s-experiments/<slug>/` (iterations still `iteration-001`, …).
+Omit the slug for the legacy layout directly under `sampleN/`. A new slug starts
+a fresh chain without skipping phases from an older experiment.
+
+**Namespace cleanup** (always on): before each deploy and after each bench run,
+all `baxbench-*` Kubernetes namespaces are deleted automatically (frees cluster
+CPU; results on disk are kept). Set `BAXBENCH_K8S_CLEANUP=false` only to disable.
+
+**Spec validation**: LLM specs are checked against **per-worker** capacity (each
+pod must fit on one node using **requests**), connection pool budget
+(`replicas × pool_max ≤ database.max_connections`), and cluster request totals.
+Failed specs are re-prompted to the LLM (up to 3 attempts) with error details
+before deploy.
+
+Optional spec fields: `database.replicas` (1 = standalone; N>1 = primary + read
+replicas), `database.max_connections`, `database.placement.worker` (exact pin) or
+`database.placement.workers` (allow-list), `backend.placement.workers`,
+`backend.placement.spread_replicas` (rendered as node affinity / pod anti-affinity).
+
+The LLM prompt describes **field semantics and hard constraints** only — no
+recommended numeric ranges — so the agent must learn tuning from benchmark feedback.
+
+### Spec reference (agent-controlled)
+
+**Backend** — horizontally scalable; many pods behind one Service.
+
+| Field | Purpose |
+|-------|---------|
+| `replicas` | Pod count; primary throughput knob for stateless apps |
+| `resources.*` | Per-pod CPU/memory requests & limits |
+| `placement.workers` | Optional node allow-list (omit = any worker) |
+| `placement.spread_replicas` | Prefer spreading pods across nodes (default true) |
+
+**Database** — Postgres primary/replica topology.
+
+| Field | Purpose |
+|-------|---------|
+| `replicas` | `1` = single pod; `N>1` = 1 primary + (N−1) read replicas |
+| `max_connections` | Primary connection limit; must cover `backend.replicas × pool_size` |
+| `resources.*` | Per DB pod (primary + each replica); requests must fit one worker each |
+| `placement.worker` | Pin all DB pods to one node (if combined requests fit) |
+| `placement.workers` | Allow-list of nodes for DB pods |
+
+### Postgres on Kubernetes (how replication works here)
+
+Production Postgres on K8s is almost always **primary + read replicas**, not
+multi-master active-active:
+
+- **Primary** accepts reads and writes; the generated BaxBench app connects here
+  via the `postgres` Service.
+- **Read replicas** stream WAL from the primary (async replication by default).
+  Exposed via `postgres-read` Service; unused unless the app is taught read/write
+  split.
+- **Synchronization**: replicas catch up by replaying the primary's WAL log.
+  Lag is normal under load; synchronous replication is rare outside strict HA setups.
+- **Operators** (CloudNativePG, Zalando, Crunchy) manage this in production; BaxBench
+  uses Bitnami Postgres with master/slave env vars when `database.replicas > 1`.
+- **`replicas: 1`** still uses the simple official Postgres image (Deployment).
+
+Future extensions: persistent volumes (StatefulSet primary), PgBouncer pooler,
+synchronous replication for HA failover.
+
 After **generate** + **test**:
 
 ```bash
@@ -152,6 +216,7 @@ After **generate** + **test**:
 | `--k8s-iterations N` | 1 | Phases `iteration-001` … `iteration-NNN` |
 | `--k8s-spec-gen` / `--no-k8s-spec-gen` | on | LLM specs vs deploy-only |
 | `--k8s-iteration iteration-001` | — | Pin a single phase (ignores N) |
+| `--k8s-experiment adaptive-may20` | — | Workspace under `k8s-experiments/<slug>/` |
 | `--force` | — | Regenerate specs and re-bench |
 
 Phase 1 prompt: scenario, framework, `high_performance`, app code excerpt, cluster capacity.
@@ -162,5 +227,12 @@ utilization aggregated over the run (min/avg/max from ``stats/kubernetes/*.csv``
 previous ``spec.yaml``. The full LLM prompt is logged in
 ``k8s_configs/<iteration>/spec_gen_prompt.log``; feedback-only text is in
 ``perf-.../iteration_feedback.txt``.
+
+**Experiment trajectory file**: each workspace maintains ``experiment_summary.md``
+(append-only). After every spec generation it records deployment, diff vs the
+previous iteration, and LLM rationale (text before ``<SPEC>`` in ``spec_gen.log``).
+After every Locust run it records time range, an adaptive ramp table (from
+``bench.log``), aggregate req/fail stats, and top errors. Disable with
+``BAXBENCH_K8S_EXPERIMENT_SUMMARY=false``.
 
 Standalone spec-only (no deploy): `--mode k8s-spec-gen` or `./scripts/generate_k8s_spec.sh`.

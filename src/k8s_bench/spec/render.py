@@ -5,12 +5,9 @@ from typing import Any
 
 import yaml
 
-from .models import (
-    K8sWorkloadSpec,
-    POSTGRES_DATABASE,
-    POSTGRES_PASSWORD,
-    POSTGRES_USER,
-)
+from .models import K8sWorkloadSpec
+from .placement import _pod_spec_affinity
+from .postgres_render import build_postgres_manifests
 from ..paths import iteration_manifests_dir, iteration_spec_path
 
 
@@ -35,66 +32,7 @@ def _namespace_manifest(spec: K8sWorkloadSpec) -> dict[str, Any]:
 
 
 def _postgres_manifests(spec: K8sWorkloadSpec) -> list[dict[str, Any]]:
-    name = spec.database.service_name
-    labels = {**_common_labels(spec), "baxbench.dev/role": "db"}
-    selector = {"app": name}
-    return [
-        {
-            "apiVersion": "apps/v1",
-            "kind": "Deployment",
-            "metadata": {
-                "name": name,
-                "namespace": spec.namespace,
-                "labels": labels,
-            },
-            "spec": {
-                "replicas": 1,
-                "selector": {"matchLabels": selector},
-                "template": {
-                    "metadata": {"labels": {**selector, **labels}},
-                    "spec": {
-                        "containers": [
-                            {
-                                "name": "postgres",
-                                "image": spec.database.image,
-                                "ports": [{"containerPort": spec.database.port}],
-                                "env": [
-                                    {"name": "POSTGRES_USER", "value": POSTGRES_USER},
-                                    {"name": "POSTGRES_PASSWORD", "value": POSTGRES_PASSWORD},
-                                    {"name": "POSTGRES_DB", "value": POSTGRES_DATABASE},
-                                ],
-                                "resources": spec.database.resources.to_k8s_resources(),
-                                "readinessProbe": {
-                                    "exec": {
-                                        "command": [
-                                            "sh",
-                                            "-c",
-                                            f"pg_isready -U {POSTGRES_USER} -d {POSTGRES_DATABASE}",
-                                        ]
-                                    },
-                                    "initialDelaySeconds": 5,
-                                    "periodSeconds": 5,
-                                },
-                            }
-                        ]
-                    },
-                },
-            },
-        },
-        {
-            "apiVersion": "v1",
-            "kind": "Service",
-            "metadata": {
-                "name": name,
-                "namespace": spec.namespace,
-                "labels": labels,
-            },
-            "spec": {
-                "selector": selector,
-                "ports": [{"port": spec.database.port, "targetPort": spec.database.port}],
-            },
-        },
-    ]
+    return build_postgres_manifests(spec, common_labels=_common_labels(spec))
 
 
 def _backend_manifests(spec: K8sWorkloadSpec) -> list[dict[str, Any]]:
@@ -103,6 +41,13 @@ def _backend_manifests(spec: K8sWorkloadSpec) -> list[dict[str, Any]]:
     selector = {"app": name}
     env_list = [{"name": k, "value": v} for k, v in spec.backend_env().items()]
     port = spec.backend.port
+    be_nodes = spec.backend.placement_workers
+    pod_spec = _pod_spec_affinity(
+        spec,
+        role="backend",
+        node_names=be_nodes,
+        spread=spec.backend.spread_replicas,
+    )
     return [
         {
             "apiVersion": "apps/v1",
@@ -118,6 +63,7 @@ def _backend_manifests(spec: K8sWorkloadSpec) -> list[dict[str, Any]]:
                 "template": {
                     "metadata": {"labels": {**selector, **labels}},
                     "spec": {
+                        **pod_spec,
                         "containers": [
                             {
                                 "name": "app",

@@ -55,6 +55,7 @@ def apply_manifests(
     namespace: str,
     wait_timeout_s: int = 300,
     wait_deployments: tuple[str, ...] = ("deployment/postgres", "deployment/backend"),
+    wait_statefulsets: tuple[str, ...] = (),
     logger: logging.Logger | None = None,
 ) -> DeployResult:
     log = logger or logging.getLogger(__name__)
@@ -86,7 +87,6 @@ def apply_manifests(
             )
             wait_details[resource] = (wait_proc.stdout or wait_proc.stderr or "").strip()
             if wait_proc.returncode != 0:
-                # postgres may be absent when DB disabled
                 if resource == "deployment/postgres" and "NotFound" in wait_details[resource]:
                     wait_details[resource] = "skipped (not found)"
                     continue
@@ -123,6 +123,26 @@ def apply_manifests(
                         tail = "\n".join((ev.stdout or "").splitlines()[-25:])
                         log.warning("backend pod events (tail):\n%s", tail)
 
+        for resource in wait_statefulsets:
+            wait_proc = _kubectl(
+                [
+                    "wait",
+                    "--for=condition=ready",
+                    resource,
+                    "-n",
+                    namespace,
+                    f"--timeout={wait_timeout_s}s",
+                ],
+                timeout_s=wait_timeout_s + 30,
+            )
+            wait_details[resource] = (wait_proc.stdout or wait_proc.stderr or "").strip()
+            if wait_proc.returncode != 0:
+                if "NotFound" in wait_details[resource]:
+                    wait_details[resource] = "skipped (not found)"
+                    continue
+                success = False
+                log.warning("wait failed for %s: %s", resource, wait_details[resource])
+
     backend_host = f"backend.{namespace}.svc.cluster.local"
     return DeployResult(
         success=success,
@@ -156,6 +176,10 @@ def deploy_iteration(
     logger: logging.Logger | None = None,
 ) -> DeployResult:
     from ..spec.models import K8sWorkloadSpec
+    from .cleanup import cleanup_baxbench_namespaces_before_deploy
+
+    log = logger or logging.getLogger(__name__)
+    cleanup_baxbench_namespaces_before_deploy(logger=log)
 
     spec = K8sWorkloadSpec.from_yaml_file(iteration_path / "spec.yaml")
     manifest_file = iteration_manifests_dir(iteration_path) / "all.yaml"
@@ -164,14 +188,20 @@ def deploy_iteration(
             f"Missing {manifest_file}; run render first (k8s_bench render <iteration_path>)."
         )
     waits: list[str] = ["deployment/backend"]
+    statefulset_waits: list[str] = []
     if spec.database.enabled:
         waits.insert(0, "deployment/postgres")
+        if spec.database.replicas > 1:
+            statefulset_waits.append(
+                f"statefulset/{spec.database.service_name}-replica"
+            )
     result = apply_manifests(
         manifest_file,
         namespace=spec.namespace,
         wait_timeout_s=wait_timeout_s,
         wait_deployments=tuple(waits),
-        logger=logger,
+        wait_statefulsets=tuple(statefulset_waits),
+        logger=log,
     )
     write_deploy_record(iteration_path, result)
     return result

@@ -20,6 +20,7 @@
 #
 # Isolate a fresh iteration chain (configs + perf under sampleN/k8s-experiments/<slug>/):
 #   K8S_EXPERIMENT="adaptive-may20" K8S_ITERATIONS="5" ./scripts/bench_k8s.sh
+# Trajectory log: sampleN/k8s-experiments/<slug>/experiment_summary.md (updated each phase)
 
 set -euo pipefail
 
@@ -49,10 +50,10 @@ BENCH_RUN_TIME=""
 BAXBENCH_K8S_CLUSTER="baxbench-emulab"
 KUBECONFIG_PATH=""              # empty = path from cluster profile
 K8S_ITERATION=""                # pin one iteration; empty = use K8S_ITERATIONS
-K8S_EXPERIMENT="expA"               # e.g. adaptive-may20 → sampleN/k8s-experiments/<slug>/
+K8S_EXPERIMENT="expE"               # e.g. adaptive-may20 → sampleN/k8s-experiments/<slug>/
 K8S_ITERATIONS="10"              # phases: iteration-001 .. iteration-NNN
 K8S_SPEC_GEN="true"             # false = deploy-only with existing spec.yaml files
-K8S_WAIT_TIMEOUT="300"
+K8S_WAIT_TIMEOUT="120"
 # Locust runs on profile load_master/workers; backend exposed via NodePort
 K8S_AUTO_INIT="false"           # only used with K8S_SPEC_GEN=false
 K8S_REQUIRE_CLUSTER="true"

@@ -288,11 +288,37 @@ def run_iterative_k8s_bench(
                     )
                     write_feedback_artifact(run_dir, fb)
                     prior_feedback = fb
+                    try:
+                        from .experiment_summary import append_perf_run_block
+
+                        summary_path = append_perf_run_block(
+                            sample_dir=sample_dir,
+                            iteration_id=iteration_id,
+                            perf_run_dir=run_dir,
+                            feedback=fb,
+                            load_profile=load_profile,
+                        )
+                        logger.info("Updated experiment summary: %s", summary_path)
+                    except Exception as sum_exc:
+                        logger.warning(
+                            "Could not update experiment summary: %s", sum_exc
+                        )
                 except Exception as exc:
                     logger.warning("Could not write iteration feedback: %s", exc)
 
             logging.getLogger(task.id).info(
                 "finished k8s bench sample=%s iteration=%s", sample, iteration_id
+            )
+
+        try:
+            from .cluster.cleanup import cleanup_baxbench_namespaces_after_bench
+
+            cleanup_baxbench_namespaces_after_bench(
+                logger=logging.getLogger(task.id)
+            )
+        except Exception as exc:
+            logging.getLogger(task.id).warning(
+                "Post-bench namespace cleanup failed: %s", exc
             )
 
     return run_dirs_created
@@ -376,11 +402,35 @@ def run_deploy_only_k8s_bench(
                     k8s_wait_timeout=k8s_wait_timeout,
                     logger=logger,
                 )
+                try:
+                    from .experiment_summary import append_perf_run_block
+
+                    append_perf_run_block(
+                        sample_dir=sample_dir,
+                        iteration_id=iteration_id,
+                        perf_run_dir=run_dir,
+                        load_profile=load_profile,
+                    )
+                except Exception as sum_exc:
+                    logger.warning(
+                        "Could not update experiment summary: %s", sum_exc
+                    )
                 logger.info(
                     "finished k8s bench sample=%d iteration=%s",
                     sample,
                     iteration_id,
                 )
+
+        try:
+            from .cluster.cleanup import cleanup_baxbench_namespaces_after_bench
+
+            cleanup_baxbench_namespaces_after_bench(
+                logger=logging.getLogger(task.id)
+            )
+        except Exception as exc:
+            logging.getLogger(task.id).warning(
+                "Post-bench namespace cleanup failed: %s", exc
+            )
 
     return run_dirs_created
 

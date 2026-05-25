@@ -22,12 +22,16 @@ from scenarios.base import Scenario
 from ..feedback import IterationFeedback
 from ..cluster.capacity import (
     ClusterCapacity,
-    _parse_cpu_to_millicores,
-    _parse_memory_to_bytes,
     capacity_as_json,
     collect_cluster_capacity,
 )
 from .models import BackendSpec, DatabaseSpec, K8sWorkloadSpec, ResourceSpec
+from .scheduling import (
+    SpecValidationError,
+    infer_pool_max_from_hints,
+    normalize_spec_placement,
+    validate_spec_against_cluster,
+)
 from ..paths import (
     default_k8s_namespace,
     iteration_spec_path,
@@ -94,8 +98,10 @@ def build_k8s_spec_prompt(
     app_hints: str,
     iteration_id: str,
     prior_feedback: IterationFeedback | str | None = None,
+    validation_feedback: str | None = None,
 ) -> str:
     perf = _safety_performance_text(env, scenario, safety_prompt)
+    pool_max = infer_pool_max_from_hints(app_hints)
     if prior_feedback is not None:
         fb_text = (
             prior_feedback.to_prompt_text()
@@ -117,30 +123,76 @@ Propose deployment parameters for iteration `{iteration_id}` so the application 
 
 {perf}
 """
+    validation_block = ""
+    if validation_feedback:
+        validation_block = f"""
+{validation_feedback.strip()}
+
+"""
+    worker_lines = []
+    for w in capacity.worker_nodes:
+        worker_lines.append(
+            f"- `{w.name}`: allocatable **{w.allocatable_cpu_millicores}m CPU** / "
+            f"**{round(w.allocatable_memory_bytes / (2**30), 2)} Gi** memory "
+            f"(schedulable; leave ~10% headroom per node)"
+        )
+    workers_text = "\n".join(worker_lines) if worker_lines else "(no worker nodes reported)"
+
     return f"""You are a Kubernetes deployment tuning expert for BaxBench performance experiments.
 
-{goal}
-
-## Application
+{goal}{validation_block}## Application
 - Scenario: {scenario.id}
 - Environment: {env.id} (listen port {env.port})
 - Database required: {scenario.needs_db}
+- App DB connection pool (per replica): **{pool_max}** connections (from generated code)
 
 {app_hints}
 
-## Cluster capacity (schedulable workers only)
+## Cluster capacity
+Schedulable **workers only** (control-plane excluded). Use **requests** for scheduling fit.
+
+**Cluster budget (sum across workers, after {capacity.suggested_reserve_fraction:.0%} reserve):**
+- CPU: {capacity.budget_cpu_millicores}m (~{capacity.budget_cpu_millicores / 1000:.1f} cores)
+- Memory: ~{round(capacity.budget_memory_bytes / (2**30), 2)} Gi
+
+**Per-worker capacity (each pod must fit on ONE of these nodes):**
+{workers_text}
+
 ```json
 {capacity_as_json(capacity)}
 ```
 
+## Scheduling rules (critical — hard limits enforced before deploy)
+1. **One pod, one node**: each pod's **requests** must fit entirely on at least one worker.
+2. **Connection budget**: `backend.replicas × {pool_max} ≤ database.max_connections` on the **primary** (app pools connect to primary only).
+3. **Cluster budget**: sum of all pod requests (backends + all database pods) must fit cluster capacity after reserve.
+4. Optional **placement**: restrict or pin which workers may run postgres/backends; `spread_replicas: true` spreads backend pods across nodes.
+5. Use worker **`name` values** from the per-worker list (short names like `node3` are accepted).
+
+## Spec fields (semantics — you choose values)
+Use **benchmark feedback** from prior iterations to refine replicas and resources. The framework validates feasibility; it does not prescribe tuning targets.
+
+**`backend`** (horizontally scalable — many stateless pods):
+- `replicas`: pod count behind the Service
+- `resources`: per-pod CPU/memory requests & limits (scheduling uses **requests**)
+- `placement.workers`: optional node allow-list (omit = any worker)
+- `placement.spread_replicas`: prefer spreading pods across nodes (default true)
+
+**`database`** (Postgres):
+- `replicas`: `1` = single standalone pod; `N>1` = **1 primary + (N−1) streaming read replicas** (async WAL replication; standard K8s pattern). The generated app connects to the **primary** only (`postgres` Service). A `postgres-read` Service exposes replicas for future read-offloading but is unused by default.
+- `max_connections`: primary connection limit (`max_connections` on primary only)
+- `resources`: per **database pod** (primary and each replica use the same spec)
+- `placement.worker`: pin all DB pods to one node (only if combined requests fit that node)
+- `placement.workers`: allow-list of nodes for DB pods
+
+When `database.replicas > 1`, the framework renders a replication-aware Postgres image (Bitnami) with primary Deployment + replica StatefulSet. This mirrors production (primary/replica), not multi-master active-active.
+
 ## Rules
 1. Output **only** a YAML fragment for `backend` and `database` (no manifests, no namespace).
-2. Set `backend.replicas` (integer >= 1). Prefer spreading load across workers; do not exceed worker_count * 2.
+2. Set `backend.replicas` (integer >= 1).
 3. Set `backend.resources` and `database.resources` with valid Kubernetes quantities (`500m`, `1`, `512Mi`, `2Gi`).
-4. Keep sum(replicas * cpu_limit) <= budget_cpu_after_reserve and sum(memory limits) <= budget_memory_gi_after_reserve (roughly).
-5. Postgres stays a single instance; tune `database.resources` only (enabled stays true).
-6. Do **not** set `image`, `port`, `namespace`, or env vars — the framework fills those at bench time.
-7. Size Postgres for concurrent connections from all backend pods (connection pools).
+4. Keep **sum of requests** (backend replicas × backend requests + database replicas × database requests) within cluster budget.
+5. Do **not** set `image`, `port`, `namespace`, or env vars — the framework fills those at bench time.
 
 ## Benchmark load
 {_BENCHMARK_LOAD_HINT}
@@ -156,13 +208,21 @@ backend:
     cpu_limit: <quantity>
     memory_request: <quantity>
     memory_limit: <quantity>
+  placement:
+    workers: [<worker-name>, ...]   # optional; omit to allow all workers
+    spread_replicas: true            # optional; default true
 database:
   enabled: true
+  replicas: <int>                    # 1 = standalone; N>1 = 1 primary + (N-1) read replicas
+  max_connections: <int>             # primary only; must fit backend.replicas × {pool_max}
   resources:
     cpu_request: <quantity>
     cpu_limit: <quantity>
     memory_request: <quantity>
     memory_limit: <quantity>
+  placement:
+    worker: <worker-name>            # optional; exact pin (preferred for isolation)
+    # workers: [<name>, ...]         # optional alternative; allow-list (pick one node)
 </SPEC>
 """
 
@@ -182,40 +242,16 @@ def parse_spec_fragment(response: str) -> dict[str, Any]:
     return data
 
 
-def _resource_millicores(res: ResourceSpec) -> int:
-    return _parse_cpu_to_millicores(res.cpu_limit)
-
-
-def _resource_memory_bytes(res: ResourceSpec) -> int:
-    return _parse_memory_to_bytes(res.memory_limit)
-
-
-def validate_spec_against_cluster(
-    spec: K8sWorkloadSpec,
-    capacity: ClusterCapacity,
-) -> list[str]:
-    warnings: list[str] = []
-    if spec.backend.replicas < 1:
-        warnings.append("backend.replicas must be >= 1")
-    if spec.backend.replicas > max(1, capacity.worker_count * 2):
-        warnings.append(
-            f"backend.replicas={spec.backend.replicas} is high for {capacity.worker_count} workers"
-        )
-
-    backend_cpu = spec.backend.replicas * _resource_millicores(spec.backend.resources)
-    db_cpu = _resource_millicores(spec.database.resources)
-    if backend_cpu + db_cpu > capacity.budget_cpu_millicores:
-        warnings.append(
-            f"CPU limits (~{backend_cpu + db_cpu}m) exceed budget {capacity.budget_cpu_millicores}m"
-        )
-
-    backend_mem = spec.backend.replicas * _resource_memory_bytes(spec.backend.resources)
-    db_mem = _resource_memory_bytes(spec.database.resources)
-    if backend_mem + db_mem > capacity.budget_memory_bytes:
-        warnings.append(
-            "Memory limits exceed cluster budget after reserve"
-        )
-    return warnings
+def _parse_backend_placement(backend_raw: dict[str, Any]) -> tuple[tuple[str, ...], bool]:
+    placement_raw = backend_raw.get("placement") or {}
+    workers: list[str] = []
+    spread = True
+    if isinstance(placement_raw, dict):
+        raw_workers = placement_raw.get("workers") or placement_raw.get("worker_nodes") or []
+        if isinstance(raw_workers, (list, tuple)):
+            workers = [str(w).strip() for w in raw_workers if str(w).strip()]
+        spread = bool(placement_raw.get("spread_replicas", True))
+    return tuple(workers), spread
 
 
 def merge_fragment_into_spec(
@@ -235,12 +271,15 @@ def merge_fragment_into_spec(
     if not isinstance(db_raw, dict):
         db_raw = {}
 
+    placement_workers, spread_replicas = _parse_backend_placement(backend_raw)
     backend = BackendSpec(
         image=str(backend_raw.get("image") or _IMAGE_PLACEHOLDER),
         replicas=max(1, int(backend_raw.get("replicas", 1))),
         port=int(backend_raw.get("port") or app_port),
         resources=ResourceSpec.from_mapping(backend_raw.get("resources")),
         env={},
+        placement_workers=placement_workers,
+        spread_replicas=spread_replicas,
     )
     database = DatabaseSpec.from_mapping(
         {
@@ -274,47 +313,83 @@ def generate_k8s_workload_spec(
     logger: logging.Logger,
     vllm_port: int = 8000,
     prior_feedback: IterationFeedback | str | None = None,
+    validation_feedback: str | None = None,
+    max_validation_retries: int = 3,
 ) -> tuple[K8sWorkloadSpec, str, list[str]]:
     """Call the configured LLM and return (spec, raw_response, validation_warnings)."""
-    prompt = build_k8s_spec_prompt(
-        env=env,
-        scenario=scenario,
-        safety_prompt=safety_prompt,
-        capacity=capacity,
-        app_hints=app_hints,
-        iteration_id=iteration_id,
-        prior_feedback=prior_feedback,
+    last_raw = ""
+    validation_hint = validation_feedback
+    for attempt in range(1, max_validation_retries + 1):
+        prompt = build_k8s_spec_prompt(
+            env=env,
+            scenario=scenario,
+            safety_prompt=safety_prompt,
+            capacity=capacity,
+            app_hints=app_hints,
+            iteration_id=iteration_id,
+            prior_feedback=prior_feedback,
+            validation_feedback=validation_hint,
+        )
+        logger.info("k8s spec generation prompt:\n%s", prompt)
+        prompter = Prompter(
+            env=env,
+            scenario=scenario,
+            model=model,
+            spec_type="openapi",
+            safety_prompt=safety_prompt,
+            batch_size=1,
+            offset=0,
+            temperature=temperature,
+            reasoning_effort=reasoning_effort,
+            vllm_port=vllm_port,
+            provider=provider,
+            use_stubs=False,
+        )
+        prompter.prompt = prompt
+        responses = prompter.prompt_model(logger)
+        if not responses:
+            raise RuntimeError("LLM returned no completion for k8s spec generation")
+        last_raw = responses[0]
+        fragment = parse_spec_fragment(last_raw)
+        spec = merge_fragment_into_spec(
+            fragment,
+            iteration_id=iteration_id,
+            app_port=env.port,
+            needs_db=scenario.needs_db,
+            labels={},
+        )
+        spec, placement_errors = normalize_spec_placement(spec, capacity)
+        if placement_errors:
+            validation_hint = SpecValidationError(placement_errors).to_prompt_text()
+            logger.warning(
+                "spec validation attempt %d/%d failed (placement): %s",
+                attempt,
+                max_validation_retries,
+                placement_errors,
+            )
+            continue
+
+        result = validate_spec_against_cluster(
+            spec, capacity, app_hints=app_hints
+        )
+        if result.errors:
+            validation_hint = SpecValidationError(result.errors).to_prompt_text()
+            logger.warning(
+                "spec validation attempt %d/%d failed: %s",
+                attempt,
+                max_validation_retries,
+                result.errors,
+            )
+            continue
+
+        if attempt > 1:
+            logger.info("spec validation passed on attempt %d", attempt)
+        return spec, last_raw, result.warnings
+
+    raise SpecValidationError(
+        [f"Spec still invalid after {max_validation_retries} generation attempt(s)."]
+        + [ln for ln in (validation_hint or "").splitlines() if ln.strip()][-8:]
     )
-    logger.info("k8s spec generation prompt:\n%s", prompt)
-    prompter = Prompter(
-        env=env,
-        scenario=scenario,
-        model=model,
-        spec_type="openapi",
-        safety_prompt=safety_prompt,
-        batch_size=1,
-        offset=0,
-        temperature=temperature,
-        reasoning_effort=reasoning_effort,
-        vllm_port=vllm_port,
-        provider=provider,
-        use_stubs=False,
-    )
-    prompter.prompt = prompt
-    responses = prompter.prompt_model(logger)
-    if not responses:
-        raise RuntimeError("LLM returned no completion for k8s spec generation")
-    raw = responses[0]
-    fragment = parse_spec_fragment(raw)
-    spec = merge_fragment_into_spec(
-        fragment,
-        iteration_id=iteration_id,
-        app_port=env.port,
-        needs_db=scenario.needs_db,
-        labels={},
-    )
-    warnings = validate_spec_against_cluster(spec, capacity)
-    return spec, raw, warnings
 
 
 def write_spec_generation_artifacts(
@@ -430,6 +505,8 @@ def generate_k8s_specs_for_task(
                             port=task.env.port,
                             resources=spec.backend.resources,
                             env=spec.backend.env,
+                            placement_workers=spec.backend.placement_workers,
+                            spread_replicas=spec.backend.spread_replicas,
                         ),
                         database=spec.database,
                         labels={**spec.labels, **labels},
@@ -442,7 +519,30 @@ def generate_k8s_specs_for_task(
                         warnings=warnings,
                         logger=logger,
                     )
+                    try:
+                        from ..experiment_summary import append_spec_generation_block
+
+                        summary_path = append_spec_generation_block(
+                            sample_dir=sample_dir,
+                            iteration_id=iid,
+                            iteration_path=iteration_path,
+                            spec=spec,
+                            raw_response=raw,
+                            warnings=warnings,
+                            had_prior_feedback=prior_feedback is not None,
+                            phase_index=phase_index,
+                        )
+                        logger.info("Updated experiment summary: %s", summary_path)
+                    except Exception as exc:
+                        logger.warning("Could not update experiment summary: %s", exc)
                     written.append(out)
+                    break
+                except SpecValidationError as e:
+                    logger.error(
+                        "k8s spec validation failed for sample %d after LLM retries: %s",
+                        sample,
+                        e,
+                    )
                     break
                 except Exception as e:
                     retries += 1
