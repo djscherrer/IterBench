@@ -28,7 +28,12 @@ from ..cluster.capacity import (
     collect_cluster_capacity,
 )
 from .models import BackendSpec, DatabaseSpec, K8sWorkloadSpec, ResourceSpec
-from ..paths import iteration_spec_path, new_iteration_id, normalize_iteration_id
+from ..paths import (
+    default_k8s_namespace,
+    iteration_spec_path,
+    new_iteration_id,
+    normalize_iteration_id,
+)
 from .render import render_iteration
 
 _IMAGE_PLACEHOLDER = "baxbench/pending-at-bench:latest"
@@ -247,7 +252,7 @@ def merge_fragment_into_spec(
     )
     return K8sWorkloadSpec(
         iteration_id=iid,
-        namespace=f"baxbench-{iid}",
+        namespace=default_k8s_namespace(iid),
         backend=backend,
         database=database,
         labels=dict(labels),

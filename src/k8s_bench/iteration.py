@@ -25,12 +25,14 @@ from .cluster.load_target import resolve_nodeport_target
 from .cluster.profiles import selected_cluster_profile
 from .spec.models import BackendSpec, DatabaseSpec, K8sWorkloadSpec
 from .paths import (
+    default_k8s_namespace,
     iteration_spec_path,
     k8s_configs_root,
     list_iteration_dirs,
     new_iteration_id,
     normalize_iteration_id,
     perf_run_dir_for_iteration,
+    resolve_k8s_experiment_id,
 )
 from .spec.render import render_iteration
 
@@ -98,7 +100,7 @@ def ensure_iteration_spec(
     else:
         updated = K8sWorkloadSpec(
             iteration_id=iid,
-            namespace=f"baxbench-{iid}",
+            namespace=default_k8s_namespace(iid),
             backend=BackendSpec(image=image_reference, port=app_port),
             database=DatabaseSpec(enabled=needs_db),
             labels=labels or {},
@@ -118,9 +120,11 @@ def write_k8s_run_config(
     locust_target: str,
     load_topology: LoadTopology,
 ) -> None:
+    experiment_id = resolve_k8s_experiment_id()
     snapshot: dict[str, Any] = {
         "deploy_target": "kubernetes",
         "requested_profiles": {"load_profile": load_profile},
+        "k8s_experiment": experiment_id,
         "k8s_iteration": {
             "id": spec.iteration_id,
             "path": str(iteration_path),

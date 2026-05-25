@@ -6,7 +6,12 @@ import sys
 from pathlib import Path
 
 from .cluster.deploy import delete_iteration_namespace, deploy_iteration, render_and_deploy
-from .paths import iteration_dir, new_iteration_id, normalize_iteration_id
+from .paths import (
+    default_k8s_namespace,
+    iteration_dir,
+    new_iteration_id,
+    normalize_iteration_id,
+)
 from .spec.dirs import prepare_iteration
 from .spec.models import BackendSpec, DatabaseSpec, K8sWorkloadSpec
 from .spec.render import render_iteration
@@ -73,7 +78,7 @@ def _default_spec(
     iid = normalize_iteration_id(iteration_id)
     return K8sWorkloadSpec(
         iteration_id=iid,
-        namespace=namespace or f"baxbench-{iid}",
+        namespace=namespace or default_k8s_namespace(iid),
         backend=BackendSpec(
             image=backend_image,
             replicas=backend_replicas,

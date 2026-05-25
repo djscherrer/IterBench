@@ -20,7 +20,12 @@ from typing import Any
 
 from .iteration import resolve_iterations_to_run, run_k8s_bench_iteration
 from .spec.models import K8sWorkloadSpec
-from .paths import iteration_id_for_phase, normalize_iteration_id
+from .paths import (
+    iteration_id_for_phase,
+    k8s_workspace_root,
+    normalize_iteration_id,
+    resolve_k8s_experiment_id,
+)
 from .spec.generation import generate_k8s_specs_for_task
 from .util.sample import (
     append_k8s_skip,
@@ -58,8 +63,9 @@ def find_latest_perf_run_dir(
     iid = normalize_iteration_id(iteration_id)
     safe_profile = re.sub(r"[^a-zA-Z0-9_-]+", "-", load_profile.strip()) or "default"
     pattern = f"perf-k8s-{iid}-{safe_profile}-*"
+    workspace = k8s_workspace_root(sample_dir)
     candidates = [
-        p for p in sample_dir.glob(pattern) if p.is_dir() and (p / "bench.log").is_file()
+        p for p in workspace.glob(pattern) if p.is_dir() and (p / "bench.log").is_file()
     ]
     if not candidates:
         return None
@@ -170,6 +176,7 @@ def run_iterative_k8s_bench(
 ) -> list[Path]:
     run_dirs_created: list[Path] = []
     load_profile = os.environ.get("BAXBENCH_LOAD_PROFILE", "quick-check")
+    experiment_id = resolve_k8s_experiment_id()
     phase_ids = plan_iteration_phases(
         num_iterations=k8s_iterations,
         explicit_iteration=k8s_iteration or os.environ.get("BAXBENCH_K8S_ITERATION") or None,
@@ -225,10 +232,12 @@ def run_iterative_k8s_bench(
 
             with task.create_logger(log_file) as logger:
                 logger.info(
-                    "k8s iterative phase %d/%d iteration=%s",
+                    "k8s iterative phase %d/%d experiment=%s iteration=%s workspace=%s",
                     phase_index,
                     len(phase_ids),
+                    experiment_id or "(legacy)",
                     iteration_id,
+                    k8s_workspace_root(sample_dir),
                 )
 
                 generate_k8s_specs_for_task(

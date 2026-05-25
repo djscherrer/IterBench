@@ -17,18 +17,21 @@
 #
 # Three improvement phases after the initial deploy (iteration-001..004):
 #   K8S_ITERATIONS="4" ONLY_SAMPLES="0" FORCE="true" ./scripts/bench_k8s.sh
+#
+# Isolate a fresh iteration chain (configs + perf under sampleN/k8s-experiments/<slug>/):
+#   K8S_EXPERIMENT="adaptive-may20" K8S_ITERATIONS="5" ./scripts/bench_k8s.sh
 
 set -euo pipefail
 
 # --- 1. Execution Targets ---
 MODELS="anthropic/claude-opus-4-6"
 USE_OPENHANDS_MODES="false"
-USE_OPENHANDS=""
-ONLY_SAMPLES=""   # e.g. "0"; empty → N_SAMPLES
-N_SAMPLES="5"
+USE_OPENHANDS="false"
+ONLY_SAMPLES="0"   # e.g. "0"; empty → N_SAMPLES
+N_SAMPLES=""
 
 # --- 2. Project Scope ---
-ENVS="JavaScript-express"
+ENVS=""
 EXCLUDE_ENVS=""
 SCENARIOS="BranchWeave_InteractiveStoryGraph"
 EXCLUDE_SCENARIOS=""
@@ -36,7 +39,7 @@ TEMPERATURE="0.2"
 SAFETY_PROMPT="high_performance"
 
 # --- 3. Load profile (Locust shape; same registry as distributed bench) ---
-BAXBENCH_LOAD_PROFILE=("quick-check")
+BAXBENCH_LOAD_PROFILE=("k8s-adaptive")
 
 BENCH_USERS=""
 BENCH_SPAWN_RATE=""
@@ -46,7 +49,8 @@ BENCH_RUN_TIME=""
 BAXBENCH_K8S_CLUSTER="baxbench-emulab"
 KUBECONFIG_PATH=""              # empty = path from cluster profile
 K8S_ITERATION=""                # pin one iteration; empty = use K8S_ITERATIONS
-K8S_ITERATIONS="1"              # phases: iteration-001 .. iteration-NNN
+K8S_EXPERIMENT="expA"               # e.g. adaptive-may20 → sampleN/k8s-experiments/<slug>/
+K8S_ITERATIONS="10"              # phases: iteration-001 .. iteration-NNN
 K8S_SPEC_GEN="true"             # false = deploy-only with existing spec.yaml files
 K8S_WAIT_TIMEOUT="300"
 # Locust runs on profile load_master/workers; backend exposed via NodePort
@@ -55,7 +59,7 @@ K8S_REQUIRE_CLUSTER="true"
 
 # --- 5. Bench configuration ---
 TIMEOUT="600"
-FORCE="true"
+FORCE="false"
 MAX_CONCURRENT_RUNS=""
 PORT="5001"
 MAX_RETRIES="3"
@@ -111,7 +115,7 @@ if [ -n "$KUBECONFIG_PATH" ]; then
 fi
 
 echo "kubectl context: $(kubectl config current-context 2>/dev/null || echo '(not configured)')"
-echo "KUBECONFIG=${KUBECONFIG:-<default>}  iterations=${K8S_ITERATIONS}  spec_gen=${K8S_SPEC_GEN}"
+echo "KUBECONFIG=${KUBECONFIG:-<default>}  experiment=${K8S_EXPERIMENT:-<legacy>}  iterations=${K8S_ITERATIONS}  spec_gen=${K8S_SPEC_GEN}"
 
 BASE_ENV=()
 RUN_I=0
@@ -137,6 +141,7 @@ for _model in $MODELS; do
 
     add_arg "--k8s-cluster" "$BAXBENCH_K8S_CLUSTER"
     add_arg "--k8s-iteration" "$K8S_ITERATION"
+    add_arg "--k8s-experiment" "$K8S_EXPERIMENT"
     add_arg "--k8s-iterations" "$K8S_ITERATIONS"
     add_arg "--k8s-wait-timeout" "$K8S_WAIT_TIMEOUT"
     add_arg "--max_retries" "$MAX_RETRIES"
@@ -171,6 +176,9 @@ for _model in $MODELS; do
       fi
       if [ -n "$K8S_ITERATION" ]; then
         EXTRA_ENV+=("BAXBENCH_K8S_ITERATION=$K8S_ITERATION")
+      fi
+      if [ -n "$K8S_EXPERIMENT" ]; then
+        EXTRA_ENV+=("BAXBENCH_K8S_EXPERIMENT=$K8S_EXPERIMENT")
       fi
       if [ -n "${KUBECONFIG:-}" ]; then
         EXTRA_ENV+=("KUBECONFIG=$KUBECONFIG")

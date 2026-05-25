@@ -18,12 +18,17 @@ from .iteration import (
 )
 from .paths import (
     K8S_CONFIGS_DIRNAME,
+    K8S_EXPERIMENTS_DIRNAME,
     deploy_record_path,
+    default_k8s_namespace,
     iteration_dir,
     iteration_manifests_dir,
     iteration_spec_path,
     k8s_configs_root,
+    k8s_workspace_root,
     new_iteration_id,
+    normalize_experiment_id,
+    resolve_k8s_experiment_id,
 )
 from .spec import (
     K8sWorkloadSpec,
@@ -36,6 +41,7 @@ from .spec import (
 __all__ = [
     "ClusterCapacity",
     "K8S_CONFIGS_DIRNAME",
+    "K8S_EXPERIMENTS_DIRNAME",
     "K8sWorkloadSpec",
     "collect_cluster_capacity",
     "deploy_iteration",
@@ -45,7 +51,11 @@ __all__ = [
     "iteration_dir",
     "iteration_manifests_dir",
     "iteration_spec_path",
+    "default_k8s_namespace",
     "k8s_configs_root",
+    "k8s_workspace_root",
+    "normalize_experiment_id",
+    "resolve_k8s_experiment_id",
     "make_k8s_perf_run_dir",
     "new_iteration_id",
     "prepare_iteration",

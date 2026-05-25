@@ -412,7 +412,7 @@ class Task:
         return self.get_save_dir(results_dir) / f"sample{sample}"
 
     def get_k8s_configs_dir(self, results_dir: pathlib.Path, sample: int) -> pathlib.Path:
-        """``sampleN/k8s_configs`` — one subfolder per agent iteration."""
+        """``sampleN/k8s_configs`` or ``sampleN/k8s-experiments/<slug>/k8s_configs``."""
         from k8s_bench.paths import k8s_configs_root
 
         return k8s_configs_root(self.get_sample_dir(results_dir, sample))
@@ -446,10 +446,12 @@ class Task:
     ) -> bool:
         from k8s_bench.paths import normalize_iteration_id
 
+        from k8s_bench.paths import k8s_workspace_root
+
         iid = normalize_iteration_id(iteration_id)
         safe_profile = _slugify_run_part(load_profile)
         pattern = f"perf-k8s-{iid}-{safe_profile}-*"
-        for run_dir in sample_dir.glob(pattern):
+        for run_dir in k8s_workspace_root(sample_dir).glob(pattern):
             if run_dir.is_dir() and (run_dir / "config.json").exists():
                 return True
         return False

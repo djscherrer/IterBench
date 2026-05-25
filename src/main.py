@@ -251,6 +251,8 @@ def main(args: Any) -> None:
                 print(f"[bench] Post-bench plots for {rd}")
                 _run_plotting(plot_run_dir=pathlib.Path(rd))
     elif args.mode == "k8s-spec-gen":
+        if getattr(args, "k8s_experiment", None):
+            os.environ["BAXBENCH_K8S_EXPERIMENT"] = str(args.k8s_experiment).strip()
         if getattr(args, "k8s_require_cluster", True):
             import logging
 
@@ -276,6 +278,8 @@ def main(args: Any) -> None:
             vllm_port=args.vllm_port,
         )
     elif args.mode == "k8s-bench":
+        if getattr(args, "k8s_experiment", None):
+            os.environ["BAXBENCH_K8S_EXPERIMENT"] = str(args.k8s_experiment).strip()
         if getattr(args, "k8s_require_cluster", True):
             import logging
 
@@ -626,6 +630,17 @@ if __name__ == "__main__":
         help=(
             "Select cluster profile from k8s_bench/cluster/profiles.py "
             "(also BAXBENCH_K8S_CLUSTER). Topology comes only from the profile."
+        ),
+    )
+    parser.add_argument(
+        "--k8s-experiment",
+        type=str,
+        default=None,
+        help=(
+            "Group iterative k8s configs and perf runs under "
+            "sampleN/k8s-experiments/<slug>/ (also BAXBENCH_K8S_EXPERIMENT). "
+            "Omit for legacy layout directly under sampleN/. "
+            "Use a new slug to start a fresh iteration chain without reusing prior skips."
         ),
     )
     parser.add_argument(

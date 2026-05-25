@@ -1,14 +1,55 @@
 from __future__ import annotations
 
+import os
 import re
 from pathlib import Path
 
 K8S_CONFIGS_DIRNAME = "k8s_configs"
+K8S_EXPERIMENTS_DIRNAME = "k8s-experiments"
 ITERATION_PREFIX = "iteration-"
 
 
+def normalize_experiment_id(raw: str) -> str:
+    """Filesystem-safe experiment slug (e.g. ``experiment-a``)."""
+    slug = re.sub(r"[^a-zA-Z0-9_-]+", "-", raw.strip()).strip("-").lower()
+    if not slug:
+        raise ValueError("experiment id must not be empty")
+    return slug
+
+
+def resolve_k8s_experiment_id() -> str | None:
+    """
+    Active experiment from ``BAXBENCH_K8S_EXPERIMENT``, or ``None`` for legacy layout.
+
+    Legacy (no experiment): ``sampleN/k8s_configs/`` and ``sampleN/perf-k8s-…/``.
+    With experiment: ``sampleN/k8s-experiments/<slug>/k8s_configs/`` and perf runs
+    under the same ``k8s-experiments/<slug>/`` directory.
+    """
+    value = os.environ.get("BAXBENCH_K8S_EXPERIMENT", "").strip()
+    if not value:
+        return None
+    return normalize_experiment_id(value)
+
+
+def k8s_workspace_root(sample_dir: Path) -> Path:
+    """Root for one experiment's configs + perf runs (or ``sample_dir`` when unset)."""
+    eid = resolve_k8s_experiment_id()
+    if not eid:
+        return sample_dir
+    return sample_dir / K8S_EXPERIMENTS_DIRNAME / eid
+
+
+def default_k8s_namespace(iteration_id: str) -> str:
+    """Kubernetes namespace for an iteration (includes experiment slug when set)."""
+    iid = normalize_iteration_id(iteration_id)
+    eid = resolve_k8s_experiment_id()
+    if eid:
+        return f"baxbench-{eid}-{iid}"
+    return f"baxbench-{iid}"
+
+
 def k8s_configs_root(sample_dir: Path) -> Path:
-    return sample_dir / K8S_CONFIGS_DIRNAME
+    return k8s_workspace_root(sample_dir) / K8S_CONFIGS_DIRNAME
 
 
 def iteration_dir(sample_dir: Path, iteration_id: str) -> Path:
@@ -82,8 +123,12 @@ def perf_run_dir_for_iteration(
     """
     Per-run output when benchmarking a specific K8s iteration.
 
-    Example: ``sample1/perf-k8s-iteration-001-stairs-800-20260517-120000``
+    Example (legacy): ``sample1/perf-k8s-iteration-001-stairs-800-20260517-120000``
+
+    With experiment ``exp-a``:
+    ``sample1/k8s-experiments/exp-a/perf-k8s-iteration-001-…``
     """
     iid = normalize_iteration_id(iteration_id)
     safe_profile = re.sub(r"[^a-zA-Z0-9_-]+", "-", load_profile.strip()) or "default"
-    return sample_dir / f"perf-k8s-{iid}-{safe_profile}-{timestamp}"
+    workspace = k8s_workspace_root(sample_dir)
+    return workspace / f"perf-k8s-{iid}-{safe_profile}-{timestamp}"

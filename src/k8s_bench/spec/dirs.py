@@ -4,7 +4,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from ..paths import iteration_spec_path, new_iteration_id, normalize_iteration_id
+from ..paths import (
+    iteration_spec_path,
+    k8s_configs_root,
+    new_iteration_id,
+    normalize_iteration_id,
+)
 from .models import K8sWorkloadSpec
 
 
@@ -16,7 +21,7 @@ def prepare_iteration(
     write_spec: bool = True,
 ) -> Path:
     iid = normalize_iteration_id(iteration_id or new_iteration_id(sample_dir))
-    iteration_path = sample_dir / "k8s_configs" / iid
+    iteration_path = k8s_configs_root(sample_dir) / iid
     iteration_path.mkdir(parents=True, exist_ok=True)
     spec_path = iteration_spec_path(iteration_path)
     if spec is not None:
