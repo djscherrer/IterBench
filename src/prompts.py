@@ -16,6 +16,7 @@ from openai import NOT_GIVEN, OpenAI, api_key
 from openai.types.chat import ChatCompletionMessageParam
 
 from env.base import Env
+from llm_usage import TokenUsage, usage_from_anthropic, usage_from_openai_style
 from scenarios.base import Scenario
 
 _SYSTEM_PROMPT = "You are an experienced full-stack developer"
@@ -175,6 +176,15 @@ class Prompter:
         self.prompt = self.scenario.build_prompt(
             self.env, self.spec_type, self.safety_prompt, agent=False, use_stubs=use_stubs
         )
+        self.last_usage: TokenUsage | None = None
+
+    def _store_openai_usage(self, usage: Any, *, provider: str) -> None:
+        self.last_usage = usage_from_openai_style(
+            usage, model=self.model, provider=provider
+        )
+
+    def _store_anthropic_usage(self, usage: Any) -> None:
+        self.last_usage = usage_from_anthropic(usage, model=self.model)
 
     @no_type_check
     def prompt_anthropic(self, logger: logging.Logger) -> list[str]:
@@ -201,7 +211,11 @@ class Prompter:
                                 thinking += event.delta.thinking
                             elif event.delta.type == "text_delta":
                                 text += event.delta.text
+                    final = stream.get_final_message()
+                    self._store_anthropic_usage(final.usage)
                 logger.info(f"Thinking traces:\n {thinking}")
+                if final.stop_reason == "max_tokens":
+                    logger.warning("Completion was cut off due to length.")
                 return [text]
             else:
                 response = client.messages.create(
@@ -214,13 +228,14 @@ class Prompter:
                     max_tokens=8192 if "claude-3-5-" in self.model else 4096,
                 )
                 assert isinstance(response.content[0], TextBlock)
-            if response.usage is not None:
-                logger.info(
-                    f"Token stats: {response.usage}; around {response.usage.output_tokens} completion tokens per completion"
-                )
-            if response.stop_reason == "max_tokens":
-                logger.warning(f"Completion was cut off due to length.")
-            return [response.content[0].text]
+                self._store_anthropic_usage(response.usage)
+                if response.usage is not None:
+                    logger.info(
+                        f"Token stats: {response.usage}; around {response.usage.output_tokens} completion tokens per completion"
+                    )
+                if response.stop_reason == "max_tokens":
+                    logger.warning(f"Completion was cut off due to length.")
+                return [response.content[0].text]
         except Exception as e:
             raise e
 
@@ -279,6 +294,7 @@ class Prompter:
                 raise Exception("No content")
             content = response.choices[0].message.content
             if content is not None and len(content) > 0:
+                self._store_openai_usage(response.usage, provider="openrouter")
                 if response.usage is not None:
                     logger.info(
                         f"Token stats: {response.usage}; around {response.usage.completion_tokens} completion tokens per completion"
@@ -340,6 +356,7 @@ class Prompter:
                     f"Reasoning traces:\n---BEGINNING OF REASONING---\n{reasoning_content}\n---END OF REASONING---"
                 )
             if content is not None and len(content) > 0:
+                self._store_openai_usage(response.usage, provider="vllm")
                 if response.usage is not None:
                     logger.info(
                         f"Token stats: {response.usage}; around {response.usage.completion_tokens} completion tokens per completion"
@@ -384,6 +401,7 @@ class Prompter:
                 raise Exception("No content")
             content = response.choices[0].message.content
             if content is not None and len(content) > 0:
+                self._store_openai_usage(response.usage, provider="swissai")
                 if response.usage is not None:
                     logger.info(
                         f"Token stats: {response.usage}; around {response.usage.completion_tokens} completion tokens per completion"
@@ -449,6 +467,7 @@ class Prompter:
                 **extra_kwargs,
             )
             if completions.usage is not None:
+                self._store_openai_usage(completions.usage, provider="openai")
                 logger.info(
                     f"Batch token stats: {completions.usage}; around {completions.usage.completion_tokens / self.batch_size:.2f} completion tokens per completion"
                 )
@@ -519,6 +538,7 @@ class Prompter:
                 **extra_kwargs,
             )
             if completions.usage is not None:
+                self._store_openai_usage(completions.usage, provider="together_ai")
                 logger.info(
                     f"Batch token stats: {completions.usage}; around {completions.usage.completion_tokens / self.batch_size:.2f} completion tokens per completion"
                 )
@@ -537,21 +557,31 @@ class Prompter:
 
     @no_type_check
     def prompt_model(self, logger: logging.Logger) -> list[str]:
+        self.last_usage = None
         if self.provider == "anthropic":
-            return self.prompt_anthropic(logger)
+            responses = self.prompt_anthropic(logger)
         elif self.provider =="openrouter":
-            return self.prompt_openrouter(logger)
+            responses = self.prompt_openrouter(logger)
         elif self.provider == "vllm":
-            return self.prompt_vllm(logger)
+            responses = self.prompt_vllm(logger)
         elif self.provider == "swissai":
-            return self.prompt_swissai(logger)
+            responses = self.prompt_swissai(logger)
         elif self.provider == "openai":
-            return self.prompt_openai_batch(logger)
+            responses = self.prompt_openai_batch(logger)
         elif self.provider == "together_ai":
-            return self.prompt_togetherai_batch(logger)
+            responses = self.prompt_togetherai_batch(logger)
         else:
             logger.error(f"Unknown provider: {self.provider}")
             raise Exception(f"Unknown provider: {self.provider}")
+        if self.last_usage is not None:
+            logger.info(
+                "Estimated LLM cost: $%.4f (%d in + %d out tokens, model=%s)",
+                self.last_usage.estimated_cost_usd,
+                self.last_usage.input_tokens,
+                self.last_usage.output_tokens,
+                self.last_usage.model,
+            )
+        return responses
 
     def get_code_dir(self, save_dir: pathlib.Path, sample: int) -> pathlib.Path:
         return save_dir / f"sample{sample}" / "code"
@@ -574,6 +604,9 @@ class Prompter:
         max_delay: float,
         save_dir: pathlib.Path,
         logger: logging.Logger,
+        *,
+        cost_workspace: pathlib.Path | None = None,
+        cost_call_type: str = "scenario_code_generation",
     ) -> None:
         # Anthropic, OpenRouter, SwissAI, and VLLM don't support batching, so we have to sample a single completion multiple times
         n_times_to_sample = (
@@ -588,6 +621,18 @@ class Prompter:
                     if retries > 0:
                         logger.info(f"Retrying {retries} times")
                     completion = self.prompt_model(logger)
+                    if cost_workspace is not None:
+                        from llm_usage import enforce_cost_budget, record_prompter_usage
+
+                        enforce_cost_budget(cost_workspace)
+                        record_prompter_usage(
+                            prompter=self,
+                            call_type=cost_call_type,
+                            workspace=cost_workspace,
+                            logger=logger,
+                            artifact_dir=save_dir,
+                            note=f"sample_offset={i + self.offset} n={n_times_to_sample}",
+                        )
                     raw_comps = (
                         "\n\n<<<RESPONSE DELIM>>>\n\n".join(completion)
                         + "\n\n<<<RESPONSE DELIM>>>\n\n"
