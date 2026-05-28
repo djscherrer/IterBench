@@ -210,17 +210,15 @@ def deploy_iteration(
     logger: logging.Logger | None = None,
 ) -> DeployResult:
     from ..spec.models import K8sWorkloadSpec
+    from ..spec.render import render_iteration
     from .cleanup import cleanup_baxbench_namespaces_before_deploy
 
     log = logger or logging.getLogger(__name__)
     cleanup_baxbench_namespaces_before_deploy(logger=log)
 
+    # Spec may be patched after generation (e.g. real registry image replaces placeholder).
+    manifest_file = render_iteration(iteration_path)
     spec = K8sWorkloadSpec.from_yaml_file(require_iteration_spec_path(iteration_path))
-    manifest_file = iteration_manifests_dir(iteration_path) / "all.yaml"
-    if not manifest_file.is_file():
-        raise FileNotFoundError(
-            f"Missing {manifest_file}; run render first (k8s_bench render <iteration_path>)."
-        )
     waits: list[str] = ["deployment/backend"]
     statefulset_waits: list[str] = []
     if spec.database.enabled:
