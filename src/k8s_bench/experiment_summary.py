@@ -20,6 +20,7 @@ from .workspace import (
     iteration_spec_path,
     k8s_workspace_root,
     normalize_iteration_id,
+    parse_iteration_folder_name,
     resolve_k8s_experiment_id,
 )
 from .spec.models import K8sWorkloadSpec, ResourceSpec
@@ -35,6 +36,8 @@ _ADAPTIVE_PHASE_RE = re.compile(
     r"p\d+=(?P<p95_logged>\S+)"
 )
 _USERS_FROM_ACTION_RE = re.compile(r"users=(\d+)")
+_SHAPE_UPDATE_RE = re.compile(r"Shape test updating to (\d+) users")
+_ADAPTIVE_START_USERS_RE = re.compile(r"BAXBENCH_ADAPTIVE_START_USERS=(\d+)")
 
 
 def experiment_summary_path(sample_dir: Path) -> Path:
@@ -161,23 +164,31 @@ def _spec_bullets(spec: K8sWorkloadSpec) -> list[str]:
 
 
 def _previous_spec_path(iteration_path: Path) -> Path | None:
-    slug = iteration_path.name
-    if not slug.isdigit():
-        iid = normalize_iteration_id(slug)
-        m = re.fullmatch(r"iteration-(\d+)", iid)
-        if not m:
-            return None
-        prev_n = int(m.group(1)) - 1
-        if prev_n < 1:
-            return None
-        prev_slug = f"{prev_n:03d}"
-    else:
-        prev_n = int(slug) - 1
-        if prev_n < 1:
-            return None
-        prev_slug = f"{prev_n:03d}"
-    prev = iteration_path.parent / prev_slug
-    return find_iteration_spec_path(prev)
+    """Locate the previous iteration's ``spec.yaml`` (suffix-aware, allows baseline 000)."""
+    phase, _kind, _failed = parse_iteration_folder_name(iteration_path.name)
+    if phase is None or phase <= 0:
+        return None
+
+    parent = iteration_path.parent
+    if not parent.is_dir():
+        return None
+
+    prev_phase = phase - 1
+    candidates: list[Path] = []
+    for child in parent.iterdir():
+        if not child.is_dir():
+            continue
+        p, _k, failed = parse_iteration_folder_name(child.name)
+        if p != prev_phase or failed:
+            continue
+        candidates.append(child)
+
+    candidates.sort(key=lambda c: c.name)
+    for cand in candidates:
+        spec = find_iteration_spec_path(cand)
+        if spec is not None:
+            return spec
+    return None
 
 
 def _diff_field(name: str, old: str | int, new: str | int) -> str | None:
@@ -252,7 +263,21 @@ def _parse_bench_log_times(bench_log: str) -> tuple[str | None, str | None]:
     return first, last
 
 
+def _parse_initial_users(bench_log: str) -> int | None:
+    """Find the user count at the start of the run (level 0)."""
+    for line in bench_log.splitlines():
+        m = _SHAPE_UPDATE_RE.search(line)
+        if m:
+            return int(m.group(1))
+        m = _ADAPTIVE_START_USERS_RE.search(line)
+        if m:
+            return int(m.group(1))
+    return None
+
+
 def _parse_adaptive_phases(bench_log: str) -> list[dict[str, Any]]:
+    """Parse adaptive ``phase end`` lines, dedup by ``t_s`` (master log + bench.log overlap)."""
+    seen_t: set[int] = set()
     phases: list[dict[str, Any]] = []
     for line in bench_log.splitlines():
         if "adaptive phase end" not in line:
@@ -260,12 +285,16 @@ def _parse_adaptive_phases(bench_log: str) -> list[dict[str, Any]]:
         m = _ADAPTIVE_PHASE_RE.search(line)
         if not m:
             continue
+        t_s = int(m.group(1))
+        if t_s in seen_t:
+            continue
+        seen_t.add(t_s)
         users_m = _USERS_FROM_ACTION_RE.search(m.group("action"))
         p95_decision = re.search(r"p95=(\d+)ms", m.group("action"))
         phases.append(
             {
-                "t_s": int(m.group(1)),
-                "users": int(users_m.group(1)) if users_m else None,
+                "t_s": t_s,
+                "next_users": int(users_m.group(1)) if users_m else None,
                 "p95_decision_ms": int(p95_decision.group(1)) if p95_decision else None,
                 "p95_logged": m.group("p95_logged"),
                 "reqs": int(m.group("reqs")),
@@ -274,38 +303,78 @@ def _parse_adaptive_phases(bench_log: str) -> list[dict[str, Any]]:
                 "action": m.group("action").strip(),
             }
         )
+    phases.sort(key=lambda p: p["t_s"])
     return phases
 
 
-def _adaptive_table_markdown(phases: list[dict[str, Any]]) -> str:
+def _adaptive_table_markdown(
+    phases: list[dict[str, Any]], *, initial_users: int | None = None
+) -> str:
+    """
+    Render the adaptive ramp as a step table.
+
+    - Step 0 = initial level (before any decision); step N = level reached after
+      the N-th decision.
+    - ``level users`` = virtual users actually running during this measurement
+      window (= previous step's ``next users``).
+    - ``→ next users`` = users the controller selected for the next window.
+    - ``reqs`` / ``fail %`` are **per-step deltas** (not cumulative since t=0).
+    """
     if not phases:
         return "(no `adaptive phase end` lines in bench.log — not an adaptive profile or run too short)"
-    header = "| Step | t (s) | users | p95 decision (ms) | p95 logged | reqs | fail % | action |"
-    sep = "|---:|---:|---:|---:|---:|---:|---:|---|"
+    header = (
+        "| Step | window end t (s) | level users | → next users | "
+        "p95 decision (ms) | p95 logged | reqs | fail % | action |"
+    )
+    sep = "|---:|---:|---:|---:|---:|---:|---:|---:|---|"
     rows = [header, sep]
-    for i, p in enumerate(phases, start=1):
+
+    level_users = initial_users
+    cumulative_reqs = 0
+    cumulative_fail = 0
+    for i, p in enumerate(phases):
+        delta_reqs = max(0, p["reqs"] - cumulative_reqs)
+        delta_fail = max(0, p["fail"] - cumulative_fail)
+        cumulative_reqs = p["reqs"]
+        cumulative_fail = p["fail"]
+        step_fail_pct = (
+            f"{100.0 * delta_fail / delta_reqs:.1f}%"
+            if delta_reqs > 0
+            else p["fail_pct"]
+        )
+        next_users = p["next_users"]
         rows.append(
             "| "
             + " | ".join(
                 [
                     str(i),
                     str(p["t_s"]),
-                    str(p["users"] if p["users"] is not None else "—"),
+                    str(level_users if level_users is not None else "—"),
+                    str(next_users if next_users is not None else "—"),
                     str(p["p95_decision_ms"] if p["p95_decision_ms"] is not None else "—"),
                     str(p["p95_logged"]),
-                    str(p["reqs"]),
-                    str(p["fail_pct"]),
+                    str(delta_reqs),
+                    step_fail_pct,
                     p["action"].replace("|", "\\|")[:80],
                 ]
             )
             + " |"
         )
+        level_users = next_users
+
     last = phases[-1]
     rows.append("")
-    rows.append(
-        f"**Ramp outcome**: last step **{last['users']}** users @ t={last['t_s']}s, "
-        f"**{last['fail_pct']}** failures ({last['reqs']} reqs)."
-    )
+    if cumulative_reqs:
+        rows.append(
+            f"**Ramp outcome**: last decision selected **{last['next_users']}** users "
+            f"@ t={last['t_s']}s ({cumulative_reqs} cumulative reqs, "
+            f"{100.0 * cumulative_fail / cumulative_reqs:.1f}% cumulative failures)."
+        )
+    else:
+        rows.append(
+            f"**Ramp outcome**: last decision selected **{last['next_users']}** users "
+            f"@ t={last['t_s']}s."
+        )
     if any("bracket" in p["action"] or "stopping shape" in p["action"] for p in phases):
         rows.append("Adaptive controller reached a bracket / stop condition.")
     if any("abort" in line for line in (p["action"] for p in phases)):
@@ -439,7 +508,8 @@ def append_perf_run_block(
         time_range = perf_run_dir.name
 
     phases = _parse_adaptive_phases(log_text)
-    adaptive_md = _adaptive_table_markdown(phases)
+    initial_users = _parse_initial_users(log_text)
+    adaptive_md = _adaptive_table_markdown(phases, initial_users=initial_users)
     locust_line = _aggregate_locust_line(perf_run_dir)
 
     locust_table = ""
@@ -464,9 +534,11 @@ def append_perf_run_block(
 
     pod_hint = ""
     if fb and fb.pod_utilization:
-        first_line = fb.pod_utilization.splitlines()[0] if fb.pod_utilization else ""
-        if first_line and "unavailable" not in first_line.lower():
-            pod_hint = f"\n**K8s utilization**: captured ({first_line[:120]}…).\n"
+        pod_hint = _format_pod_utilization_for_summary(fb.pod_utilization)
+
+    notes_line = ""
+    if fb and fb.notes and fb.notes.strip():
+        notes_line = f"\n**Notes**\n\n{fb.notes.strip()}\n"
 
     body = "\n".join(
         [
@@ -485,6 +557,7 @@ def append_perf_run_block(
             adaptive_md,
             error_lines,
             pod_hint,
+            notes_line,
             "",
             "---",
             "",
@@ -492,6 +565,26 @@ def append_perf_run_block(
     )
     _append(path, body)
     return path
+
+
+def _format_pod_utilization_for_summary(text: str) -> str:
+    """Render the ``pod_utilization`` payload as a collapsible Markdown section."""
+    body = (text or "").strip()
+    if not body:
+        return ""
+    if "unavailable" in body.splitlines()[0].lower():
+        return f"\n**K8s utilization**: {body.splitlines()[0]}\n"
+    lines = [
+        "",
+        "<details>",
+        "<summary><strong>K8s utilization</strong> (kubectl top during the run)</summary>",
+        "",
+        body,
+        "",
+        "</details>",
+        "",
+    ]
+    return "\n".join(lines)
 
 
 def append_refinement_decision_block(
