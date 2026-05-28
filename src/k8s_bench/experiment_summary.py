@@ -15,10 +15,9 @@ from pathlib import Path
 from typing import Any
 
 from .feedback import IterationFeedback
-from .paths import (
-    iteration_id_for_phase,
+from .workspace import (
+    find_iteration_spec_path,
     iteration_spec_path,
-    k8s_configs_root,
     k8s_workspace_root,
     normalize_iteration_id,
     resolve_k8s_experiment_id,
@@ -50,7 +49,7 @@ def _ensure_header(path: Path, *, sample_dir: Path, load_profile: str | None = N
     if path.is_file() and path.stat().st_size > 0:
         return
     path.parent.mkdir(parents=True, exist_ok=True)
-    experiment = resolve_k8s_experiment_id() or "(legacy — no experiment slug)"
+    experiment = resolve_k8s_experiment_id()
     profile = (load_profile or os.environ.get("BAXBENCH_LOAD_PROFILE", "")).strip() or "default"
     header = "\n".join(
         [
@@ -63,6 +62,9 @@ def _ensure_header(path: Path, *, sample_dir: Path, load_profile: str | None = N
             "",
             "Each iteration below has a **spec generation** block (LLM deployment + rationale) "
             "and a **Locust run** block (adaptive ramp table when applicable).",
+            "",
+            f"- **LLM cost ledger**: `{k8s_workspace_root(sample_dir) / 'llm_cost_ledger.json'}` "
+            "(estimated; set `BAXBENCH_LLM_MAX_COST` to cap spend)",
             "",
             "---",
             "",
@@ -159,13 +161,23 @@ def _spec_bullets(spec: K8sWorkloadSpec) -> list[str]:
 
 
 def _previous_spec_path(iteration_path: Path) -> Path | None:
-    iid = normalize_iteration_id(iteration_path.name)
-    m = re.fullmatch(r"iteration-(\d+)", iid)
-    if not m or int(m.group(1)) <= 1:
-        return None
-    prev_id = iteration_id_for_phase(int(m.group(1)) - 1)
-    prev = iteration_path.parent / prev_id / "spec.yaml"
-    return prev if prev.is_file() else None
+    slug = iteration_path.name
+    if not slug.isdigit():
+        iid = normalize_iteration_id(slug)
+        m = re.fullmatch(r"iteration-(\d+)", iid)
+        if not m:
+            return None
+        prev_n = int(m.group(1)) - 1
+        if prev_n < 1:
+            return None
+        prev_slug = f"{prev_n:03d}"
+    else:
+        prev_n = int(slug) - 1
+        if prev_n < 1:
+            return None
+        prev_slug = f"{prev_n:03d}"
+    prev = iteration_path.parent / prev_slug
+    return find_iteration_spec_path(prev)
 
 
 def _diff_field(name: str, old: str | int, new: str | int) -> str | None:
@@ -473,6 +485,42 @@ def append_perf_run_block(
             adaptive_md,
             error_lines,
             pod_hint,
+            "",
+            "---",
+            "",
+        ]
+    )
+    _append(path, body)
+    return path
+
+
+def append_refinement_decision_block(
+    *,
+    sample_dir: Path,
+    iteration_id: str,
+    decision: Any,
+    load_profile: str | None = None,
+) -> Path:
+    """Append deployment-vs-code decision before a phase's spec generation."""
+    if os.environ.get("BAXBENCH_K8S_EXPERIMENT_SUMMARY", "true").lower() in (
+        "0",
+        "false",
+        "no",
+    ):
+        return experiment_summary_path(sample_dir)
+
+    path = experiment_summary_path(sample_dir)
+    _ensure_header(path, sample_dir=sample_dir, load_profile=load_profile)
+    iid = normalize_iteration_id(iteration_id)
+    body = "\n".join(
+        [
+            _maybe_write_iteration_heading(path, iid),
+            f"### Refinement decision (phase {decision.phase_index})",
+            "",
+            f"- **Recorded**: {_utc_now_label()}",
+            f"- **Action**: `{decision.action}`",
+            f"- **Based on**: `{decision.based_on_iteration}`",
+            f"- **Rationale**: {decision.rationale.strip()}",
             "",
             "---",
             "",

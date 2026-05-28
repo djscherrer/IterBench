@@ -76,6 +76,8 @@ def ensure_docker_image(
     sample: int,
     image_id: str | None,
     logger: logging.Logger,
+    *,
+    code_dir: Path | None = None,
 ) -> str | None:
     if image_id:
         try:
@@ -87,6 +89,8 @@ def ensure_docker_image(
                 image_id,
             )
     logger.info("Image not found or missing. Building...")
+    if code_dir is not None and code_dir.is_dir():
+        return task._build_image_from_code_dir(code_dir, logger)
     return task._build_image(results_dir, sample, logger)
 
 

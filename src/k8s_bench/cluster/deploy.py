@@ -6,9 +6,16 @@ import subprocess
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Sequence
+from typing import Literal, Sequence
 
-from ..paths import deploy_record_path, iteration_manifests_dir
+from ..workspace.paths import (
+    deploy_bench_record_path,
+    deploy_probe_record_path,
+    iteration_manifests_dir,
+    require_iteration_spec_path,
+)
+
+DeployRecordKind = Literal["probe", "bench"]
 
 
 @dataclass(frozen=True)
@@ -122,6 +129,22 @@ def apply_manifests(
                     if ev.stdout:
                         tail = "\n".join((ev.stdout or "").splitlines()[-25:])
                         log.warning("backend pod events (tail):\n%s", tail)
+                    logs = _kubectl(
+                        [
+                            "logs",
+                            "-n",
+                            namespace,
+                            "-l",
+                            "app=backend",
+                            "--tail=40",
+                            "--prefix=true",
+                        ],
+                        timeout_s=30,
+                    )
+                    if logs.stdout:
+                        log.warning("backend pod logs (tail):\n%s", logs.stdout.strip())
+                    elif logs.stderr:
+                        log.warning("backend pod logs unavailable: %s", logs.stderr.strip())
 
         for resource in wait_statefulsets:
             wait_proc = _kubectl(
@@ -157,8 +180,18 @@ def apply_manifests(
     )
 
 
-def write_deploy_record(iteration_path: Path, result: DeployResult) -> Path:
-    path = deploy_record_path(iteration_path)
+def write_deploy_record(
+    iteration_path: Path,
+    result: DeployResult,
+    *,
+    kind: DeployRecordKind = "bench",
+) -> Path:
+    path = (
+        deploy_probe_record_path(iteration_path)
+        if kind == "probe"
+        else deploy_bench_record_path(iteration_path)
+    )
+    path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(result.to_dict(), indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return path
 
@@ -173,6 +206,7 @@ def deploy_iteration(
     iteration_path: Path,
     *,
     wait_timeout_s: int = 300,
+    record_kind: DeployRecordKind = "bench",
     logger: logging.Logger | None = None,
 ) -> DeployResult:
     from ..spec.models import K8sWorkloadSpec
@@ -181,7 +215,7 @@ def deploy_iteration(
     log = logger or logging.getLogger(__name__)
     cleanup_baxbench_namespaces_before_deploy(logger=log)
 
-    spec = K8sWorkloadSpec.from_yaml_file(iteration_path / "spec.yaml")
+    spec = K8sWorkloadSpec.from_yaml_file(require_iteration_spec_path(iteration_path))
     manifest_file = iteration_manifests_dir(iteration_path) / "all.yaml"
     if not manifest_file.is_file():
         raise FileNotFoundError(
@@ -203,7 +237,7 @@ def deploy_iteration(
         wait_statefulsets=tuple(statefulset_waits),
         logger=log,
     )
-    write_deploy_record(iteration_path, result)
+    write_deploy_record(iteration_path, result, kind=record_kind)
     return result
 
 
@@ -218,5 +252,5 @@ def render_and_deploy(
     render_iteration(iteration_path)
     result = deploy_iteration(iteration_path, wait_timeout_s=wait_timeout_s, logger=logger)
     if not result.success:
-        raise RuntimeError(f"K8s deploy failed for {iteration_path}; see deploy.json")
+        raise RuntimeError(f"K8s deploy failed for {iteration_path}; see deploy/bench.json")
     return result

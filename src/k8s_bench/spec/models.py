@@ -42,6 +42,23 @@ class ResourceSpec:
         }
 
 
+def infer_gunicorn_workers(resources: ResourceSpec) -> int:
+    """
+    Worker count aligned with pod CPU/memory limits.
+
+    BaxBench Flask images default to ``gunicorn --workers=$(nproc)``, which can
+    spawn dozens of workers inside a small K8s pod and OOM. We inject
+    ``WEB_CONCURRENCY`` from this estimate and override the container command.
+    """
+    from ..cluster.capacity import _parse_cpu_to_millicores, _parse_memory_to_bytes
+
+    cpu_m = _parse_cpu_to_millicores(resources.cpu_limit)
+    mem_b = _parse_memory_to_bytes(resources.memory_limit)
+    by_cpu = max(1, min(cpu_m // 400, 16))
+    by_mem = max(1, mem_b // (100 * 1024 * 1024))
+    return max(1, min(by_cpu, by_mem))
+
+
 @dataclass(frozen=True)
 class BackendSpec:
     image: str
@@ -141,7 +158,7 @@ def _database_placement_yaml(db: DatabaseSpec) -> dict[str, Any]:
 @dataclass(frozen=True)
 class K8sWorkloadSpec:
     """
-    Source of truth for one agent/human iteration under ``k8s_configs/<iteration>/spec.yaml``.
+    Source of truth for one agent/human iteration under ``iterations/iteration-NNN/spec/spec.yaml``.
     """
 
     iteration_id: str
@@ -218,6 +235,8 @@ class K8sWorkloadSpec:
 
     def backend_env(self) -> dict[str, str]:
         env = dict(self.backend.env)
+        env.setdefault("PORT", str(self.backend.port))
+        env.setdefault("WEB_CONCURRENCY", str(infer_gunicorn_workers(self.backend.resources)))
         if self.database.enabled:
             host = f"{self.database.service_name}.{self.namespace}.svc.cluster.local"
             env.setdefault("DB_HOST", host)

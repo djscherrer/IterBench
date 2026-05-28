@@ -9,12 +9,54 @@ import json
 import logging
 import re
 from collections import defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 from .spec.models import K8sWorkloadSpec
 from .cluster.preflight import _kubectl
+from .workspace import find_iteration_spec_path
+
+
+@dataclass(frozen=True)
+class FailedAttempt:
+    """One iteration that ran between the last successful bench and the current phase."""
+
+    iteration_id: str
+    kind: str
+    refinement_action: str | None
+    rationale: str | None
+    failure_reason: str
+    error_excerpt: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "iteration_id": self.iteration_id,
+            "kind": self.kind,
+            "refinement_action": self.refinement_action,
+            "rationale": self.rationale,
+            "failure_reason": self.failure_reason,
+            "error_excerpt": self.error_excerpt,
+        }
+
+    def to_prompt_block(self) -> str:
+        lines = [
+            f"- Iteration `{self.iteration_id}` (kind={self.kind}"
+            + (f", action={self.refinement_action}" if self.refinement_action else "")
+            + ")",
+            f"  - Failure reason: {self.failure_reason or '(unspecified)'}",
+        ]
+        if self.rationale:
+            rationale = self.rationale.strip().replace("\n", " ")
+            if len(rationale) > 400:
+                rationale = rationale[:400] + "…"
+            lines.append(f"  - Rationale at the time: {rationale}")
+        if self.error_excerpt:
+            excerpt = self.error_excerpt.strip()
+            if len(excerpt) > 800:
+                excerpt = excerpt[:800] + "\n…(truncated)"
+            lines.extend(["  - Error excerpt:", "    ```", excerpt, "    ```"])
+        return "\n".join(lines)
 
 
 @dataclass(frozen=True)
@@ -28,10 +70,11 @@ class IterationFeedback:
     pod_utilization: str
     previous_spec_yaml: str
     notes: str = ""
+    failed_attempts: tuple[FailedAttempt, ...] = field(default_factory=tuple)
 
     def to_prompt_text(self) -> str:
         parts = [
-            f"Previous iteration: {self.iteration_id}",
+            f"Most recent successful iteration: {self.iteration_id}",
             f"Perf run directory: {self.perf_run_dir}",
             "",
             "## Locust results (per endpoint)",
@@ -50,6 +93,22 @@ class IterationFeedback:
             self.previous_spec_yaml.strip() or "(missing)",
             "```",
         ]
+        if self.failed_attempts:
+            parts.extend(
+                [
+                    "",
+                    "## Failed attempts since this last successful iteration",
+                    (
+                        "The iterations below were attempted after "
+                        f"`{self.iteration_id}` but did not produce benchmark "
+                        "results. Treat them as **anti-examples**: do not repeat "
+                        "the same change, and either fix the underlying cause or "
+                        "try a different direction."
+                    ),
+                    "",
+                    *[fa.to_prompt_block() for fa in self.failed_attempts],
+                ]
+            )
         if self.notes:
             parts.extend(["", "## Notes", self.notes])
         return "\n".join(parts)
@@ -360,8 +419,8 @@ def collect_iteration_feedback(
         bench_log = bench_log_path.read_text(encoding="utf-8", errors="replace")
 
     spec_yaml = ""
-    spec_path = iteration_path / "spec.yaml"
-    if spec_path.is_file():
+    spec_path = find_iteration_spec_path(iteration_path)
+    if spec_path is not None and spec_path.is_file():
         spec_yaml = spec_path.read_text(encoding="utf-8", errors="replace")
 
     ns = namespace
@@ -373,7 +432,7 @@ def collect_iteration_feedback(
                 ns = (cfg.get("k8s_iteration") or {}).get("namespace")
             except json.JSONDecodeError:
                 pass
-    if not ns and spec_path.is_file():
+    if not ns and spec_path is not None and spec_path.is_file():
         try:
             ns = K8sWorkloadSpec.from_yaml_file(spec_path).namespace
         except ValueError:
@@ -408,11 +467,41 @@ def write_feedback_artifact(
         "pod_utilization": feedback.pod_utilization,
         "previous_spec_yaml": feedback.previous_spec_yaml,
         "notes": feedback.notes,
+        "failed_attempts": [fa.to_dict() for fa in feedback.failed_attempts],
         "prompt_text": prompt_text,
     }
     out.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     (perf_run_dir / "iteration_feedback.txt").write_text(prompt_text + "\n", encoding="utf-8")
     return out
+
+
+def _failed_attempts_from_payload(
+    data: dict[str, Any],
+) -> tuple[FailedAttempt, ...]:
+    raw = data.get("failed_attempts") or []
+    if not isinstance(raw, list):
+        return ()
+    out: list[FailedAttempt] = []
+    for entry in raw:
+        if not isinstance(entry, dict):
+            continue
+        out.append(
+            FailedAttempt(
+                iteration_id=str(entry.get("iteration_id", "")),
+                kind=str(entry.get("kind", "")),
+                refinement_action=(
+                    str(entry["refinement_action"])
+                    if entry.get("refinement_action")
+                    else None
+                ),
+                rationale=(
+                    str(entry["rationale"]) if entry.get("rationale") else None
+                ),
+                failure_reason=str(entry.get("failure_reason", "")),
+                error_excerpt=str(entry.get("error_excerpt", "")),
+            )
+        )
+    return tuple(out)
 
 
 def load_feedback_from_run_dir(perf_run_dir: Path) -> IterationFeedback | None:
@@ -427,6 +516,7 @@ def load_feedback_from_run_dir(perf_run_dir: Path) -> IterationFeedback | None:
             pod_utilization=str(data.get("pod_utilization", "")),
             previous_spec_yaml=str(data.get("previous_spec_yaml", "")),
             notes=str(data.get("notes", "")),
+            failed_attempts=_failed_attempts_from_payload(data),
         )
     txt = perf_run_dir / "iteration_feedback.txt"
     if txt.is_file():
@@ -452,3 +542,151 @@ def load_feedback_from_run_dir(perf_run_dir: Path) -> IterationFeedback | None:
         except json.JSONDecodeError:
             pass
     return None
+
+
+def _read_decision_rationale(iteration_path: Path) -> str | None:
+    decision_path = iteration_path / "decision" / "decision.json"
+    if not decision_path.is_file():
+        return None
+    try:
+        data = json.loads(decision_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    rationale = data.get("rationale")
+    return str(rationale).strip() if rationale else None
+
+
+def _read_failed_iteration_error_excerpt(
+    iteration_path: Path,
+    *,
+    max_chars: int = 1200,
+) -> str:
+    """Pull a short error excerpt from the most relevant log of a failed iteration."""
+    candidates: list[Path] = [
+        iteration_path / "functional_tests" / "test.log",
+        iteration_path / "bench" / "bench.log",
+        iteration_path / "deploy" / "probe.json",
+    ]
+    for path in candidates:
+        if not path.is_file():
+            continue
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        if path.suffix == ".json":
+            return text[:max_chars]
+        lines = text.splitlines()
+        tail = "\n".join(lines[-40:])
+        return tail[-max_chars:]
+    return ""
+
+
+def _failed_attempt_from_iteration(
+    iteration_path: Path,
+) -> FailedAttempt | None:
+    """Build a ``FailedAttempt`` from a failed iteration directory."""
+    from .workspace import read_iteration_meta
+
+    meta = read_iteration_meta(iteration_path)
+    if not meta:
+        return None
+    failure_reason = str(meta.get("failure_reason") or "").strip()
+    refinement_action = meta.get("refinement_action")
+    kind = refinement_action or "iteration"
+    rationale = _read_decision_rationale(iteration_path)
+    excerpt = _read_failed_iteration_error_excerpt(iteration_path)
+    return FailedAttempt(
+        iteration_id=str(meta.get("iteration_id") or iteration_path.name),
+        kind=str(kind),
+        refinement_action=(
+            str(refinement_action) if refinement_action else None
+        ),
+        rationale=rationale,
+        failure_reason=failure_reason or "(no reason recorded)",
+        error_excerpt=excerpt,
+    )
+
+
+def load_prior_feedback_for_phase(
+    sample_dir: Path,
+    phase_index: int,
+) -> IterationFeedback | None:
+    """
+    Load feedback from the most recent successful iteration before ``phase_index``,
+    annotated with any failed attempts that came after it.
+
+    Failed iterations are NOT skipped silently: each one is appended as a
+    ``FailedAttempt`` so the next prompt knows what was tried and why it failed.
+    """
+    if phase_index <= 0:
+        return None
+
+    from .workspace import (
+        iteration_id_for_phase,
+        iteration_is_failed,
+        resolve_bench_dir,
+        resolve_iteration_dir,
+    )
+
+    failed_attempts: list[FailedAttempt] = []
+    base_feedback: IterationFeedback | None = None
+
+    for prev_phase in range(phase_index - 1, -1, -1):
+        prev_id = iteration_id_for_phase(prev_phase)
+        ip = resolve_iteration_dir(sample_dir, prev_id)
+        if iteration_is_failed(ip):
+            attempt = _failed_attempt_from_iteration(ip)
+            if attempt is not None:
+                failed_attempts.append(attempt)
+            continue
+        bench = resolve_bench_dir(sample_dir, prev_id)
+        if bench is None:
+            continue
+        fb = load_feedback_from_run_dir(bench)
+        if fb is None:
+            fb = collect_iteration_feedback(
+                perf_run_dir=bench,
+                iteration_path=ip,
+            )
+        if fb is not None:
+            base_feedback = fb
+            break
+
+    if base_feedback is None and not failed_attempts:
+        return None
+
+    # Failed attempts are collected newest-first; reverse to chronological order
+    # so the prompt reads from the oldest failed attempt to the most recent.
+    ordered_attempts = tuple(reversed(failed_attempts))
+
+    if base_feedback is None:
+        # No successful prior; surface only the failure stack so the next phase
+        # still has context (avoids re-running the same broken change blindly).
+        return IterationFeedback(
+            iteration_id="(no successful iteration yet)",
+            perf_run_dir="",
+            locust_summary="",
+            error_excerpt="",
+            pod_utilization="",
+            previous_spec_yaml="",
+            notes=(
+                "No successful iteration produced benchmark data yet. "
+                "Only the failed attempts below are available as context."
+            ),
+            failed_attempts=ordered_attempts,
+        )
+
+    if not ordered_attempts:
+        return base_feedback
+
+    return IterationFeedback(
+        iteration_id=base_feedback.iteration_id,
+        perf_run_dir=base_feedback.perf_run_dir,
+        locust_summary=base_feedback.locust_summary,
+        error_excerpt=base_feedback.error_excerpt,
+        pod_utilization=base_feedback.pod_utilization,
+        previous_spec_yaml=base_feedback.previous_spec_yaml,
+        notes=base_feedback.notes,
+        failed_attempts=ordered_attempts,
+    )

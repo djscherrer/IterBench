@@ -3,7 +3,7 @@ Named Kubernetes *cluster* profiles (where to deploy), parallel to
 ``distributed_bench.system_configs`` (which SSH hosts run what).
 
 Workload layout (replicas, CPU, DB) still lives in per-sample
-``k8s_configs/<iteration>/spec.yaml``. Cluster profiles select kubeconfig,
+``iterations/iteration-NNN/spec/spec.yaml``. Cluster profiles select kubeconfig,
 lab topology (control / workers / Locust), and optional image registry (``host:5000``).
 
 Topology is defined only in ``K8S_CLUSTER_REGISTRY``. Select a profile via

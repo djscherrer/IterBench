@@ -140,7 +140,7 @@ def _replicated_postgres_manifests(
     *,
     labels: dict[str, str],
     pg_nodes: tuple[str, ...],
-) -> list[dict[str, Any]:
+) -> list[dict[str, Any]]:
     """
     Primary/replica layout (standard Postgres on Kubernetes):
 

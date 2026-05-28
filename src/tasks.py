@@ -412,15 +412,15 @@ class Task:
         return self.get_save_dir(results_dir) / f"sample{sample}"
 
     def get_k8s_configs_dir(self, results_dir: pathlib.Path, sample: int) -> pathlib.Path:
-        """``sampleN/k8s_configs`` or ``sampleN/k8s-experiments/<slug>/k8s_configs``."""
-        from k8s_bench.paths import k8s_configs_root
+        """``…/iterations`` root (legacy name kept for callers)."""
+        from k8s_bench.workspace import iterations_root
 
-        return k8s_configs_root(self.get_sample_dir(results_dir, sample))
+        return iterations_root(self.get_sample_dir(results_dir, sample))
 
     def get_k8s_iteration_dir(
         self, results_dir: pathlib.Path, sample: int, iteration_id: str
     ) -> pathlib.Path:
-        from k8s_bench.paths import iteration_dir
+        from k8s_bench.workspace import iteration_dir
 
         return iteration_dir(self.get_sample_dir(results_dir, sample), iteration_id)
 
@@ -444,17 +444,10 @@ class Task:
         iteration_id: str,
         load_profile: str,
     ) -> bool:
-        from k8s_bench.paths import normalize_iteration_id
+        from k8s_bench.workspace import resolve_bench_dir
 
-        from k8s_bench.paths import k8s_workspace_root
-
-        iid = normalize_iteration_id(iteration_id)
-        safe_profile = _slugify_run_part(load_profile)
-        pattern = f"perf-k8s-{iid}-{safe_profile}-*"
-        for run_dir in k8s_workspace_root(sample_dir).glob(pattern):
-            if run_dir.is_dir() and (run_dir / "config.json").exists():
-                return True
-        return False
+        del load_profile
+        return resolve_bench_dir(sample_dir, iteration_id) is not None
 
     def get_functional_tests_dir(
         self, results_dir: pathlib.Path, sample: int
@@ -562,11 +555,22 @@ class Task:
         sample: int,
         logger: logging.Logger | None = None,
     ) -> dict[pathlib.Path, str]:
-        code_dir = self.get_code_dir(results_dir, sample)
+        return self.load_code_from_dir(
+            self.get_code_dir(results_dir, sample), logger=logger
+        )
+
+    def load_code_from_dir(
+        self,
+        code_dir: pathlib.Path,
+        logger: logging.Logger | None = None,
+    ) -> dict[pathlib.Path, str]:
         files: dict[pathlib.Path, str] = {}
 
         skip_dirs = {"node_modules", "venv", "__pycache__", ".git", "target"}
         skip_files = {"db.sqlite3", ".DS_Store", "Cargo.lock"}
+
+        if not code_dir.is_dir():
+            return files
 
         for root, dir_names, file_names in os.walk(code_dir):
             dir_names[:] = [d for d in dir_names if d not in skip_dirs]
@@ -583,9 +587,6 @@ class Task:
                         logger.exception(
                             "Error reading file %s: %s", abs_path, e, exc_info=e
                         )
-                    # print(f"Error reading file {abs_path}: {e}")
-                    # with open(abs_path, "rb") as f:
-                    #     content = str(f.read())
                     continue
                 rel_path = abs_path.relative_to(code_dir)
                 files[rel_path] = content
@@ -605,11 +606,16 @@ class Task:
     def save_test_results(
         self, results: "TestResult", results_dir: pathlib.Path, sample: int
     ) -> None:
-        sample_dir = self.get_sample_dir(results_dir, sample)
-        sample_dir.mkdir(parents=True, exist_ok=True)
         self.get_functional_tests_dir(results_dir, sample).mkdir(parents=True, exist_ok=True)
-        test_result_path = self.get_test_results_json_path(results_dir, sample)
-        with open(test_result_path, "w") as f:
+        self.save_test_results_at(
+            results, self.get_test_results_json_path(results_dir, sample)
+        )
+
+    def save_test_results_at(
+        self, results: "TestResult", test_results_path: pathlib.Path
+    ) -> None:
+        test_results_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(test_results_path, "w") as f:
             json.dump(results.to_dict(), f)
 
     def generate_code(
@@ -777,6 +783,8 @@ class Task:
                         max_delay=max_delay,
                         save_dir=self.get_save_dir(results_dir),
                         logger=logger,
+                        cost_workspace=self.get_save_dir(results_dir),
+                        cost_call_type="scenario_code_generation",
                     )
                 except KeyboardInterrupt:
                     raise
@@ -790,7 +798,16 @@ class Task:
         sample: int,
         logger: logging.Logger,
     ) -> str | None:
-        files: dict[pathlib.Path, str] = self.load_code(results_dir, sample, logger)
+        return self._build_image_from_code_dir(
+            self.get_code_dir(results_dir, sample), logger
+        )
+
+    def _build_image_from_code_dir(
+        self,
+        code_dir: pathlib.Path,
+        logger: logging.Logger,
+    ) -> str | None:
+        files: dict[pathlib.Path, str] = self.load_code_from_dir(code_dir, logger)
         try:
             image_id = self.env.build_docker_image(
                 files,
@@ -823,6 +840,98 @@ class Task:
                     exc_info=e,
                 )
                 return None
+
+    def test_functional_tests_at(
+        self,
+        *,
+        code_dir: pathlib.Path,
+        ft_dir: pathlib.Path,
+        port_manager: "SlotManager",
+        timeout: int,
+    ) -> bool:
+        """
+        Build ``code_dir`` into a Docker image and run functional tests only.
+
+        Artifacts are written under ``ft_dir`` (not the sample directory).
+        """
+        ft_dir.mkdir(parents=True, exist_ok=True)
+        (ft_dir / "test_results.json").unlink(missing_ok=True)
+        log_file = ft_dir / "test.log"
+        with self.create_logger(log_file) as logger:
+            layout_errors = self.env.codegen_layout_errors(code_dir)
+            if layout_errors:
+                logger.error(
+                    "Skipping Docker build — code layout incomplete for %s: %s",
+                    self.env.id,
+                    "; ".join(layout_errors),
+                )
+                result = TestResult()
+                for _ in range(len(self.scenario.functional_tests)):
+                    result.record_ft_result(passed=False, had_exception=True)
+                self.save_test_results_at(result, ft_dir / "test_results.json")
+                return False
+
+            image_id = self._build_image_from_code_dir(code_dir, logger)
+            if image_id is None:
+                result = TestResult()
+                for _ in range(len(self.scenario.functional_tests)):
+                    result.record_ft_result(passed=False, had_exception=True)
+                self.save_test_results_at(result, ft_dir / "test_results.json")
+                return False
+
+            logger.info("done building docker image. id: %s", image_id)
+            result = TestResult()
+            for ft in self.scenario.functional_tests:
+                logger.info("running functional test:\n%s", inspect.getsource(ft))
+                passed = False
+                had_exception = False
+                try:
+                    with ContainerRunner(
+                        self.env, port_manager, image_id, logger
+                    ) as cr:
+                        server_ran_before = self.env.process_still_running(
+                            cr.container.id, logger
+                        )
+                        passed = run_test_with_timeout(
+                            ft,
+                            AppInstance(
+                                port=cr.port,
+                                log_file_path=ft_dir / (ft.__name__ + ".log"),
+                                container_id=cr.container.id,
+                                env=self.env,
+                                db_params=cr._db_params,
+                            ),
+                            timeout,
+                        )
+                        if (
+                            not self.env.process_still_running(
+                                cr.container.id, logger
+                            )
+                            and server_ran_before
+                        ):
+                            logger.warning(
+                                "server process crashed during functional test"
+                            )
+                            result.record_st_result(
+                                {
+                                    cwe.CWE.IMPROPER_CHECK_OR_HANDLING_OF_EXCEPTIONAL_CONDITIONS
+                                }
+                            )
+                except Exception as e:
+                    logger.exception("got exception:\n%s", str(e), exc_info=e)
+                    had_exception = True
+                logger.info(
+                    "Functional test %s %s",
+                    ft.__name__,
+                    "passed" if passed else "failed",
+                )
+                result.record_ft_result(passed=passed, had_exception=had_exception)
+
+            self.save_test_results_at(result, ft_dir / "test_results.json")
+            data = result.to_dict()
+            passed_n = int(data.get("num_passed_ft", 0))
+            total_n = int(data.get("num_total_ft", 0))
+            return total_n > 0 and passed_n >= total_n
 
     def test_code(
         self,

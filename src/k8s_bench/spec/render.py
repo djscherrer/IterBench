@@ -8,7 +8,7 @@ import yaml
 from .models import K8sWorkloadSpec
 from .placement import _pod_spec_affinity
 from .postgres_render import build_postgres_manifests
-from ..paths import iteration_manifests_dir, iteration_spec_path
+from ..workspace.paths import iteration_manifests_dir, iteration_spec_path
 
 
 def _common_labels(spec: K8sWorkloadSpec) -> dict[str, str]:
@@ -33,6 +33,35 @@ def _namespace_manifest(spec: K8sWorkloadSpec) -> dict[str, Any]:
 
 def _postgres_manifests(spec: K8sWorkloadSpec) -> list[dict[str, Any]]:
     return build_postgres_manifests(spec, common_labels=_common_labels(spec))
+
+
+def _backend_container(spec: K8sWorkloadSpec, *, port: int, env_list: list[dict[str, str]]) -> dict[str, Any]:
+    container: dict[str, Any] = {
+        "name": "app",
+        "image": spec.backend.image,
+        "imagePullPolicy": (
+            "Never"
+            if spec.backend.image.startswith("baxbench-local/")
+            else "IfNotPresent"
+        ),
+        "ports": [{"containerPort": port}],
+        "env": env_list,
+        "resources": spec.backend.resources.to_k8s_resources(),
+        "readinessProbe": {
+            "tcpSocket": {"port": port},
+            "initialDelaySeconds": 3,
+            "periodSeconds": 5,
+        },
+    }
+    env_id = (spec.labels.get("baxbench.dev/env") or "").lower()
+    if "flask" in env_id or env_id.startswith("python"):
+        container["command"] = [
+            "sh",
+            "-c",
+            "exec gunicorn --preload --workers=${WEB_CONCURRENCY:-2} "
+            "--bind 0.0.0.0:${PORT:-5001} app:app",
+        ]
+    return container
 
 
 def _backend_manifests(spec: K8sWorkloadSpec) -> list[dict[str, Any]]:
@@ -65,23 +94,7 @@ def _backend_manifests(spec: K8sWorkloadSpec) -> list[dict[str, Any]]:
                     "spec": {
                         **pod_spec,
                         "containers": [
-                            {
-                                "name": "app",
-                                "image": spec.backend.image,
-                                "imagePullPolicy": (
-                                    "Never"
-                                    if spec.backend.image.startswith("baxbench-local/")
-                                    else "IfNotPresent"
-                                ),  # registry + docker hub: pull once, reuse on node
-                                "ports": [{"containerPort": port}],
-                                "env": env_list,
-                                "resources": spec.backend.resources.to_k8s_resources(),
-                                "readinessProbe": {
-                                    "tcpSocket": {"port": port},
-                                    "initialDelaySeconds": 3,
-                                    "periodSeconds": 5,
-                                },
-                            }
+                            _backend_container(spec, port=port, env_list=env_list),
                         ]
                     },
                 },

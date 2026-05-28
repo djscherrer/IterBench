@@ -133,16 +133,38 @@ This keeps:
 
 **`--mode k8s-bench`** (default) runs the full loop per phase:
 
-1. **LLM spec generation** → `k8s_configs/iteration-NNN/spec.yaml`
-2. **Render** Deployment/Service manifests
-3. **Deploy** + **Locust** benchmark
-4. **Feedback** written to `perf-k8s-…/iteration_feedback.json` for the next phase
+1. **Phase 000 (baseline)** — LLM spec with deploy-probe retries until the cluster accepts the layout, then Locust benchmark
+2. **Phases 001–N (refinement)** — LLM chooses code vs deployment tuning; **single attempt** per phase (fail-fast)
+3. **Deploy probe** (spec paths) — static validation, then `kubectl` Ready checks + Service Endpoints (no HTTP traffic)
+4. **Feedback** written to `iterations/NNN/bench/iteration_feedback.json` for the next phase
 
-**Experiment slug** (optional): set `K8S_EXPERIMENT` / `--k8s-experiment` /
-`BAXBENCH_K8S_EXPERIMENT` to group configs and perf runs under
-`sampleN/k8s-experiments/<slug>/` (iterations still `iteration-001`, …).
-Omit the slug for the legacy layout directly under `sampleN/`. A new slug starts
-a fresh chain without skipping phases from an older experiment.
+**Experiment slug**: set `K8S_EXPERIMENT` / `--k8s-experiment` /
+`BAXBENCH_K8S_EXPERIMENT` to group iterative state under
+`sampleN/k8s-experiments/<slug>/iterations/iteration-000/…`. When unset, the slug
+`default` is used. Initial generated code and functional tests stay at
+`sampleN/code/` and `sampleN/functional_tests/` (immutable after initial codegen).
+Refined code and iteration-scoped FT artifacts live under
+``iterations/iteration-NNN/code/`` only.
+
+Each iteration directory layout:
+
+```
+iterations/iteration-000/           # created at phase start
+iterations/iteration-000-baseline/  # after baseline kind is known
+  meta.json
+  spec/
+  manifests/
+  deploy/probe.json
+  deploy/bench.json
+  bench/
+
+iterations/iteration-001-spec/      # deployment/spec refinement
+iterations/iteration-002-code/      # code refinement
+iterations/iteration-003-spec-failed/  # failed phase (excluded from feedback)
+  decision/
+  code/
+  functional_tests/
+```
 
 **Namespace cleanup** (always on): before each deploy and after each bench run,
 all `baxbench-*` Kubernetes namespaces are deleted automatically (frees cluster
@@ -151,8 +173,10 @@ CPU; results on disk are kept). Set `BAXBENCH_K8S_CLEANUP=false` only to disable
 **Spec validation**: LLM specs are checked against **per-worker** capacity (each
 pod must fit on one node using **requests**), connection pool budget
 (`replicas × pool_max ≤ database.max_connections`), and cluster request totals.
-Failed specs are re-prompted to the LLM (up to 3 attempts) with error details
-before deploy.
+**Baseline (000)** re-prompts the LLM (static validation + deploy probe) until
+deployable or `BAXBENCH_K8S_BASELINE_SPEC_MAX_ATTEMPTS` (default 5). **Refinement
+phases** use a single spec attempt; static validation or deploy probe failure marks
+the phase as ``iteration-NNN-spec-failed`` (excluded from the feedback chain).
 
 Optional spec fields: `database.replicas` (1 = standalone; N>1 = primary + read
 replicas), `database.max_connections`, `database.placement.worker` (exact pin) or
@@ -202,20 +226,28 @@ multi-master active-active:
 Future extensions: persistent volumes (StatefulSet primary), PgBouncer pooler,
 synchronous replication for HA failover.
 
+**Deployment vs code refinement** (phase 001+): before each refinement phase, an LLM may
+choose to refine the **deployment spec** (default path) or **application code**
+(benchmark feedback appended to the normal codegen prompt, then functional tests
+via `Task.test_code`). **Single attempt** per refinement phase — functional test or
+deploy probe failure renames the folder to `NNN-code-failed` / `NNN-spec-failed`,
+reverts live code to the last passing snapshot, and leaves `prior_feedback` unchanged.
+Control with `--k8s-refinement auto|deployment|code|off` or `BAXBENCH_K8S_REFINEMENT`.
+
 After **generate** + **test**:
 
 ```bash
 ./scripts/bench_k8s.sh
-# or: --k8s-iterations 3  for iteration-001 .. iteration-003
+# or: --k8s-iterations 10  for iteration-000 baseline + iteration-001 .. iteration-010
 ```
 
 ### CLI
 
 | Flag | Default | Meaning |
 |------|---------|---------|
-| `--k8s-iterations N` | 1 | Phases `iteration-001` … `iteration-NNN` |
+| `--k8s-iterations N` | 1 | Baseline `iteration-000` plus N refinement phases (`001`…`NNN`) |
 | `--k8s-spec-gen` / `--no-k8s-spec-gen` | on | LLM specs vs deploy-only |
-| `--k8s-iteration iteration-001` | — | Pin a single phase (ignores N) |
+| `--k8s-iteration iteration-000` | — | Pin a single phase (ignores N) |
 | `--k8s-experiment adaptive-may20` | — | Workspace under `k8s-experiments/<slug>/` |
 | `--force` | — | Regenerate specs and re-bench |
 
@@ -225,8 +257,8 @@ Phase 2+ prompt adds **feedback**: Locust per-endpoint stats as a markdown table
 (from ``bench_results_*_stats.csv``), Locust top errors, Kubernetes pod/node
 utilization aggregated over the run (min/avg/max from ``stats/kubernetes/*.csv``),
 previous ``spec.yaml``. The full LLM prompt is logged in
-``k8s_configs/<iteration>/spec_gen_prompt.log``; feedback-only text is in
-``perf-.../iteration_feedback.txt``.
+``iterations/iteration-NNN/spec/spec_gen_prompt.log``; feedback-only text is in
+``iterations/iteration-NNN/bench/iteration_feedback.txt``.
 
 **Experiment trajectory file**: each workspace maintains ``experiment_summary.md``
 (append-only). After every spec generation it records deployment, diff vs the

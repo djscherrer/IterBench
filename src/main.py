@@ -304,6 +304,10 @@ def main(args: Any) -> None:
             k8s_spec_gen=getattr(args, "k8s_spec_gen", True),
             k8s_wait_timeout=args.k8s_wait_timeout,
             k8s_auto_init=args.k8s_auto_init,
+            k8s_refinement=getattr(args, "k8s_refinement", None),
+            ft_timeout=args.timeout,
+            num_ports=args.num_ports,
+            min_port=args.min_port,
             bench_users=args.bench_users,
             bench_spawn_rate=args.bench_spawn_rate,
             bench_run_time=args.bench_run_time,
@@ -576,8 +580,9 @@ if __name__ == "__main__":
         type=str,
         default=None,
         help=(
-            "Pin a single Kubernetes iteration (e.g. iteration-001). "
-            "If omitted, --k8s-iterations controls iteration-001..NNN."
+            "Pin a single Kubernetes iteration (e.g. iteration-000 or iteration-003). "
+            "If omitted, --k8s-iterations controls iteration-000 (baseline) plus "
+            "iteration-001..NNN refinement phases."
         ),
     )
     parser.add_argument(
@@ -585,9 +590,9 @@ if __name__ == "__main__":
         type=int,
         default=1,
         help=(
-            "K8s iterative benchmark: number of phases (iteration-001, iteration-002, …). "
-            "Phase 1: LLM spec from scenario/code/cluster capacity. "
-            "Later phases: refine spec using Locust summary + pod utilization feedback."
+            "K8s iterative benchmark: number of refinement phases after baseline. "
+            "Runs iteration-000 (baseline deploy probe + benchmark) then "
+            "iteration-001 .. iteration-NNN (single-attempt code or spec refinement)."
         ),
     )
     parser.add_argument(
@@ -641,6 +646,17 @@ if __name__ == "__main__":
             "sampleN/k8s-experiments/<slug>/ (also BAXBENCH_K8S_EXPERIMENT). "
             "Omit for legacy layout directly under sampleN/. "
             "Use a new slug to start a fresh iteration chain without reusing prior skips."
+        ),
+    )
+    parser.add_argument(
+        "--k8s-refinement",
+        type=str,
+        default=None,
+        choices=["auto", "deployment", "code", "off"],
+        help=(
+            "Between k8s phases (iteration 002+): auto = LLM chooses deployment vs code "
+            "refinement; deployment/code = force path; off = deployment-only (legacy). "
+            "Also BAXBENCH_K8S_REFINEMENT (default: auto)."
         ),
     )
     parser.add_argument(

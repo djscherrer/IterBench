@@ -1,4 +1,4 @@
-"""Single K8s deploy + Locust run for one ``k8s_configs/<iteration>/`` directory."""
+"""Single K8s deploy + Locust run for one ``iterations/NNN/`` directory."""
 
 from __future__ import annotations
 
@@ -24,14 +24,19 @@ from .cluster.images import prepare_image_for_k8s
 from .cluster.load_target import resolve_nodeport_target
 from .cluster.profiles import selected_cluster_profile
 from .spec.models import BackendSpec, DatabaseSpec, K8sWorkloadSpec
-from .paths import (
+from .workspace import (
     default_k8s_namespace,
+    ensure_iteration_core_layout,
+    find_iteration_spec_path,
+    iteration_id_for_phase,
     iteration_spec_path,
-    k8s_configs_root,
+    iterations_root,
     list_iteration_dirs,
     new_iteration_id,
     normalize_iteration_id,
+    parse_iteration_folder_name,
     perf_run_dir_for_iteration,
+    resolve_iteration_dir,
     resolve_k8s_experiment_id,
 )
 from .spec.render import render_iteration
@@ -48,21 +53,21 @@ def resolve_iterations_to_run(
     auto_init: bool,
 ) -> list[Path]:
     if iteration_id:
-        path = k8s_configs_root(sample_dir) / normalize_iteration_id(iteration_id)
-        if not (path / "spec.yaml").is_file():
-            raise FileNotFoundError(f"Missing spec.yaml for iteration: {path}")
+        path = resolve_iteration_dir(sample_dir, iteration_id)
+        if find_iteration_spec_path(path) is None:
+            raise FileNotFoundError(f"Missing spec for iteration: {path}")
         return [path]
     existing = list_iteration_dirs(sample_dir)
     if existing:
         return existing
     if not auto_init:
         raise FileNotFoundError(
-            f"No k8s iterations under {k8s_configs_root(sample_dir)}; "
+            f"No k8s iterations under {iterations_root(sample_dir)}; "
             "pass --k8s-iteration or enable auto-init."
         )
     iid = new_iteration_id(sample_dir)
-    path = k8s_configs_root(sample_dir) / iid
-    path.mkdir(parents=True, exist_ok=True)
+    path = resolve_iteration_dir(sample_dir, iid)
+    ensure_iteration_core_layout(path)
     return [path]
 
 
@@ -74,9 +79,15 @@ def ensure_iteration_spec(
     needs_db: bool,
     labels: dict[str, str] | None = None,
 ) -> K8sWorkloadSpec:
-    spec_path = iteration_spec_path(iteration_path)
-    iid = iteration_path.name
-    if spec_path.is_file():
+    ensure_iteration_core_layout(iteration_path)
+    spec_path = find_iteration_spec_path(iteration_path)
+    phase, _kind, _failed = parse_iteration_folder_name(iteration_path.name)
+    iid = (
+        iteration_id_for_phase(phase)
+        if phase is not None
+        else normalize_iteration_id(iteration_path.name)
+    )
+    if spec_path is not None and spec_path.is_file():
         spec = K8sWorkloadSpec.from_yaml_file(spec_path)
         updated = K8sWorkloadSpec(
             iteration_id=spec.iteration_id,
@@ -105,7 +116,7 @@ def ensure_iteration_spec(
             database=DatabaseSpec(enabled=needs_db),
             labels=labels or {},
         )
-    updated.write_yaml(spec_path)
+    updated.write_yaml(iteration_spec_path(iteration_path))
     return updated
 
 
@@ -276,4 +287,6 @@ def make_k8s_perf_run_dir(
 ) -> Path:
     prof = _slugify_run_part(load_profile or os.environ.get("BAXBENCH_LOAD_PROFILE", "default"))
     ts = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
-    return perf_run_dir_for_iteration(sample_dir, iteration_id, load_profile=prof, timestamp=ts)
+    return perf_run_dir_for_iteration(
+        sample_dir, iteration_id, load_profile=prof, timestamp=ts
+    )

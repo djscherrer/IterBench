@@ -1,7 +1,7 @@
 """
 Kubernetes-backed benchmark path (parallel to ``distributed_bench``).
 
-Top level: orchestration (handler, loop, iteration), ``paths``, and CLI.
+Top level: orchestration (handler, loop, iteration), ``workspace``, and CLI.
 Supporting packages: ``spec/`` (workload YAML), ``cluster/`` (kubectl, registry, lab).
 """
 
@@ -16,18 +16,22 @@ from .iteration import (
     resolve_iterations_to_run,
     run_k8s_bench_iteration,
 )
-from .paths import (
-    K8S_CONFIGS_DIRNAME,
+from .workspace import (
+    ITERATIONS_DIRNAME,
     K8S_EXPERIMENTS_DIRNAME,
-    deploy_record_path,
+    deploy_bench_record_path,
+    deploy_probe_record_path,
     default_k8s_namespace,
+    find_iteration_spec_path,
     iteration_dir,
     iteration_manifests_dir,
     iteration_spec_path,
-    k8s_configs_root,
+    iterations_root,
     k8s_workspace_root,
     new_iteration_id,
     normalize_experiment_id,
+    resolve_bench_dir,
+    resolve_iteration_dir,
     resolve_k8s_experiment_id,
 )
 from .spec import (
@@ -40,21 +44,25 @@ from .spec import (
 
 __all__ = [
     "ClusterCapacity",
-    "K8S_CONFIGS_DIRNAME",
+    "ITERATIONS_DIRNAME",
     "K8S_EXPERIMENTS_DIRNAME",
     "K8sWorkloadSpec",
     "collect_cluster_capacity",
+    "deploy_bench_record_path",
     "deploy_iteration",
-    "deploy_record_path",
+    "deploy_probe_record_path",
     "ensure_k8s_cluster_ready",
+    "find_iteration_spec_path",
     "generate_k8s_workload_spec",
     "iteration_dir",
     "iteration_manifests_dir",
     "iteration_spec_path",
+    "iterations_root",
     "default_k8s_namespace",
-    "k8s_configs_root",
     "k8s_workspace_root",
     "normalize_experiment_id",
+    "resolve_bench_dir",
+    "resolve_iteration_dir",
     "resolve_k8s_experiment_id",
     "make_k8s_perf_run_dir",
     "new_iteration_id",

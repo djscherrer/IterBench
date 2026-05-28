@@ -6,11 +6,13 @@ import sys
 from pathlib import Path
 
 from .cluster.deploy import delete_iteration_namespace, deploy_iteration, render_and_deploy
-from .paths import (
+from .workspace import (
     default_k8s_namespace,
+    find_iteration_spec_path,
     iteration_dir,
     new_iteration_id,
     normalize_iteration_id,
+    require_iteration_spec_path,
 )
 from .spec.dirs import prepare_iteration
 from .spec.models import BackendSpec, DatabaseSpec, K8sWorkloadSpec
@@ -59,7 +61,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def _resolve_iteration_path(target: Path, iteration: str | None) -> Path:
-    if (target / "spec.yaml").is_file():
+    if find_iteration_spec_path(target) is not None:
         return target
     if iteration is None:
         raise SystemExit(f"{target} is not an iteration directory; pass --iteration")
@@ -124,7 +126,7 @@ def main(argv: list[str] | None = None) -> int:
         render_and_deploy(iteration_path, wait_timeout_s=args.wait_timeout)
         return 0
     if args.command == "delete":
-        spec = K8sWorkloadSpec.from_yaml_file(iteration_path / "spec.yaml")
+        spec = K8sWorkloadSpec.from_yaml_file(require_iteration_spec_path(iteration_path))
         delete_iteration_namespace(spec.namespace)
         return 0
     return 1

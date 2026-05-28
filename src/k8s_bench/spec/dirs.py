@@ -1,12 +1,14 @@
-"""Create and initialize per-sample iteration directories under ``k8s_configs/``."""
+"""Create and initialize per-sample iteration directories under ``iterations/``."""
 
 from __future__ import annotations
 
 from pathlib import Path
 
-from ..paths import (
+from ..workspace import (
+    ensure_iteration_core_layout,
+    find_iteration_spec_path,
+    iteration_dir,
     iteration_spec_path,
-    k8s_configs_root,
     new_iteration_id,
     normalize_iteration_id,
 )
@@ -21,17 +23,18 @@ def prepare_iteration(
     write_spec: bool = True,
 ) -> Path:
     iid = normalize_iteration_id(iteration_id or new_iteration_id(sample_dir))
-    iteration_path = k8s_configs_root(sample_dir) / iid
-    iteration_path.mkdir(parents=True, exist_ok=True)
+    iteration_path = iteration_dir(sample_dir, iid)
+    ensure_iteration_core_layout(iteration_path)
     spec_path = iteration_spec_path(iteration_path)
+    existing = find_iteration_spec_path(iteration_path)
     if spec is not None:
         spec_to_write = spec
-    elif not spec_path.exists():
+    elif existing is not None:
+        spec_to_write = K8sWorkloadSpec.from_yaml_file(existing)
+    else:
         raise FileNotFoundError(
             f"No spec at {spec_path}; pass iteration_id with existing spec or provide spec=."
         )
-    else:
-        spec_to_write = K8sWorkloadSpec.from_yaml_file(spec_path)
     if write_spec:
         resolved = K8sWorkloadSpec.from_mapping(
             spec_to_write.to_yaml_dict(),
