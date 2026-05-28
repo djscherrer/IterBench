@@ -75,7 +75,6 @@ class IterationFeedback:
     def to_prompt_text(self) -> str:
         parts = [
             f"Most recent successful iteration: {self.iteration_id}",
-            f"Perf run directory: {self.perf_run_dir}",
             "",
             "## Locust results (per endpoint)",
             "Source: Locust ``bench_results_*_stats.csv`` (markdown table; includes p95/p99 from Locust percentiles).",
@@ -405,6 +404,59 @@ def _summarize_k8s_utilization_csv(perf_run_dir: Path) -> str:
     return "\n\n".join(parts)
 
 
+def _replica_usage_note(
+    pod_util_text: str,
+    spec: K8sWorkloadSpec | None,
+) -> str:
+    """
+    Flag the common pitfall: spec deployed read replicas but the app code only
+    talks to the primary (replicas idle while primary saturates).
+    """
+    if spec is None or not spec.database.enabled or spec.database.replicas <= 1:
+        return ""
+    if not pod_util_text:
+        return ""
+
+    primary_max_m: int | None = None
+    replica_max_m: int | None = None
+    for line in pod_util_text.splitlines():
+        stripped = line.strip()
+        if not stripped.startswith("|") or "/" not in stripped:
+            continue
+        cols = [c.strip() for c in stripped.strip("|").split("|")]
+        if len(cols) < 2:
+            continue
+        pod = cols[0]
+        cpu_field = cols[1]
+        try:
+            max_cpu = int(cpu_field.split("/")[-1])
+        except (ValueError, IndexError):
+            continue
+        is_replica = "-replica-" in pod or pod.endswith("-replica")
+        is_primary = (
+            pod.startswith(spec.database.service_name)
+            and not is_replica
+            and "postgres" in pod
+        ) or (pod.startswith("postgres-") and not is_replica)
+        if is_replica:
+            replica_max_m = max(replica_max_m or 0, max_cpu)
+        elif is_primary:
+            primary_max_m = max(primary_max_m or 0, max_cpu)
+
+    if primary_max_m is None or replica_max_m is None:
+        return ""
+
+    if primary_max_m >= 200 and replica_max_m < max(50, primary_max_m // 10):
+        return (
+            f"Read replicas appear **idle** during the load test "
+            f"(primary peaked at ~{primary_max_m}m CPU, replicas at ~{replica_max_m}m). "
+            "The application code is not routing reads to `DB_READ_HOST`. "
+            "Bumping `database.replicas` further will not help until the code "
+            "uses the read pool (consider a `code` refinement)."
+        )
+    return ""
+
+
 def collect_iteration_feedback(
     *,
     perf_run_dir: Path,
@@ -419,9 +471,14 @@ def collect_iteration_feedback(
         bench_log = bench_log_path.read_text(encoding="utf-8", errors="replace")
 
     spec_yaml = ""
+    spec: K8sWorkloadSpec | None = None
     spec_path = find_iteration_spec_path(iteration_path)
     if spec_path is not None and spec_path.is_file():
         spec_yaml = spec_path.read_text(encoding="utf-8", errors="replace")
+        try:
+            spec = K8sWorkloadSpec.from_yaml_file(spec_path)
+        except ValueError:
+            spec = None
 
     ns = namespace
     if not ns:
@@ -432,15 +489,14 @@ def collect_iteration_feedback(
                 ns = (cfg.get("k8s_iteration") or {}).get("namespace")
             except json.JSONDecodeError:
                 pass
-    if not ns and spec_path is not None and spec_path.is_file():
-        try:
-            ns = K8sWorkloadSpec.from_yaml_file(spec_path).namespace
-        except ValueError:
-            pass
+    if not ns and spec is not None:
+        ns = spec.namespace
 
     k8s_util = _summarize_k8s_utilization_csv(perf_run_dir)
     if not k8s_util and ns:
         k8s_util = _kubectl_top_pods(ns, log)
+
+    notes = _replica_usage_note(k8s_util, spec)
 
     return IterationFeedback(
         iteration_id=iteration_path.name,
@@ -449,6 +505,7 @@ def collect_iteration_feedback(
         error_excerpt=_extract_error_excerpt(bench_log),
         pod_utilization=k8s_util,
         previous_spec_yaml=spec_yaml,
+        notes=notes,
     )
 
 

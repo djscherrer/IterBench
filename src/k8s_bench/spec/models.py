@@ -244,4 +244,13 @@ class K8sWorkloadSpec:
             env.setdefault("DB_USER", POSTGRES_USER)
             env.setdefault("DB_PASSWORD", POSTGRES_PASSWORD)
             env.setdefault("DB_NAME", POSTGRES_DATABASE)
+            # When replicas exist, expose the read-only Service so the app can
+            # route SELECTs to replicas (apps that ignore this var keep using
+            # DB_HOST and behave exactly as before — opt-in via code refinement).
+            if self.database.replicas > 1:
+                read_host = (
+                    f"{self.database.service_name}-read."
+                    f"{self.namespace}.svc.cluster.local"
+                )
+                env.setdefault("DB_READ_HOST", read_host)
         return env

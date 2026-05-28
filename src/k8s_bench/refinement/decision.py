@@ -107,6 +107,7 @@ Choose **`code`** when:
 - Functional tests were passing but perf errors suggest inefficient algorithms, missing indexes, N+1 queries, pool misconfiguration **in code**
 - Pod utilization is low yet goodput is poor (software bottleneck)
 - A recent code refinement attempt failed functional tests (see pending code fix below)
+- The current spec already deploys **Postgres read replicas** (`database.replicas > 1` and `DB_READ_HOST` is set) but replica CPU stays near 0 while the primary saturates — the code must opt into the read pool before any further deployment change can help
 
 If the feedback below lists **failed attempts since the last successful iteration**, treat them as anti-examples: do not repeat the same change without addressing the recorded failure.
 

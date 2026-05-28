@@ -21,14 +21,161 @@ from ..code_paths import (
 )
 from ..feedback import IterationFeedback
 from ..workspace import (
+    find_iteration_spec_path,
     iteration_code_snapshot_dir,
     iteration_functional_tests_dir,
     iteration_id_for_phase,
     k8s_workspace_root,
     parse_iteration_folder_name,
 )
-from ..spec.generation import _read_app_hints
+from ..spec.models import K8sWorkloadSpec
 from ..util.sample import functional_tests_gate
+
+# Hard cap on the rendered code block so very large multi-file projects
+# do not blow the LLM context. 200 KB ≈ 50K tokens for typical code, which
+# fits comfortably in modern long-context models while keeping every file
+# visible. Override with ``BAXBENCH_K8S_CODE_REFINE_MAX_CHARS``.
+_DEFAULT_CODE_BUDGET_CHARS = 200_000
+
+# Files we never include in the prompt (build/dependency artifacts, caches,
+# lockfiles, binary blobs, hidden metadata).
+_CODE_IGNORE_NAMES = frozenset({
+    "node_modules",
+    ".git",
+    ".venv",
+    "venv",
+    "__pycache__",
+    "target",
+    "build",
+    "dist",
+    ".pytest_cache",
+    ".mypy_cache",
+    ".cache",
+    ".idea",
+    ".vscode",
+})
+_CODE_IGNORE_SUFFIXES = frozenset({
+    ".lock",
+    ".log",
+    ".pyc",
+    ".pyo",
+    ".so",
+    ".dylib",
+    ".dll",
+    ".class",
+    ".jar",
+    ".zip",
+    ".tar",
+    ".gz",
+    ".bin",
+    ".png",
+    ".jpg",
+    ".jpeg",
+    ".gif",
+    ".pdf",
+    ".woff",
+    ".woff2",
+    ".ttf",
+    ".eot",
+    ".ico",
+    ".sqlite",
+    ".db",
+})
+
+
+def _iter_code_files(code_dir: Path) -> list[Path]:
+    """Return all source files under ``code_dir`` in stable, prioritized order."""
+    if not code_dir.is_dir():
+        return []
+    priority_first = ("app.js", "app.py", "main.py", "main.rs", "server.js", "index.js")
+    found: list[Path] = []
+    for p in code_dir.rglob("*"):
+        if not p.is_file():
+            continue
+        if any(part in _CODE_IGNORE_NAMES for part in p.relative_to(code_dir).parts):
+            continue
+        if p.suffix.lower() in _CODE_IGNORE_SUFFIXES:
+            continue
+        found.append(p)
+
+    def _sort_key(path: Path) -> tuple[int, str]:
+        name = path.name
+        try:
+            return (priority_first.index(name), str(path))
+        except ValueError:
+            return (len(priority_first), str(path))
+
+    return sorted(found, key=_sort_key)
+
+
+def _read_full_code_for_refinement(
+    code_dir: Path, *, budget_chars: int | None = None
+) -> str:
+    """
+    Concatenate all source files under ``code_dir`` using ``<FILEPATH>`` /
+    ``<CODE>`` blocks (same format the LLM must emit back). Files are emitted
+    until ``budget_chars`` is exhausted; remaining files are listed by name so
+    the model knows what was skipped.
+    """
+    import os
+
+    if budget_chars is None:
+        budget_chars = int(
+            os.environ.get(
+                "BAXBENCH_K8S_CODE_REFINE_MAX_CHARS",
+                str(_DEFAULT_CODE_BUDGET_CHARS),
+            )
+        )
+
+    files = _iter_code_files(code_dir)
+    if not files:
+        return "(application code not found yet)"
+
+    blocks: list[str] = []
+    skipped: list[str] = []
+    used = 0
+    for path in files:
+        rel = path.relative_to(code_dir).as_posix()
+        try:
+            content = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            skipped.append(f"{rel} (unreadable)")
+            continue
+        block = f"<FILEPATH>\n{rel}\n</FILEPATH>\n<CODE>\n{content}\n</CODE>\n"
+        if used + len(block) > budget_chars and blocks:
+            skipped.append(rel)
+            continue
+        blocks.append(block)
+        used += len(block)
+
+    body = "\n".join(blocks).rstrip()
+    if skipped:
+        body += (
+            "\n\n(Additional files in the codebase, not shown due to context "
+            "budget — keep them unchanged unless your refinement truly "
+            "requires editing them: "
+            + ", ".join(skipped)
+            + ")"
+        )
+    return body
+
+
+def _read_replica_hint_for_iteration(iteration_path: Path) -> str:
+    """Brief note when the current deployment actually exposes read replicas."""
+    spec_path = find_iteration_spec_path(iteration_path)
+    if spec_path is None:
+        return ""
+    try:
+        spec = K8sWorkloadSpec.from_yaml_file(spec_path)
+    except Exception:
+        return ""
+    if not spec.database.enabled or spec.database.replicas <= 1:
+        return ""
+    return (
+        f"Note: for this iteration `DB_READ_HOST` is set and points to "
+        f"{spec.database.replicas - 1} read replica(s). Consider whether "
+        "additional read endpoints should be routed through it."
+    )
 
 PENDING_CODE_REFINEMENT_FILENAME = "pending_code_refinement.json"
 
@@ -134,6 +281,7 @@ def build_code_refinement_prompt(
     task: Any,
     results_dir: Path,
     sample: int,
+    iteration_path: Path,
     prior_feedback: IterationFeedback,
     functional_test_feedback: str | None = None,
     phase_index: int = 0,
@@ -147,7 +295,7 @@ def build_code_refinement_prompt(
         use_stubs=task.use_stubs,
     )
     code_dir = resolve_active_code_dir(task=task, results_dir=results_dir, sample=sample)
-    app_hints = _read_app_hints(code_dir, max_chars=8000)
+    full_code = _read_full_code_for_refinement(code_dir)
 
     from ..spec.generation import _format_iteration_progress
 
@@ -170,12 +318,19 @@ def build_code_refinement_prompt(
         "Keep the same API contract and scenario requirements. Output a complete replacement "
         "codebase using the same `<FILEPATH>` / `<CODE>` format as initial generation.",
         "",
-        "### Benchmark feedback",
-        prior_feedback.to_prompt_text(),
-        "",
-        "### Current application code",
-        app_hints,
     ]
+    replica_hint = _read_replica_hint_for_iteration(iteration_path)
+    if replica_hint:
+        parts.extend([replica_hint, ""])
+    parts.extend(
+        [
+            "### Benchmark feedback",
+            prior_feedback.to_prompt_text(),
+            "",
+            "### Current application code (full contents — rewrite as needed)",
+            full_code,
+        ]
+    )
     if functional_test_feedback:
         parts.extend(
             [
@@ -253,6 +408,7 @@ def regenerate_iteration_code(
         task=task,
         results_dir=results_dir,
         sample=sample,
+        iteration_path=iteration_path,
         prior_feedback=prior_feedback,
         functional_test_feedback=functional_test_feedback,
         phase_index=phase_index,

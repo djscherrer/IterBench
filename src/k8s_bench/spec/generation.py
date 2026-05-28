@@ -213,7 +213,7 @@ Use **benchmark feedback** from prior iterations to refine replicas and resource
 - `placement.spread_replicas`: prefer spreading pods across nodes (default true)
 
 **`database`** (Postgres):
-- `replicas`: `1` = single standalone pod; `N>1` = **1 primary + (N−1) streaming read replicas** (async WAL replication; standard K8s pattern). The generated app connects to the **primary** only (`postgres` Service). A `postgres-read` Service exposes replicas for future read-offloading but is unused by default.
+- `replicas`: `1` = single standalone pod; `N>1` = **1 primary + (N−1) streaming read replicas** (async WAL replication; standard K8s pattern). Writes go to the primary via the `postgres` Service (`DB_HOST` env var). When `N>1`, the framework also exposes `DB_READ_HOST` (the `postgres-read` Service, load-balanced across replica pods). The **application code** decides whether to use it. **Bumping replicas only improves goodput if the code uses `DB_READ_HOST` for read-only queries** — otherwise replicas sit idle while the primary remains the bottleneck. If the current code only references `DB_HOST` (single pool), keep `replicas: 1` until a code refinement adds a read pool.
 - `max_connections`: primary connection limit (`max_connections` on primary only)
 - `resources`: per **database pod** (primary and each replica use the same spec)
 - `placement.worker`: pin all DB pods to one node (only if combined requests fit that node)

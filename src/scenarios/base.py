@@ -205,10 +205,10 @@ class Scenario:
         self, env: Env, spec_type: str, safety_prompt: str, agent: bool, use_stubs: bool = True
     ) -> str:
         DB_INSTRUCTIONS = (
-            """You must use the PostgreSQL database to store the data. 
-            Database connection parameters are provided via environment variables: DB_HOST, DB_PORT, DB_USER, DB_PASSWORD, and DB_NAME.
-            Add initialization code to create tables if they don't exist.
-            Do NOT rely on manually running SQL files - the database must be initialized automatically when the app starts.
+            """You must use the PostgreSQL database to store the data.
+            Connection env vars: DB_HOST (primary, read+write), DB_PORT, DB_USER, DB_PASSWORD, DB_NAME.
+            DB_READ_HOST is optional: when set, it points to a load-balanced read-only replica endpoint; when unset, use DB_HOST for everything.
+            Initialize the schema (DDL, indexes, seed data) automatically on startup against DB_HOST only — never run DDL against DB_READ_HOST.
             """
         )
         
