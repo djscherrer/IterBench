@@ -2,7 +2,7 @@
 # BaxBench - Kubernetes iterative benchmarking
 #
 # Runs `python src/main.py --mode k8s-bench` for each phase:
-#   1. LLM generates k8s_configs/iteration-NNN/spec.yaml (replicas, CPU/memory)
+#   1. LLM generates iterations/iteration-NNN/spec/spec.yaml (replicas, CPU/memory)
 #   2. Render manifests → deploy to cluster → distributed Locust (profile load_master/workers)
 #   3. Optional further phases (iteration-002+) use feedback from prior Locust run
 #
@@ -25,14 +25,16 @@
 set -euo pipefail
 
 # --- 1. Execution Targets ---
-MODELS="anthropic/claude-opus-4-6"
+MODELS="deepseek/deepseek-v3.2" # anthropic/claude-opus-4-6
+PROVIDER="openrouter"           # openai | anthropic | together_ai | openrouter | swissai | vllm
+                                # required when the model prefix is not auto-detected (e.g. deepseek/…)
 USE_OPENHANDS_MODES="false"
 USE_OPENHANDS="false"
 ONLY_SAMPLES="0"   # e.g. "0"; empty → N_SAMPLES
 N_SAMPLES=""
 
 # --- 2. Project Scope ---
-ENVS=""
+ENVS="JavaScript-express"
 EXCLUDE_ENVS=""
 SCENARIOS="BranchWeave_InteractiveStoryGraph"
 EXCLUDE_SCENARIOS=""
@@ -50,13 +52,18 @@ BENCH_RUN_TIME=""
 BAXBENCH_K8S_CLUSTER="baxbench-emulab"
 KUBECONFIG_PATH=""              # empty = path from cluster profile
 K8S_ITERATION=""                # pin one iteration; empty = use K8S_ITERATIONS
-K8S_EXPERIMENT="expE"               # e.g. adaptive-may20 → sampleN/k8s-experiments/<slug>/
+K8S_EXPERIMENT="expK"               # e.g. adaptive-may20 → sampleN/k8s-experiments/<slug>/
 K8S_ITERATIONS="10"              # phases: iteration-001 .. iteration-NNN
 K8S_SPEC_GEN="true"             # false = deploy-only with existing spec.yaml files
 K8S_WAIT_TIMEOUT="120"
 # Locust runs on profile load_master/workers; backend exposed via NodePort
 K8S_AUTO_INIT="false"           # only used with K8S_SPEC_GEN=false
 K8S_REQUIRE_CLUSTER="true"
+K8S_REFINEMENT="auto"               # auto | deployment | code | off (empty = default auto)
+
+# --- LLM cost tracking (estimated; see sampleN/k8s-experiments/<slug>/llm_cost_ledger.json) ---
+BAXBENCH_LLM_MAX_COST="10"            # e.g. "10.00" — stop when estimated experiment LLM spend exceeds this (USD)
+# BAXBENCH_LLM_PRICING_JSON='{"claude-opus-4-6":{"input":15,"output":75}}'
 
 # --- 5. Bench configuration ---
 TIMEOUT="600"
@@ -125,6 +132,7 @@ for _model in $MODELS; do
     ARGS=("--mode" "k8s-bench")
 
     add_arg "--models" "$_model"
+    add_arg "--provider" "$PROVIDER"
     add_flag "--use_openhands" "$_openhands"
     add_arg "--only_samples" "$ONLY_SAMPLES"
     add_arg "--n_samples" "$N_SAMPLES"
@@ -145,6 +153,7 @@ for _model in $MODELS; do
     add_arg "--k8s-experiment" "$K8S_EXPERIMENT"
     add_arg "--k8s-iterations" "$K8S_ITERATIONS"
     add_arg "--k8s-wait-timeout" "$K8S_WAIT_TIMEOUT"
+    add_arg "--k8s-refinement" "$K8S_REFINEMENT"
     add_arg "--max_retries" "$MAX_RETRIES"
     if [ "$K8S_REQUIRE_CLUSTER" == "false" ]; then
       ARGS+=("--no-k8s-require-cluster")
@@ -184,6 +193,12 @@ for _model in $MODELS; do
       if [ -n "${KUBECONFIG:-}" ]; then
         EXTRA_ENV+=("KUBECONFIG=$KUBECONFIG")
       fi
+      if [ -n "$BAXBENCH_LLM_MAX_COST" ]; then
+        EXTRA_ENV+=("BAXBENCH_LLM_MAX_COST=$BAXBENCH_LLM_MAX_COST")
+      fi
+      if [ -n "${BAXBENCH_LLM_PRICING_JSON:-}" ]; then
+        EXTRA_ENV+=("BAXBENCH_LLM_PRICING_JSON=$BAXBENCH_LLM_PRICING_JSON")
+      fi
       echo ""
       echo "=== K8s iterative bench run #$RUN_I: model='${_model}' openhands='${_openhands}' load_profile='$profile' iterations=$K8S_ITERATIONS ==="
       echo "Command: pipenv run python src/main.py ${ARGS[*]}"
@@ -193,6 +208,8 @@ for _model in $MODELS; do
         echo "K8s bench run #$RUN_I failed (exit=$RC). Stopping."
         exit $RC
       fi
-    done
-  done
-done
+    done  # profile
+  done    # openhands
+done      # model
+
+echo "All K8s bench runs completed."
