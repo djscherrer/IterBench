@@ -16,7 +16,6 @@ from ..feedback import IterationFeedback
 from ..workspace import iteration_decision_dir
 from ..code_paths import resolve_active_code_dir
 from ..spec.generation import _read_app_hints
-from .code import pending_code_refinement_hint_text
 
 RefinementAction = Literal["deployment", "code"]
 RefinementMode = Literal["auto", "deployment", "code", "off"]
@@ -76,9 +75,6 @@ def build_refinement_decision_prompt(
         task=task, results_dir=results_dir, sample=sample
     )
     app_hints = _read_app_hints(code_dir, max_chars=6000)
-    pending_hint = pending_code_refinement_hint_text(
-        task.get_sample_dir(results_dir, sample)
-    )
     from ..spec.generation import _format_iteration_progress
 
     progress = _format_iteration_progress(
@@ -106,7 +102,7 @@ Choose **`code`** when:
 - Locust shows application-level errors (5xx, timeouts, logic bugs, DB query issues) suppressing goodput
 - Functional tests were passing but perf errors suggest inefficient algorithms, missing indexes, N+1 queries, pool misconfiguration **in code**
 - Pod utilization is low yet goodput is poor (software bottleneck)
-- A recent code refinement attempt failed functional tests (see pending code fix below)
+- The benchmark feedback below lists a recent **code-refinement attempt that failed functional tests** — the application is currently broken and must be fixed before any deployment change can help
 - The current spec already deploys **Postgres read replicas** (`database.replicas > 1` and `DB_READ_HOST` is set) but replica CPU stays near 0 while the primary saturates — the code must opt into the read pool before any further deployment change can help
 
 If the feedback below lists **failed attempts since the last successful iteration**, treat them as anti-examples: do not repeat the same change without addressing the recorded failure.
@@ -117,7 +113,7 @@ If the feedback below lists **failed attempts since the last successful iteratio
 - Environment: {task.env.id}
 - Sample: sample{sample}
 
-{pending_hint}## Benchmark feedback (previous iteration)
+## Benchmark feedback (previous iteration)
 
 {prior_feedback.to_prompt_text()}
 

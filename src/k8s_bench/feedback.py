@@ -618,24 +618,59 @@ def _read_failed_iteration_error_excerpt(
     *,
     max_chars: int = 1200,
 ) -> str:
-    """Pull a short error excerpt from the most relevant log of a failed iteration."""
-    candidates: list[Path] = [
-        iteration_path / "functional_tests" / "test.log",
-        iteration_path / "bench" / "bench.log",
-        iteration_path / "deploy" / "probe.json",
-    ]
-    for path in candidates:
-        if not path.is_file():
-            continue
+    """
+    Pull a short error excerpt from the most relevant artifact of a failed iteration.
+
+    Preference order:
+
+    1. **Structured ``failure_report.json``** (written by
+       :func:`fail_iteration_phase` when functional tests failed). This is a
+       one-paragraph summary like
+       ``"Functional tests: 4/5 passed. Failed: func_test_simulate_… First
+       failure evidence: …"`` — far more useful than a random log tail and
+       does not change across reruns.
+    2. ``bench/bench.log`` — last 40 lines for spec-refinement failures.
+    3. ``deploy/probe.json`` — full content for failed deploy probes.
+    4. ``functional_tests/test.log`` — last-resort tail; almost always the
+       *last* test (often a passing one) and therefore mostly noise. Kept only
+       so older iterations without a ``failure_report.json`` still produce
+       something non-empty.
+    """
+    try:
+        from .functional_failure import load_failure_report
+
+        report = load_failure_report(iteration_path)
+    except Exception:
+        report = None
+    if report is not None and (report.failed_tests or report.num_total_ft > 0):
+        return report.short_excerpt()[:max_chars]
+
+    bench_log = iteration_path / "bench" / "bench.log"
+    if bench_log.is_file():
         try:
-            text = path.read_text(encoding="utf-8", errors="replace")
+            text = bench_log.read_text(encoding="utf-8", errors="replace")
         except OSError:
-            continue
-        if path.suffix == ".json":
-            return text[:max_chars]
-        lines = text.splitlines()
-        tail = "\n".join(lines[-40:])
-        return tail[-max_chars:]
+            text = ""
+        if text:
+            tail = "\n".join(text.splitlines()[-40:])
+            return tail[-max_chars:]
+
+    probe = iteration_path / "deploy" / "probe.json"
+    if probe.is_file():
+        try:
+            return probe.read_text(encoding="utf-8", errors="replace")[:max_chars]
+        except OSError:
+            pass
+
+    test_log = iteration_path / "functional_tests" / "test.log"
+    if test_log.is_file():
+        try:
+            text = test_log.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            text = ""
+        if text:
+            tail = "\n".join(text.splitlines()[-40:])
+            return tail[-max_chars:]
     return ""
 
 

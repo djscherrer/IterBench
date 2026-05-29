@@ -37,7 +37,7 @@ from .workspace import (
     update_iteration_meta,
 )
 from .gates import probe_iteration_deployable
-from .iteration_failure import fail_iteration_phase, record_pending_code_refinement_after_failure
+from .iteration_failure import fail_iteration_phase
 from .spec.generation import (
     generate_and_write_spec,
     generate_baseline_spec_until_deployable,
@@ -422,6 +422,29 @@ def run_iterative_k8s_bench(
                 and refinement_action == "code"
                 and prior_feedback is not None
             ):
+                # If a previous phase already tried code refinement and failed
+                # functional tests, hand its `failure_report.json` to the next
+                # attempt so it sees the exact tests + errors. Without this the
+                # prompt is dominated by benchmark numbers and the same class
+                # of bug (e.g. a wrong SQL bind count) gets re-introduced.
+                from .refinement.code import find_latest_prior_failure_report
+
+                prior_failure_report = find_latest_prior_failure_report(
+                    sample_dir, current_phase=phase_index
+                )
+                if prior_failure_report is not None:
+                    phase_logger.info(
+                        "phase %s: prior code-refinement failure detected in %s "
+                        "(%d/%d FT passed, failed=%s); will surface in prompt",
+                        iteration_id,
+                        prior_failure_report.iteration_id,
+                        prior_failure_report.num_passed_ft,
+                        prior_failure_report.num_total_ft,
+                        [
+                            ft.name for ft in prior_failure_report.failed_tests
+                        ] or "(unknown)",
+                    )
+
                 new_image = refine_code_until_passing(
                     task=task,
                     results_dir=results_dir,
@@ -437,6 +460,7 @@ def run_iterative_k8s_bench(
                     base_delay=base_delay,
                     max_delay=max_delay,
                     max_codegen_attempts=1,
+                    prior_failure_report=prior_failure_report,
                     phase_index=phase_index,
                     total_phases=total_phases,
                 )
@@ -452,21 +476,13 @@ def run_iterative_k8s_bench(
                         kind="code",
                         logger=phase_logger,
                     )
-                    record_pending_code_refinement_after_failure(
-                        sample_dir,
-                        failed_iteration_id=iteration_id,
-                        reason=(
-                            "Functional tests did not pass; no k8s bench run "
-                            "for this phase."
-                        ),
-                    )
+                    # The folder is now renamed `iteration-NNN-code-failed` and
+                    # `failure_report.json` is on disk; that is the signal the
+                    # next phase's decision LLM and code-refinement LLM read.
                     continue
                 image_id = new_image
                 reuse_prior_spec = True
                 spec_source_iteration = prior_feedback.iteration_id
-                from .refinement.code import clear_pending_code_refinement
-
-                clear_pending_code_refinement(sample_dir)
                 update_iteration_meta(
                     iteration_path,
                     code_modified=True,

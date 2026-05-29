@@ -23,6 +23,11 @@ def fail_iteration_phase(
     """
     Mark an iteration as failed: update meta and rename folder with ``-failed`` suffix.
 
+    For ``kind="code"`` we also build and persist a ``failure_report.json``
+    next to ``meta.json`` so the *next* refinement phase receives a structured
+    diagnostic (which functional tests failed, with the actual error message)
+    instead of having to re-parse the noisy ``test.log`` tail.
+
     Returns the renamed iteration directory.
     """
     update_iteration_meta(
@@ -31,6 +36,34 @@ def fail_iteration_phase(
         failure_reason=failure_reason,
         refinement_action=kind if kind in {"code", "spec", "baseline"} else None,
     )
+
+    if kind == "code":
+        try:
+            from .functional_failure import (
+                build_functional_failure_report,
+                write_failure_report,
+            )
+
+            report = build_functional_failure_report(
+                iteration_path,
+                iteration_id=iteration_id,
+                logger=logger,
+            )
+            write_failure_report(iteration_path, report)
+            logger.info(
+                "wrote functional failure report for %s: %d/%d passed, failed=%s",
+                iteration_id,
+                report.num_passed_ft,
+                report.num_total_ft,
+                [ft.name for ft in report.failed_tests] or "(unknown)",
+            )
+        except Exception as exc:
+            logger.warning(
+                "Could not persist functional failure report for %s: %s",
+                iteration_id,
+                exc,
+            )
+
     try:
         failed_path = mark_iteration_folder_failed(iteration_path)
     except FileExistsError as exc:
@@ -50,18 +83,3 @@ def fail_iteration_phase(
         failed_path.name,
     )
     return failed_path
-
-
-def record_pending_code_refinement_after_failure(
-    sample_dir: Path,
-    *,
-    failed_iteration_id: str,
-    reason: str,
-) -> None:
-    from .refinement.code import record_pending_code_refinement
-
-    record_pending_code_refinement(
-        sample_dir,
-        failed_iteration_id=failed_iteration_id,
-        reason=reason,
-    )
