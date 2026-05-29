@@ -386,10 +386,12 @@ def generate_k8s_workload_spec(
             use_stubs=False,
         )
         prompter.prompt = prompt
+        if sample_dir is not None:
+            from ..llm_cost import check_k8s_llm_budget, record_k8s_llm_call
+
+            check_k8s_llm_budget(sample_dir)
         responses = prompter.prompt_model(logger)
         if sample_dir is not None:
-            from ..llm_cost import record_k8s_llm_call
-
             record_k8s_llm_call(
                 prompter=prompter,
                 call_type="k8s_spec_generation",

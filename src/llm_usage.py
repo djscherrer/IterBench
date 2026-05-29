@@ -25,6 +25,10 @@ _DEFAULT_PRICING_USD_PER_MTOK: dict[str, tuple[float, float]] = {
     "gpt-5.4": (5.0, 20.0),
     "o3-mini": (1.1, 4.4),
     "deepseek/deepseek-chat": (0.14, 0.28),
+    "deepseek-chat": (0.14, 0.28),
+    "deepseek-v3": (0.14, 0.28),
+    "deepseek-v3.2": (0.14, 0.28),
+    "deepseek/deepseek-v3.2": (0.14, 0.28),
     "meta-llama/llama-3.3-70b-instruct": (0.59, 0.79),
 }
 

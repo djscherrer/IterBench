@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from .models import (
     AdaptiveLoadProfile,
+    AdaptiveV2LoadProfile,
     ContinuousLoadProfile,
     LoadProfile,
     SpikeLoadProfile,
@@ -17,7 +18,9 @@ def build_baxbench_locust_env(
     bench_run_time_s: int,
     bench_users: int | None = None,
 ) -> dict[str, str]:
-    if isinstance(load_profile, AdaptiveLoadProfile):
+    if isinstance(load_profile, AdaptiveV2LoadProfile):
+        load_mode = "adaptive_v2"
+    elif isinstance(load_profile, AdaptiveLoadProfile):
         load_mode = "adaptive"
     elif isinstance(load_profile, ContinuousLoadProfile):
         load_mode = "continuous"
@@ -64,6 +67,40 @@ def build_baxbench_locust_env(
         env["BAXBENCH_ADAPTIVE_SAMPLE_EVERY_S"] = str(int(load_profile.sample_every_s))
         env["BAXBENCH_ADAPTIVE_SETTLE_SAMPLES"] = str(int(load_profile.settle_samples))
         env["BAXBENCH_ADAPTIVE_QUANTILE"] = str(float(load_profile.quantile))
+    elif load_mode == "adaptive_v2" and isinstance(load_profile, AdaptiveV2LoadProfile):
+        env["BAXBENCH_ADAPTIVE_V2_SLA_MS"] = str(float(load_profile.sla_ms))
+        env["BAXBENCH_ADAPTIVE_V2_FAILURE_THRESHOLD_PCT"] = str(
+            float(load_profile.failure_threshold_pct)
+        )
+        env["BAXBENCH_ADAPTIVE_V2_START_USERS"] = str(int(load_profile.start_users))
+        env["BAXBENCH_ADAPTIVE_V2_MAX_USERS"] = str(int(load_profile.max_users))
+        env["BAXBENCH_ADAPTIVE_V2_MIN_STEP_USERS"] = str(int(load_profile.min_step_users))
+        env["BAXBENCH_ADAPTIVE_V2_MAX_STEP_USERS"] = str(int(load_profile.max_step_users))
+        env["BAXBENCH_ADAPTIVE_V2_SPAWN_RATE"] = str(int(load_profile.spawn_rate))
+        env["BAXBENCH_ADAPTIVE_V2_WARMUP_STEP_DURATION_S"] = str(
+            int(load_profile.warmup_step_duration_s)
+        )
+        env["BAXBENCH_ADAPTIVE_V2_MIN_STEP_DURATION_S"] = str(
+            int(load_profile.min_step_duration_s)
+        )
+        env["BAXBENCH_ADAPTIVE_V2_MAX_STEP_DURATION_S"] = str(
+            int(load_profile.max_step_duration_s)
+        )
+        env["BAXBENCH_ADAPTIVE_V2_TRIM_S"] = str(int(load_profile.trim_s))
+        env["BAXBENCH_ADAPTIVE_V2_SAMPLE_EVERY_S"] = str(int(load_profile.sample_every_s))
+        env["BAXBENCH_ADAPTIVE_V2_MIN_SETTLE_SAMPLES"] = str(
+            int(load_profile.min_settle_samples)
+        )
+        env["BAXBENCH_ADAPTIVE_V2_QUANTILE"] = str(float(load_profile.quantile))
+        env["BAXBENCH_ADAPTIVE_V2_STABILITY_CV"] = str(
+            float(load_profile.stability_cv_threshold)
+        )
+        env["BAXBENCH_ADAPTIVE_V2_PLATEAU_STOP_STEPS"] = str(
+            int(load_profile.plateau_stop_steps)
+        )
+        env["BAXBENCH_ADAPTIVE_V2_PLATEAU_PCT"] = str(
+            float(load_profile.plateau_goodput_threshold_pct)
+        )
 
     return env
 

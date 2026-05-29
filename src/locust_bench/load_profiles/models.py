@@ -155,6 +155,78 @@ class AdaptiveLoadProfile(BaseLoadProfile):
         return int(self.run_time_s)
 
 
+@dataclass(frozen=True)
+class AdaptiveV2LoadProfile(BaseLoadProfile):
+    """
+    Adaptive load profile v2.
+
+    Extends the v1 control loop with the changes we discussed:
+
+    1. **Explicit warm-up phase.** The first ``warmup_step_duration_s`` seconds at
+       ``start_users`` are not used for any decision: JIT warm-up, cold caches,
+       and DB connection-pool spin-up cannot poison the first SLA check.
+    2. **Failure rate is an SLA signal.** Any step where the *step-local*
+       failure rate exceeds ``failure_threshold_pct`` is treated as an SLA
+       violation, regardless of p95 latency — a system that returns errors fast
+       is not "below SLA".
+    3. **Banded ramp-up.** Instead of a single growth rule, the next step is
+       multiplied by 4x / 2x / 1x / 0.5x depending on how far below SLA p95 sits
+       (>=70% / 40% / 15% / <15% margin). Big headroom is exploited aggressively,
+       tight headroom is approached carefully.
+    4. **Stability heuristic.** A step is only "ended" once the coefficient of
+       variation across the last ``min_settle_samples`` p95 samples drops below
+       ``stability_cv_threshold``, with a hard ``max_step_duration_s`` cap. This
+       avoids deciding on a step whose latency is still trending.
+    5. **Goodput-plateau stop.** Tracks successful RPS per step. After
+       ``plateau_stop_steps`` consecutive steps with relative goodput growth
+       below ``plateau_goodput_threshold_pct``, the shape stops — this is the
+       saturation point we actually care about.
+    6. **Final reporting.** When the shape terminates, it emits a single
+       ``adaptive-v2 stop`` log line with the reason (plateau / bracket / max
+       users / SLA-floor / run-time), final users, low/high bracket, and the
+       per-step goodput history so the experiment summary can render it.
+    """
+
+    sla_ms: float
+    failure_threshold_pct: float
+    start_users: int
+    max_users: int
+    min_step_users: int
+    max_step_users: int
+    spawn_rate: int
+
+    warmup_step_duration_s: int
+    min_step_duration_s: int
+    max_step_duration_s: int
+    trim_s: int
+    sample_every_s: int
+    min_settle_samples: int
+    quantile: float
+    stability_cv_threshold: float
+
+    plateau_stop_steps: int
+    plateau_goodput_threshold_pct: float
+
+    run_time_s: int
+
+    @property
+    def effective_users(self) -> int:
+        return int(self.max_users)
+
+    @property
+    def effective_spawn_rate(self) -> int:
+        return max(1, int(self.spawn_rate))
+
+    @property
+    def effective_run_time_s(self) -> int:
+        return int(self.run_time_s)
+
+
 LoadProfile: TypeAlias = (
-    SteadyLoadProfile | ContinuousLoadProfile | StairsLoadProfile | SpikeLoadProfile | AdaptiveLoadProfile
+    SteadyLoadProfile
+    | ContinuousLoadProfile
+    | StairsLoadProfile
+    | SpikeLoadProfile
+    | AdaptiveLoadProfile
+    | AdaptiveV2LoadProfile
 )

@@ -42,7 +42,7 @@ TEMPERATURE="0.2"
 SAFETY_PROMPT="high_performance"
 
 # --- 3. Load profile (Locust shape; same registry as distributed bench) ---
-BAXBENCH_LOAD_PROFILE=("k8s-adaptive")
+BAXBENCH_LOAD_PROFILE=("k8s-adaptive-v2")
 
 BENCH_USERS=""
 BENCH_SPAWN_RATE=""
@@ -52,7 +52,7 @@ BENCH_RUN_TIME=""
 BAXBENCH_K8S_CLUSTER="baxbench-emulab"
 KUBECONFIG_PATH=""              # empty = path from cluster profile
 K8S_ITERATION=""                # pin one iteration; empty = use K8S_ITERATIONS
-K8S_EXPERIMENT="expK"               # e.g. adaptive-may20 → sampleN/k8s-experiments/<slug>/
+K8S_EXPERIMENT="expA"               # e.g. adaptive-may20 → sampleN/k8s-experiments/<slug>/
 K8S_ITERATIONS="10"              # phases: iteration-001 .. iteration-NNN
 K8S_SPEC_GEN="true"             # false = deploy-only with existing spec.yaml files
 K8S_WAIT_TIMEOUT="120"

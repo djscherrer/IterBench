@@ -440,9 +440,10 @@ def regenerate_iteration_code(
     retries = 0
     while True:
         try:
-            responses = prompter.prompt_model(logger)
-            from ..llm_cost import record_k8s_llm_call
+            from ..llm_cost import check_k8s_llm_budget, record_k8s_llm_call
 
+            check_k8s_llm_budget(sample_dir)
+            responses = prompter.prompt_model(logger)
             phase, _kind, _failed = parse_iteration_folder_name(iteration_path.name)
             iter_id = (
                 iteration_id_for_phase(phase)

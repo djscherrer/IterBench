@@ -692,6 +692,13 @@ def run_iterative_k8s_bench(
             )
 
         try:
+            from .llm_cost import refresh_k8s_cost_summary
+
+            refresh_k8s_cost_summary(sample_dir)
+        except Exception as exc:
+            sample_logger.warning("Could not refresh LLM cost summary: %s", exc)
+
+        try:
             from .cluster.cleanup import cleanup_baxbench_namespaces_after_bench
 
             cleanup_baxbench_namespaces_after_bench(

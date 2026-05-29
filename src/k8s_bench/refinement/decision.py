@@ -223,9 +223,10 @@ def decide_refinement_action(
     last_exc: Exception | None = None
     for attempt in range(1, max_retries + 1):
         try:
-            responses = prompter.prompt_model(logger)
-            from ..llm_cost import record_k8s_llm_call
+            from ..llm_cost import check_k8s_llm_budget, record_k8s_llm_call
 
+            check_k8s_llm_budget(task.get_sample_dir(results_dir, sample))
+            responses = prompter.prompt_model(logger)
             record_k8s_llm_call(
                 prompter=prompter,
                 call_type="refinement_decision",

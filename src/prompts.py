@@ -186,6 +186,52 @@ class Prompter:
     def _store_anthropic_usage(self, usage: Any) -> None:
         self.last_usage = usage_from_anthropic(usage, model=self.model)
 
+    @staticmethod
+    def _estimate_tokens(text: str | None) -> int:
+        """Rough chars→tokens estimate (~4 chars per token for English+code)."""
+        if not text:
+            return 0
+        return max(1, (len(text) + 3) // 4)
+
+    def _completion_token_budget(
+        self,
+        *,
+        context_lengths: dict[str, int],
+        default_cap: int = 8192,
+        hard_cap: int = 16384,
+        slack: int = 1024,
+    ) -> int:
+        """
+        Compute a safe ``max_tokens`` for the next chat completion.
+
+        Replaces the old ``context_length - 3000`` formula that assumed the
+        prompt was tiny. Subtracts the **actual** measured prompt size so a
+        large refinement prompt no longer triggers ``input + max_tokens >
+        context_window`` 400 errors from the provider.
+
+        - ``context_lengths``: per-model true context window dict
+          (e.g. ``openai_together_context_lengths``).
+        - ``default_cap``: used when the model is missing from the dict.
+        - ``hard_cap``: per-response ceiling — a single ``app.js`` rewrite
+          rarely needs more than ~6k tokens; 16k leaves room for multi-file
+          scenarios without burning context.
+        - ``slack``: tokenizer disagreement + system overhead headroom.
+        """
+        context = context_lengths.get(self.model)
+        if context is None:
+            return default_cap
+        prompt_tokens = self._estimate_tokens(self.system_prompt) + \
+                        self._estimate_tokens(self.prompt)
+        remaining = context - prompt_tokens - slack
+        if remaining <= 0:
+            raise ValueError(
+                f"Prompt is too large for model {self.model}: "
+                f"~{prompt_tokens} prompt tokens + {slack} slack "
+                f">= context window {context}. Trim the refinement prompt "
+                f"(BAXBENCH_K8S_CODE_REFINE_MAX_CHARS) or use a larger model."
+            )
+        return max(512, min(hard_cap, remaining))
+
     @no_type_check
     def prompt_anthropic(self, logger: logging.Logger) -> list[str]:
         client = Anthropic(api_key=os.environ[KeyLocs.anthropic_key.value])
@@ -281,10 +327,8 @@ class Prompter:
                 ],
                 n=1,
                 temperature=self.temperature,
-                max_tokens=(
-                    200000
-                    if self.model not in Prompter.openai_together_context_lengths
-                    else Prompter.openai_together_context_lengths[self.model] - 3000
+                max_tokens=self._completion_token_budget(
+                    context_lengths=Prompter.openai_together_context_lengths,
                 ),
                 extra_body=extra_body,
                 **extra_kwargs,
@@ -336,10 +380,9 @@ class Prompter:
                 ],
                 n=1,
                 temperature=self.temperature,
-                max_tokens=(
-                    29000
-                    if self.model not in Prompter.vllm_context_lengths
-                    else Prompter.vllm_context_lengths[self.model] - 3000
+                max_tokens=self._completion_token_budget(
+                    context_lengths=Prompter.vllm_context_lengths,
+                    default_cap=8192,
                 ),
                 **extra_kwargs,
             )
@@ -390,10 +433,8 @@ class Prompter:
                 ],
                 n=1,
                 temperature=self.temperature,
-                max_tokens=(
-                    200000
-                    if self.model not in Prompter.openai_together_context_lengths
-                    else Prompter.openai_together_context_lengths[self.model] - 3000
+                max_tokens=self._completion_token_budget(
+                    context_lengths=Prompter.openai_together_context_lengths,
                 ),
             )
             if response.choices is None:
@@ -430,10 +471,8 @@ class Prompter:
                     Prompter.openai_max_completion_tokens[self.model]
                 )
             else:
-                extra_kwargs["max_tokens"] = (
-                    200000
-                    if self.model not in Prompter.openai_together_context_lengths
-                    else Prompter.openai_together_context_lengths[self.model] - 3000
+                extra_kwargs["max_tokens"] = self._completion_token_budget(
+                    context_lengths=Prompter.openai_together_context_lengths,
                 )
             # Prepare the message
             messages: list[Any] = []
@@ -501,10 +540,8 @@ class Prompter:
                     Prompter.openai_max_completion_tokens[self.model]
                 )
             else:
-                extra_kwargs["max_tokens"] = (
-                    200000
-                    if self.model not in Prompter.openai_together_context_lengths
-                    else Prompter.openai_together_context_lengths[self.model] - 3000
+                extra_kwargs["max_tokens"] = self._completion_token_budget(
+                    context_lengths=Prompter.openai_together_context_lengths,
                 )
             # Prepare the message
             messages: list[Any] = []

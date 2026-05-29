@@ -37,7 +37,18 @@ _ADAPTIVE_PHASE_RE = re.compile(
 )
 _USERS_FROM_ACTION_RE = re.compile(r"users=(\d+)")
 _SHAPE_UPDATE_RE = re.compile(r"Shape test updating to (\d+) users")
-_ADAPTIVE_START_USERS_RE = re.compile(r"BAXBENCH_ADAPTIVE_START_USERS=(\d+)")
+_ADAPTIVE_START_USERS_RE = re.compile(
+    r"BAXBENCH_ADAPTIVE(?:_V2)?_START_USERS=(\d+)"
+)
+_STEP_GOODPUT_RE = re.compile(r"step_goodput=([\d.]+)/s")
+_STEP_CV_RE = re.compile(r"\bcv=([\d.]+)")
+_ADAPTIVE_V2_STOP_RE = re.compile(
+    r"adaptive-v2 stop: reason=(?P<reason>\S+) "
+    r"final_users=(?P<final_users>\S+) "
+    r"low_ok=(?P<low_ok>\S+) "
+    r"high_bad=(?P<high_bad>\S+) "
+    r"goodput_history=\[(?P<history>[^\]]*)\]"
+)
 
 
 def experiment_summary_path(sample_dir: Path) -> Path:
@@ -291,6 +302,8 @@ def _parse_adaptive_phases(bench_log: str) -> list[dict[str, Any]]:
         seen_t.add(t_s)
         users_m = _USERS_FROM_ACTION_RE.search(m.group("action"))
         p95_decision = re.search(r"p95=(\d+)ms", m.group("action"))
+        goodput_m = _STEP_GOODPUT_RE.search(line)
+        cv_m = _STEP_CV_RE.search(line)
         phases.append(
             {
                 "t_s": t_s,
@@ -301,14 +314,36 @@ def _parse_adaptive_phases(bench_log: str) -> list[dict[str, Any]]:
                 "fail": int(m.group("fail")),
                 "fail_pct": m.group("fail_pct"),
                 "action": m.group("action").strip(),
+                "step_goodput_rps": float(goodput_m.group(1)) if goodput_m else None,
+                "step_cv": float(cv_m.group(1)) if cv_m else None,
             }
         )
     phases.sort(key=lambda p: p["t_s"])
     return phases
 
 
+def _parse_adaptive_v2_stop(bench_log: str) -> dict[str, Any] | None:
+    """Pull the final ``adaptive-v2 stop:`` line, if present."""
+    last: dict[str, Any] | None = None
+    for line in bench_log.splitlines():
+        m = _ADAPTIVE_V2_STOP_RE.search(line)
+        if not m:
+            continue
+        last = {
+            "reason": m.group("reason"),
+            "final_users": m.group("final_users"),
+            "low_ok": m.group("low_ok"),
+            "high_bad": m.group("high_bad"),
+            "history": m.group("history").strip(),
+        }
+    return last
+
+
 def _adaptive_table_markdown(
-    phases: list[dict[str, Any]], *, initial_users: int | None = None
+    phases: list[dict[str, Any]],
+    *,
+    initial_users: int | None = None,
+    v2_stop: dict[str, Any] | None = None,
 ) -> str:
     """
     Render the adaptive ramp as a step table.
@@ -319,14 +354,32 @@ def _adaptive_table_markdown(
       window (= previous step's ``next users``).
     - ``→ next users`` = users the controller selected for the next window.
     - ``reqs`` / ``fail %`` are **per-step deltas** (not cumulative since t=0).
+    - ``goodput`` and ``cv`` only appear for ``k8s-adaptive-v2`` runs.
     """
     if not phases:
         return "(no `adaptive phase end` lines in bench.log — not an adaptive profile or run too short)"
-    header = (
-        "| Step | window end t (s) | level users | → next users | "
-        "p95 decision (ms) | p95 logged | reqs | fail % | action |"
-    )
-    sep = "|---:|---:|---:|---:|---:|---:|---:|---:|---|"
+
+    has_goodput = any(p.get("step_goodput_rps") is not None for p in phases)
+    has_cv = any(p.get("step_cv") is not None for p in phases)
+
+    header_cols = [
+        "Step",
+        "window end t (s)",
+        "level users",
+        "→ next users",
+        "p95 decision (ms)",
+        "p95 logged",
+        "reqs",
+        "fail %",
+    ]
+    if has_goodput:
+        header_cols.append("goodput (succ/s)")
+    if has_cv:
+        header_cols.append("cv")
+    header_cols.append("action")
+    header = "| " + " | ".join(header_cols) + " |"
+    sep_cells = ["---:"] * (len(header_cols) - 1) + ["---"]
+    sep = "|" + "|".join(sep_cells) + "|"
     rows = [header, sep]
 
     level_users = initial_users
@@ -343,23 +396,24 @@ def _adaptive_table_markdown(
             else p["fail_pct"]
         )
         next_users = p["next_users"]
-        rows.append(
-            "| "
-            + " | ".join(
-                [
-                    str(i),
-                    str(p["t_s"]),
-                    str(level_users if level_users is not None else "—"),
-                    str(next_users if next_users is not None else "—"),
-                    str(p["p95_decision_ms"] if p["p95_decision_ms"] is not None else "—"),
-                    str(p["p95_logged"]),
-                    str(delta_reqs),
-                    step_fail_pct,
-                    p["action"].replace("|", "\\|")[:80],
-                ]
-            )
-            + " |"
-        )
+        cells = [
+            str(i),
+            str(p["t_s"]),
+            str(level_users if level_users is not None else "—"),
+            str(next_users if next_users is not None else "—"),
+            str(p["p95_decision_ms"] if p["p95_decision_ms"] is not None else "—"),
+            str(p["p95_logged"]),
+            str(delta_reqs),
+            step_fail_pct,
+        ]
+        if has_goodput:
+            gp = p.get("step_goodput_rps")
+            cells.append(f"{gp:.1f}" if gp is not None else "—")
+        if has_cv:
+            cv = p.get("step_cv")
+            cells.append(f"{cv:.2f}" if cv is not None else "—")
+        cells.append(p["action"].replace("|", "\\|")[:80])
+        rows.append("| " + " | ".join(cells) + " |")
         level_users = next_users
 
     last = phases[-1]
@@ -375,7 +429,15 @@ def _adaptive_table_markdown(
             f"**Ramp outcome**: last decision selected **{last['next_users']}** users "
             f"@ t={last['t_s']}s."
         )
-    if any("bracket" in p["action"] or "stopping shape" in p["action"] for p in phases):
+    if v2_stop is not None:
+        rows.append(
+            f"**Adaptive-v2 stop**: reason=`{v2_stop['reason']}` "
+            f"final_users=**{v2_stop['final_users']}** "
+            f"bracket=[{v2_stop['low_ok']}…{v2_stop['high_bad']}]"
+        )
+        if v2_stop.get("history"):
+            rows.append(f"Recent goodput: {v2_stop['history']}")
+    if any("bracket" in p["action"] or "stopping" in p["action"] for p in phases):
         rows.append("Adaptive controller reached a bracket / stop condition.")
     if any("abort" in line for line in (p["action"] for p in phases)):
         rows.append("⚠ Early abort detected in adaptive log.")
@@ -509,7 +571,10 @@ def append_perf_run_block(
 
     phases = _parse_adaptive_phases(log_text)
     initial_users = _parse_initial_users(log_text)
-    adaptive_md = _adaptive_table_markdown(phases, initial_users=initial_users)
+    v2_stop = _parse_adaptive_v2_stop(log_text)
+    adaptive_md = _adaptive_table_markdown(
+        phases, initial_users=initial_users, v2_stop=v2_stop
+    )
     locust_line = _aggregate_locust_line(perf_run_dir)
 
     locust_table = ""
