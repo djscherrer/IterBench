@@ -27,13 +27,6 @@ def ensure_iteration_core_layout(iteration_path: Path) -> None:
         (iteration_path / name).mkdir(parents=True, exist_ok=True)
 
 
-def ensure_iteration_layout(iteration_path: Path) -> None:
-    """Create all iteration subdirectories."""
-    ensure_iteration_core_layout(iteration_path)
-    for name in ("decision", "code", "functional_tests"):
-        (iteration_path / name).mkdir(parents=True, exist_ok=True)
-
-
 def archive_bench_dir_if_present(iteration_path: Path) -> Path | None:
     """Move existing ``bench/`` contents to ``bench/runs/<timestamp>/`` before re-run."""
     bench = iteration_bench_dir(iteration_path)

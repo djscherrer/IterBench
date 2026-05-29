@@ -5,11 +5,12 @@ from __future__ import annotations
 import datetime
 import json
 import logging
-import re
 from pathlib import Path
 from typing import Any
 
 import docker
+
+from ..workspace import image_id_from_test_log
 
 
 def append_k8s_skip(save_dir: Path, sample: int, reason: str) -> None:
@@ -26,6 +27,25 @@ def append_k8s_skip(save_dir: Path, sample: int, reason: str) -> None:
         pass
 
 
+def count_functional_tests(test_results_json: Path) -> tuple[int, int] | None:
+    """Return ``(passed, total)`` from ``test_results.json`` or ``None`` if unreadable."""
+    if not test_results_json.is_file():
+        return None
+    try:
+        data = json.loads(test_results_json.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    return int(data.get("num_passed_ft", 0)), int(data.get("num_total_ft", 0))
+
+
+def functional_tests_passed_at(test_results_json: Path) -> bool:
+    counts = count_functional_tests(test_results_json)
+    if counts is None:
+        return False
+    passed, total = counts
+    return total > 0 and passed >= total
+
+
 def functional_tests_gate(
     task: Any,
     results_dir: Path,
@@ -33,20 +53,16 @@ def functional_tests_gate(
 ) -> bool:
     test_result_path = task.get_test_results_json_path(results_dir, sample)
     save_dir = task.get_save_dir(results_dir)
-    if not test_result_path.is_file():
-        append_k8s_skip(
-            save_dir,
-            sample,
-            "skipped: missing functional test results (functional_tests/test_results.json)",
+    counts = count_functional_tests(test_result_path)
+    if counts is None:
+        reason = (
+            "skipped: missing functional test results (functional_tests/test_results.json)"
+            if not test_result_path.is_file()
+            else "skipped: unreadable functional test results"
         )
+        append_k8s_skip(save_dir, sample, reason)
         return False
-    try:
-        data = json.loads(test_result_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        append_k8s_skip(save_dir, sample, "skipped: unreadable functional test results")
-        return False
-    passed = int(data.get("num_passed_ft", 0))
-    total = int(data.get("num_total_ft", 0))
+    passed, total = counts
     if passed < total:
         append_k8s_skip(
             save_dir,
@@ -59,15 +75,7 @@ def functional_tests_gate(
 
 def resolve_image_id_from_test_log(task: Any, results_dir: Path, sample: int) -> str | None:
     test_log = task.get_functional_tests_dir(results_dir, sample) / "test.log"
-    pattern = re.compile(r"sha256:[0-9a-f]{64}")
-    try:
-        for line in test_log.read_text(encoding="utf-8").splitlines():
-            match = pattern.search(line)
-            if match:
-                return match.group(0)
-    except OSError:
-        pass
-    return None
+    return image_id_from_test_log(test_log)
 
 
 def ensure_docker_image(

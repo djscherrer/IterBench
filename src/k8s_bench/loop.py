@@ -52,7 +52,7 @@ from .util.sample import (
     resolve_image_id_from_test_log,
     resolve_locustfile,
 )
-from .code_paths import resolve_active_code_dir
+from .workspace import latest_code_dir
 from .feedback import (
     collect_iteration_feedback,
     load_feedback_from_run_dir,
@@ -665,8 +665,9 @@ def run_iterative_k8s_bench(
                     k8s_wait_timeout=k8s_wait_timeout,
                     phase_index=phase_index,
                     logger=logger,
-                    rebuild_code_dir=resolve_active_code_dir(
-                        task=task, results_dir=results_dir, sample=sample
+                    rebuild_code_dir=latest_code_dir(
+                        task.get_sample_dir(results_dir, sample),
+                        fallback=task.get_code_dir(results_dir, sample),
                     ),
                 )
 

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import logging
 import multiprocessing
 import random
@@ -15,19 +14,17 @@ import docker
 
 from prompts import Parser, Prompter
 
-from ..code_paths import (
-    resolve_active_code_dir,
-    resolve_image_id_from_ft_log,
-)
 from ..feedback import IterationFeedback
 from ..functional_failure import FunctionalFailureReport
 from ..workspace import (
     find_iteration_spec_path,
+    image_id_from_test_log,
     iteration_code_snapshot_dir,
     iteration_functional_tests_dir,
     iteration_id_for_phase,
     iteration_folder_is_failed,
     iterations_root,
+    latest_code_dir,
     parse_iteration_folder_name,
     parse_iteration_phase,
 )
@@ -180,16 +177,11 @@ def _read_replica_hint_for_iteration(iteration_path: Path) -> str:
     )
 
 def iteration_functional_tests_passed(iteration_path: Path) -> bool:
-    path = iteration_functional_tests_dir(iteration_path) / "test_results.json"
-    if not path.is_file():
-        return False
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return False
-    passed = int(data.get("num_passed_ft", 0))
-    total = int(data.get("num_total_ft", 0))
-    return total > 0 and passed >= total
+    from ..util.sample import functional_tests_passed_at
+
+    return functional_tests_passed_at(
+        iteration_functional_tests_dir(iteration_path) / "test_results.json"
+    )
 
 
 def find_latest_prior_failure_report(
@@ -247,7 +239,10 @@ def build_code_refinement_prompt(
         agent=False,
         use_stubs=task.use_stubs,
     )
-    code_dir = resolve_active_code_dir(task=task, results_dir=results_dir, sample=sample)
+    code_dir = latest_code_dir(
+        task.get_sample_dir(results_dir, sample),
+        fallback=task.get_code_dir(results_dir, sample),
+    )
     full_code = _read_full_code_for_refinement(code_dir)
 
     from ..spec.generation import _format_iteration_progress
@@ -294,10 +289,24 @@ def build_code_refinement_prompt(
                 ]
             )
 
+    # If we just rendered a dedicated failure block for an iteration, drop the
+    # matching ``FailedAttempt`` from the benchmark-feedback section so the LLM
+    # does not see the same failure twice (cleaner prompt, no behaviour change).
+    feedback_for_prompt = prior_feedback
+    if prior_failure_report is not None:
+        from dataclasses import replace
+
+        skip_id = prior_failure_report.iteration_id
+        filtered = tuple(
+            a for a in prior_feedback.failed_attempts if a.iteration_id != skip_id
+        )
+        if len(filtered) != len(prior_feedback.failed_attempts):
+            feedback_for_prompt = replace(prior_feedback, failed_attempts=filtered)
+
     parts.extend(
         [
             "### Benchmark feedback",
-            prior_feedback.to_prompt_text(),
+            feedback_for_prompt.to_prompt_text(),
             "",
             "### Current application code (full contents — rewrite as needed)",
             full_code,
@@ -551,7 +560,7 @@ def refine_code_until_passing(
             min_port=min_port,
         )
         if passed:
-            image_id = resolve_image_id_from_ft_log(
+            image_id = image_id_from_test_log(
                 iteration_functional_tests_dir(iteration_path) / "test.log"
             )
             logger.info(
@@ -577,7 +586,7 @@ def refine_code_until_passing(
         )
 
     if iteration_functional_tests_passed(iteration_path):
-        return resolve_image_id_from_ft_log(
+        return image_id_from_test_log(
             iteration_functional_tests_dir(iteration_path) / "test.log"
         )
     return None
@@ -585,16 +594,3 @@ def refine_code_until_passing(
 
 # Backward-compatible aliases for imports elsewhere in the repo.
 regenerate_sample_code = regenerate_iteration_code
-
-def functional_tests_passed(task: Any, results_dir: Path, sample: int) -> bool:
-    """Sample-level FT gate (initial codegen only)."""
-    path = task.get_test_results_json_path(results_dir, sample)
-    if not path.is_file():
-        return False
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return False
-    passed = int(data.get("num_passed_ft", 0))
-    total = int(data.get("num_total_ft", 0))
-    return total > 0 and passed >= total

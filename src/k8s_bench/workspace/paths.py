@@ -242,6 +242,47 @@ def iteration_code_snapshot_dir(iteration_path: Path) -> Path:
     return iteration_path / "code"
 
 
+def latest_code_dir(sample_dir: Path, *, fallback: Path) -> Path:
+    """
+    Return the newest non-failed iteration ``code/`` snapshot, else ``fallback``.
+
+    The sample-level ``code/`` directory (passed as ``fallback``) is the
+    immutable baseline; refined code lives under
+    ``iterations/iteration-NNN-code/code/`` only. Among iteration snapshots
+    we pick the highest phase number whose ``code/`` directory exists and is
+    not empty, ignoring any iteration whose folder is suffixed ``-failed``.
+    """
+    root = iterations_root(sample_dir)
+    if not root.is_dir():
+        return fallback
+    best: tuple[int, Path] | None = None
+    for child in root.iterdir():
+        if not child.is_dir() or iteration_folder_is_failed(child.name):
+            continue
+        code_dir = iteration_code_snapshot_dir(child)
+        if not code_dir.is_dir() or not any(code_dir.iterdir()):
+            continue
+        phase = parse_iteration_phase(child.name)
+        if phase is None:
+            continue
+        if best is None or phase > best[0]:
+            best = (phase, code_dir)
+    return best[1] if best is not None else fallback
+
+
+def image_id_from_test_log(test_log: Path) -> str | None:
+    """Grep the first ``sha256:<64hex>`` from a test/bench log."""
+    pattern = re.compile(r"sha256:[0-9a-f]{64}")
+    try:
+        for line in test_log.read_text(encoding="utf-8").splitlines():
+            match = pattern.search(line)
+            if match:
+                return match.group(0)
+    except OSError:
+        pass
+    return None
+
+
 def iteration_functional_tests_dir(iteration_path: Path) -> Path:
     return iteration_path / "functional_tests"
 

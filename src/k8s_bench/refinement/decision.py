@@ -13,8 +13,7 @@ from typing import Any, Literal
 from prompts import Prompter
 
 from ..feedback import IterationFeedback
-from ..workspace import iteration_decision_dir
-from ..code_paths import resolve_active_code_dir
+from ..workspace import iteration_decision_dir, latest_code_dir
 from ..spec.generation import _read_app_hints
 
 RefinementAction = Literal["deployment", "code"]
@@ -71,8 +70,9 @@ def build_refinement_decision_prompt(
     next_iteration_id: str,
     total_phases: int = 0,
 ) -> str:
-    code_dir = resolve_active_code_dir(
-        task=task, results_dir=results_dir, sample=sample
+    code_dir = latest_code_dir(
+        task.get_sample_dir(results_dir, sample),
+        fallback=task.get_code_dir(results_dir, sample),
     )
     app_hints = _read_app_hints(code_dir, max_chars=6000)
     from ..spec.generation import _format_iteration_progress

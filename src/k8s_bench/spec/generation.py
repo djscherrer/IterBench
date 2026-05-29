@@ -19,7 +19,6 @@ from env.base import Env
 from prompts import Prompter
 from scenarios.base import Scenario
 
-from ..code_paths import resolve_active_code_dir
 from ..feedback import IterationFeedback
 from ..cluster.capacity import (
     ClusterCapacity,
@@ -39,6 +38,7 @@ from ..workspace import (
     find_iteration_spec_path,
     iteration_spec_dir,
     iteration_spec_path,
+    latest_code_dir,
     new_iteration_id,
     normalize_iteration_id,
     resolve_iteration_dir,
@@ -590,8 +590,9 @@ def generate_k8s_specs_for_task(
 
         log_file = iteration_spec_dir(iteration_path) / "spec_gen_prompt.log"
         with task.create_logger(log_file) as logger:
-            code_dir = resolve_active_code_dir(
-                task=task, results_dir=results_dir, sample=sample
+            code_dir = latest_code_dir(
+                task.get_sample_dir(results_dir, sample),
+                fallback=task.get_code_dir(results_dir, sample),
             )
             app_hints = _read_app_hints(code_dir)
             labels = {
@@ -747,7 +748,9 @@ def generate_and_write_spec(
     validation fails after ``max_validation_retries`` attempt(s).
     """
     sample_dir = task.get_sample_dir(results_dir, sample)
-    code_dir = resolve_active_code_dir(task=task, results_dir=results_dir, sample=sample)
+    code_dir = latest_code_dir(
+        sample_dir, fallback=task.get_code_dir(results_dir, sample)
+    )
     app_hints = _read_app_hints(code_dir)
     try:
         spec, raw, warnings = generate_k8s_workload_spec(
