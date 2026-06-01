@@ -13,6 +13,18 @@ _ITERATION_FOLDER_RE = re.compile(
     r"^iteration-(\d{3})(?:-(baseline|spec|code))?(?:-failed)?$"
 )
 
+# Numbered phase folders inside one iteration directory. The numeric prefix
+# encodes execution order: decision → code (optional) → spec → deploy → bench.
+# This makes ``ls iteration-007-code/`` self-documenting and lets a human (or a
+# parser) tell *where* an iteration failed by inspecting which phase folder is
+# the last one populated. ``failure_report.json`` lives next to the phase that
+# produced it (e.g. ``02-code/failure_report.json`` for an FT failure).
+PHASE_DECISION_DIRNAME = "01-decision"
+PHASE_CODE_DIRNAME = "02-code"
+PHASE_SPEC_DIRNAME = "03-spec"
+PHASE_DEPLOY_DIRNAME = "04-deploy"
+PHASE_BENCH_DIRNAME = "05-bench"
+
 
 def normalize_experiment_id(raw: str) -> str:
     """Filesystem-safe experiment slug (e.g. ``experiment-a``)."""
@@ -64,9 +76,10 @@ def parse_iteration_folder_name(name: str) -> tuple[int | None, str | None, bool
     return int(m.group(1)), m.group(2), failed
 
 
-def parse_iteration_phase(folder_name: str) -> int | None:
-    phase, _kind, _failed = parse_iteration_folder_name(folder_name)
-    return phase
+def parse_iteration_index(folder_name: str) -> int | None:
+    """Extract the 0-based iteration index from a folder name, or ``None``."""
+    index, _kind, _failed = parse_iteration_folder_name(folder_name)
+    return index
 
 
 def iteration_folder_is_failed(name: str) -> bool:
@@ -182,26 +195,29 @@ def resolve_iteration_dir(
 
 
 def _iteration_has_artifacts(path: Path) -> bool:
+    """True if ``path`` looks like an iteration directory that has been written."""
     if not path:
         return False
-    bench = path / "bench"
-    return any(
-        p.is_file()
-        for p in (
-            path / "meta.json",
-            path / "spec" / "spec.yaml",
-            bench / "config.json",
-            bench / "iteration_feedback.json",
-        )
+    candidates = (
+        path / "meta.json",
+        path / PHASE_SPEC_DIRNAME / "spec.yaml",
+        path / PHASE_BENCH_DIRNAME / "config.json",
+        path / PHASE_BENCH_DIRNAME / "iteration_feedback.json",
     )
+    return any(p.is_file() for p in candidates)
 
 
 def iteration_meta_path(iteration_path: Path) -> Path:
     return iteration_path / "meta.json"
 
 
+def iteration_spec_dir(iteration_path: Path) -> Path:
+    """Spec phase folder (``03-spec/``)."""
+    return iteration_path / PHASE_SPEC_DIRNAME
+
+
 def iteration_spec_path(iteration_path: Path) -> Path:
-    return iteration_path / "spec" / "spec.yaml"
+    return iteration_spec_dir(iteration_path) / "spec.yaml"
 
 
 def find_iteration_spec_path(iteration_path: Path) -> Path | None:
@@ -218,28 +234,64 @@ def require_iteration_spec_path(iteration_path: Path) -> Path:
     )
 
 
-def iteration_spec_dir(iteration_path: Path) -> Path:
-    return iteration_path / "spec"
-
-
 def iteration_manifests_dir(iteration_path: Path) -> Path:
-    return iteration_path / "manifests"
+    """Rendered K8s manifests live under the spec phase: ``03-spec/manifests/``."""
+    return iteration_spec_dir(iteration_path) / "manifests"
+
+
+def iteration_deploy_dir(iteration_path: Path) -> Path:
+    """Deploy phase folder (``04-deploy/``)."""
+    return iteration_path / PHASE_DEPLOY_DIRNAME
 
 
 def deploy_probe_record_path(iteration_path: Path) -> Path:
-    return iteration_path / "deploy" / "probe.json"
+    return iteration_deploy_dir(iteration_path) / "probe.json"
 
 
 def deploy_bench_record_path(iteration_path: Path) -> Path:
-    return iteration_path / "deploy" / "bench.json"
+    return iteration_deploy_dir(iteration_path) / "bench.json"
 
 
 def iteration_decision_dir(iteration_path: Path) -> Path:
-    return iteration_path / "decision"
+    """Decision phase folder (``01-decision/``)."""
+    return iteration_path / PHASE_DECISION_DIRNAME
+
+
+def iteration_decision_log_path(iteration_path: Path) -> Path:
+    """Per-stage log file for the refinement decision (``01-decision/phase.log``)."""
+    return iteration_decision_dir(iteration_path) / "phase.log"
+
+
+def iteration_code_log_path(iteration_path: Path) -> Path:
+    """Per-stage log file for code refinement + FT validation (``02-code/phase.log``)."""
+    return iteration_code_phase_dir(iteration_path) / "phase.log"
+
+
+def iteration_spec_log_path(iteration_path: Path) -> Path:
+    """Per-stage log file for spec generation + deploy probe (``03-spec/phase.log``)."""
+    return iteration_spec_dir(iteration_path) / "phase.log"
+
+
+def iteration_log_path(iteration_path: Path) -> Path:
+    """Top-level iteration log (one-liner header + final outcome)."""
+    return iteration_path / "iteration.log"
+
+
+def iteration_code_phase_dir(iteration_path: Path) -> Path:
+    """
+    Code-refinement phase folder (``02-code/``).
+
+    Holds the regenerated code under ``code/`` plus the LLM transcript
+    (``prompt.log``, ``response.log``), the ``functional_tests/`` outputs
+    from validating that regeneration, and ``failure_report.json`` if the
+    tests did not pass.
+    """
+    return iteration_path / PHASE_CODE_DIRNAME
 
 
 def iteration_code_snapshot_dir(iteration_path: Path) -> Path:
-    return iteration_path / "code"
+    """Directory containing the application source for this iteration (``02-code/code/``)."""
+    return iteration_code_phase_dir(iteration_path) / "code"
 
 
 def latest_code_dir(sample_dir: Path, *, fallback: Path) -> Path:
@@ -262,12 +314,55 @@ def latest_code_dir(sample_dir: Path, *, fallback: Path) -> Path:
         code_dir = iteration_code_snapshot_dir(child)
         if not code_dir.is_dir() or not any(code_dir.iterdir()):
             continue
-        phase = parse_iteration_phase(child.name)
-        if phase is None:
+        idx = parse_iteration_index(child.name)
+        if idx is None:
             continue
-        if best is None or phase > best[0]:
-            best = (phase, code_dir)
+        if best is None or idx > best[0]:
+            best = (idx, code_dir)
     return best[1] if best is not None else fallback
+
+
+def latest_spec_path(sample_dir: Path) -> tuple[Path, Path] | None:
+    """
+    Return ``(spec_yaml_path, iteration_dir)`` for the most recent iteration
+    that has a ``spec.yaml`` on disk, or ``None`` if no spec was ever written.
+
+    Walks back through iteration indices ``[max .. 0]`` and considers **both
+    successful and ``-failed`` folders**. This is the canonical "current spec"
+    handle for code refinement, where the iteration's own spec has not been
+    materialized yet (the spec stage runs *after* the code stage). When the
+    immediately prior iteration failed before producing bench data, its
+    attempted ``spec.yaml`` is still the last source of truth for the
+    deployment shape — the LLM should see it.
+
+    Among multiple folders sharing the same index (e.g. both ``iteration-005``
+    and ``iteration-005-spec-failed`` exist transiently during renames), the
+    non-failed one is preferred.
+    """
+    root = iterations_root(sample_dir)
+    if not root.is_dir():
+        return None
+
+    by_index: dict[int, list[Path]] = {}
+    for child in root.iterdir():
+        if not child.is_dir():
+            continue
+        idx = parse_iteration_index(child.name)
+        if idx is None:
+            continue
+        by_index.setdefault(idx, []).append(child)
+
+    for idx in sorted(by_index.keys(), reverse=True):
+        candidates = by_index[idx]
+        non_failed = [c for c in candidates if not iteration_folder_is_failed(c.name)]
+        ordered = (non_failed or []) + [
+            c for c in candidates if iteration_folder_is_failed(c.name)
+        ]
+        for cand in ordered:
+            spec = find_iteration_spec_path(cand)
+            if spec is not None:
+                return spec, cand
+    return None
 
 
 def image_id_from_test_log(test_log: Path) -> str | None:
@@ -284,11 +379,13 @@ def image_id_from_test_log(test_log: Path) -> str | None:
 
 
 def iteration_functional_tests_dir(iteration_path: Path) -> Path:
-    return iteration_path / "functional_tests"
+    """Functional-test outputs from the code-refinement validation step (``02-code/functional_tests/``)."""
+    return iteration_code_phase_dir(iteration_path) / "functional_tests"
 
 
 def iteration_bench_dir(iteration_path: Path) -> Path:
-    return iteration_path / "bench"
+    """Bench phase folder (``05-bench/``)."""
+    return iteration_path / PHASE_BENCH_DIRNAME
 
 
 def default_k8s_namespace(iteration_id: str) -> str:
@@ -298,15 +395,15 @@ def default_k8s_namespace(iteration_id: str) -> str:
     return f"baxbench-{eid}-{iid}"
 
 
-def iteration_id_for_phase(phase_index: int) -> str:
-    """0-based phase index → ``iteration-000`` (baseline), ``iteration-001``, …"""
-    if phase_index < 0:
-        raise ValueError("phase_index must be >= 0")
-    return f"{ITERATION_PREFIX}{phase_index:03d}"
+def iteration_id_for_index(iteration_index: int) -> str:
+    """0-based iteration index → ``iteration-000`` (baseline), ``iteration-001``, …"""
+    if iteration_index < 0:
+        raise ValueError("iteration_index must be >= 0")
+    return f"{ITERATION_PREFIX}{iteration_index:03d}"
 
 
-def is_baseline_phase(phase_index: int) -> bool:
-    return phase_index == 0
+def is_baseline_iteration(iteration_index: int) -> bool:
+    return iteration_index == 0
 
 
 def _max_iteration_number(sample_dir: Path) -> int:
@@ -317,9 +414,9 @@ def _max_iteration_number(sample_dir: Path) -> int:
     for child in root.iterdir():
         if not child.is_dir():
             continue
-        phase = parse_iteration_phase(child.name)
-        if phase is not None:
-            max_n = max(max_n, phase)
+        idx = parse_iteration_index(child.name)
+        if idx is not None:
+            max_n = max(max_n, idx)
     return max_n
 
 
@@ -339,12 +436,12 @@ def list_iteration_dirs(sample_dir: Path) -> list[Path]:
     for child in sorted(root.iterdir()):
         if not child.is_dir():
             continue
-        phase = parse_iteration_phase(child.name)
-        if phase is None:
+        idx = parse_iteration_index(child.name)
+        if idx is None:
             continue
         if iteration_folder_is_failed(child.name):
             continue
-        iid = iteration_id_for_phase(phase)
+        iid = iteration_id_for_index(idx)
         if find_iteration_spec_path(child) is not None:
             found[iid] = child
 
@@ -352,7 +449,7 @@ def list_iteration_dirs(sample_dir: Path) -> list[Path]:
         p
         for _, p in sorted(
             found.items(),
-            key=lambda item: parse_iteration_phase(item[1].name) or 0,
+            key=lambda item: parse_iteration_index(item[1].name) or 0,
         )
     ]
 

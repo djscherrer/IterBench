@@ -33,6 +33,8 @@ from .scheduling import (
     validate_spec_against_cluster,
 )
 from ..workspace import (
+    PROMPT_LOG_FILENAME,
+    RESPONSE_LOG_FILENAME,
     default_k8s_namespace,
     ensure_iteration_core_layout,
     find_iteration_spec_path,
@@ -58,15 +60,15 @@ _BENCHMARK_LOAD_HINT = (
 
 
 def _format_iteration_progress(
-    *, phase_index: int, total_phases: int
+    *, iteration_index: int, total_iterations: int
 ) -> str:
     """Human-friendly progress line, e.g. ``Iteration 4 of 10 (refinement)``."""
-    if total_phases <= 0:
-        return f"Iteration {phase_index}"
-    remaining = max(0, total_phases - phase_index - 1)
-    kind = "baseline" if phase_index == 0 else "refinement"
+    if total_iterations <= 0:
+        return f"Iteration {iteration_index}"
+    remaining = max(0, total_iterations - iteration_index - 1)
+    kind = "baseline" if iteration_index == 0 else "refinement"
     return (
-        f"Iteration {phase_index} of {total_phases - 1} ({kind}); "
+        f"Iteration {iteration_index} of {total_iterations - 1} ({kind}); "
         f"{remaining} more iteration(s) remain after this one."
     )
 
@@ -118,15 +120,15 @@ def build_k8s_spec_prompt(
     capacity: ClusterCapacity,
     app_hints: str,
     iteration_id: str,
-    phase_index: int = 0,
-    total_phases: int = 0,
+    iteration_index: int = 0,
+    total_iterations: int = 0,
     prior_feedback: IterationFeedback | str | None = None,
     validation_feedback: str | None = None,
 ) -> str:
     perf = _safety_performance_text(env, scenario, safety_prompt)
     pool_max = infer_pool_max_from_hints(app_hints)
     progress = _format_iteration_progress(
-        phase_index=phase_index, total_phases=total_phases
+        iteration_index=iteration_index, total_iterations=total_iterations
     )
     if prior_feedback is not None:
         fb_text = (
@@ -351,8 +353,8 @@ def generate_k8s_workload_spec(
     max_validation_retries: int = 3,
     sample_dir: pathlib.Path | None = None,
     iteration_path: pathlib.Path | None = None,
-    phase_index: int = 0,
-    total_phases: int = 0,
+    iteration_index: int = 0,
+    total_iterations: int = 0,
 ) -> tuple[K8sWorkloadSpec, str, list[str]]:
     """Call the configured LLM and return (spec, raw_response, validation_warnings)."""
     last_raw = ""
@@ -365,12 +367,21 @@ def generate_k8s_workload_spec(
             capacity=capacity,
             app_hints=app_hints,
             iteration_id=iteration_id,
-            phase_index=phase_index,
-            total_phases=total_phases,
+            iteration_index=iteration_index,
+            total_iterations=total_iterations,
             prior_feedback=prior_feedback,
             validation_feedback=validation_hint,
         )
-        logger.info("k8s spec generation prompt:\n%s", prompt)
+        # Persist the exact prompt sent to the LLM so a human reading the
+        # iteration can audit it next to ``response.log``. On validation
+        # retries the *last* attempt wins, which is exactly the one that
+        # produced the spec we accepted.
+        if iteration_path is not None:
+            spec_dir = iteration_spec_dir(iteration_path)
+            spec_dir.mkdir(parents=True, exist_ok=True)
+            (spec_dir / PROMPT_LOG_FILENAME).write_text(
+                prompt + "\n", encoding="utf-8"
+            )
         prompter = Prompter(
             env=env,
             scenario=scenario,
@@ -472,7 +483,7 @@ def write_spec_generation_artifacts(
         json.dumps(meta, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
     )
-    (spec_dir / "spec_gen.log").write_text(
+    (spec_dir / RESPONSE_LOG_FILENAME).write_text(
         raw_response + "\n",
         encoding="utf-8",
     )
@@ -529,7 +540,7 @@ def reuse_deployment_spec_for_iteration(
         f"Target iteration: {iid}\n"
         "No LLM spec generation (code-only refinement phase).\n"
     )
-    (iteration_spec_dir(iteration_path) / "spec_reused_from.txt").write_text(
+    (iteration_spec_dir(iteration_path) / "reused_from.txt").write_text(
         note, encoding="utf-8"
     )
     logger.info(
@@ -553,7 +564,7 @@ def generate_k8s_specs_for_task(
     max_delay: float = 60.0,
     vllm_port: int = 8000,
     prior_feedback: Any | None = None,
-    phase_index: int = 1,
+    iteration_index: int = 1,
 ) -> list[Path]:
     """LLM spec per sample. Callers must run ``functional_tests_gate`` before calling."""
     from tasks import esc
@@ -576,7 +587,7 @@ def generate_k8s_specs_for_task(
                 iteration_path = task.get_k8s_iteration_dir(results_dir, sample, iid)
         ensure_iteration_core_layout(iteration_path)
         spec_path = iteration_spec_path(iteration_path)
-        regen = force or phase_index > 0
+        regen = force or iteration_index > 0
         if find_iteration_spec_path(iteration_path) is not None and not regen:
             existing = find_iteration_spec_path(iteration_path)
             assert existing is not None
@@ -588,7 +599,7 @@ def generate_k8s_specs_for_task(
             written.append(existing)
             continue
 
-        log_file = iteration_spec_dir(iteration_path) / "spec_gen_prompt.log"
+        log_file = iteration_spec_dir(iteration_path) / "phase.log"
         with task.create_logger(log_file) as logger:
             code_dir = latest_code_dir(
                 task.get_sample_dir(results_dir, sample),
@@ -656,7 +667,7 @@ def generate_k8s_specs_for_task(
                             raw_response=raw,
                             warnings=warnings,
                             had_prior_feedback=prior_feedback is not None,
-                            phase_index=phase_index,
+                            iteration_index=iteration_index,
                         )
                         logger.info("Updated experiment summary: %s", summary_path)
                     except Exception as exc:
@@ -737,8 +748,8 @@ def generate_and_write_spec(
     prior_feedback: IterationFeedback | None = None,
     validation_feedback: str | None = None,
     max_validation_retries: int = 1,
-    phase_index: int = 0,
-    total_phases: int = 0,
+    iteration_index: int = 0,
+    total_iterations: int = 0,
     vllm_port: int = 8000,
 ) -> tuple[Path | None, str | None]:
     """
@@ -771,8 +782,8 @@ def generate_and_write_spec(
             max_validation_retries=max_validation_retries,
             sample_dir=sample_dir,
             iteration_path=iteration_path,
-            phase_index=phase_index,
-            total_phases=total_phases,
+            iteration_index=iteration_index,
+            total_iterations=total_iterations,
         )
         spec = _apply_task_labels_to_spec(
             spec, task=task, results_dir=results_dir, sample=sample
@@ -796,7 +807,7 @@ def generate_and_write_spec(
                 raw_response=raw,
                 warnings=warnings,
                 had_prior_feedback=prior_feedback is not None,
-                phase_index=phase_index,
+                iteration_index=iteration_index,
             )
         except Exception as exc:
             logger.warning("Could not update experiment summary: %s", exc)
@@ -817,8 +828,8 @@ def generate_baseline_spec_until_deployable(
     iteration_id: str,
     logger: logging.Logger,
     deploy_probe: Any,
-    phase_index: int = 0,
-    total_phases: int = 0,
+    iteration_index: int = 0,
+    total_iterations: int = 0,
     vllm_port: int = 8000,
     max_deploy_attempts: int | None = None,
 ) -> tuple[Path | None, str | None]:
@@ -853,8 +864,8 @@ def generate_baseline_spec_until_deployable(
             prior_feedback=None,
             validation_feedback=validation_feedback,
             max_validation_retries=3,
-            phase_index=phase_index,
-            total_phases=total_phases,
+            iteration_index=iteration_index,
+            total_iterations=total_iterations,
             vllm_port=vllm_port,
         )
         if spec_path is None:

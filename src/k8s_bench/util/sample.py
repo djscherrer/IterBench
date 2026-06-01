@@ -126,7 +126,9 @@ def performance_test_names(task: Any) -> list[str]:
     return []
 
 
-def bench_labels(task: Any, *, phase_index: int | None = None) -> dict[str, str]:
+def bench_labels(
+    task: Any, *, iteration_index: int | None = None
+) -> dict[str, str]:
     from tasks import esc
 
     labels = {
@@ -134,6 +136,8 @@ def bench_labels(task: Any, *, phase_index: int | None = None) -> dict[str, str]
         "baxbench.dev/scenario": esc(task.scenario.id),
         "baxbench.dev/env": esc(task.env.id),
     }
-    if phase_index is not None:
-        labels["baxbench.dev/phase"] = str(phase_index)
+    if iteration_index is not None:
+        # Kept as ``baxbench.dev/phase`` for back-compat with existing kubectl
+        # filters and dashboards; semantically this is the iteration index.
+        labels["baxbench.dev/phase"] = str(iteration_index)
     return labels

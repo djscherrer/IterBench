@@ -28,7 +28,11 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
-FAILURE_REPORT_FILENAME = "failure_report.json"
+# Filename for the persisted report. Authoritative copy is in
+# ``workspace.artifacts``; re-exported here so old imports keep working.
+from .workspace.artifacts import FAILURE_REPORT_FILENAME  # noqa: E402  (re-export)
+from .workspace.paths import iteration_functional_tests_dir  # noqa: E402
+
 
 _PER_TEST_TAIL_LINES = 6
 _CONTAINER_ERROR_TAIL_LINES = 14
@@ -55,6 +59,118 @@ _PM2_NOISE_RE = re.compile(
     r"|Server running on port\s*\d*\s*$"
     r")"
 )
+
+
+# Infrastructure-failure markers in ``test.log``. When one of these matches,
+# the FT run did not actually exercise the application — Docker, networking, or
+# the test harness itself broke before any HTTP call could be made. This is
+# critical to surface: without it, the decision agent reads "0/5 passed" and
+# rewrites the application code over and over for a problem that has nothing
+# to do with the code.
+#
+# Each entry is ``(kind, regex, human-readable description)``. The regex must
+# match anywhere on the line. The first match wins (most specific first).
+_INFRA_FAILURE_PATTERNS: tuple[tuple[str, re.Pattern[str], str], ...] = (
+    (
+        "port_conflict",
+        re.compile(r"Bind for [\d.]+:(?P<port>\d+) failed: port is already allocated"),
+        "Docker could not bind a host port (port already allocated on the test host)",
+    ),
+    (
+        "container_networking",
+        re.compile(r"failed to set up container networking"),
+        "Docker failed to program container networking",
+    ),
+    (
+        "image_pull",
+        re.compile(r"(error pulling image|manifest unknown|pull access denied)"),
+        "Docker could not pull the test image",
+    ),
+    (
+        "postgres_start_timeout",
+        re.compile(
+            r"(Postgres container .* did not become ready|"
+            r"PostgreSQL is ready to accept connections.{0,5}$.{0,5}TimeoutError)"
+        ),
+        "Postgres test container did not become ready in time",
+    ),
+    (
+        "postgres_start_failure",
+        re.compile(r"Failed to start (Postgres|PostgreSQL)"),
+        "Postgres test container failed to start",
+    ),
+    (
+        "docker_start_failure",
+        re.compile(r"could not start container|Could not start docker container"),
+        "Test harness could not start an application container",
+    ),
+    (
+        "server_did_not_start",
+        re.compile(r"Server did not start in time"),
+        "Application HTTP server did not become reachable in time",
+    ),
+)
+
+
+@dataclass(frozen=True)
+class InfrastructureFailure:
+    """
+    Detected harness/infrastructure failure that prevented the FT run.
+
+    When present on a :class:`FunctionalFailureReport`, the recorded
+    ``failed_tests`` are best understood as *blocked* tests — they never
+    exercised the application. The next iteration must NOT treat the FT
+    outcome as evidence the application code is broken.
+    """
+
+    kind: str
+    description: str
+    evidence: str = ""
+
+    def to_dict(self) -> dict[str, str]:
+        return {
+            "kind": self.kind,
+            "description": self.description,
+            "evidence": self.evidence,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, object]) -> "InfrastructureFailure":
+        return cls(
+            kind=str(data.get("kind", "")),
+            description=str(data.get("description", "")),
+            evidence=str(data.get("evidence", "")),
+        )
+
+
+def detect_infrastructure_failure(test_log: str) -> InfrastructureFailure | None:
+    """
+    Scan ``test.log`` for known harness/infrastructure failure markers.
+
+    Returns the first matching :class:`InfrastructureFailure` (with the raw
+    log line as evidence) or ``None`` when the log shows only application-
+    level failures.
+    """
+    if not test_log:
+        return None
+    for line in test_log.splitlines():
+        for kind, pattern, description in _INFRA_FAILURE_PATTERNS:
+            m = pattern.search(line)
+            if not m:
+                continue
+            # Decorate the description with concrete details when the
+            # regex captures them (e.g. the port number for port_conflict).
+            detail = description
+            if kind == "port_conflict":
+                port = m.groupdict().get("port")
+                if port:
+                    detail = f"{description} (port {port})"
+            return InfrastructureFailure(
+                kind=kind,
+                description=detail,
+                evidence=_trim(line.strip(), max_chars=600),
+            )
+    return None
 
 
 @dataclass(frozen=True)
@@ -93,9 +209,17 @@ class FunctionalFailureReport:
     # When we could not pinpoint a specific failing test (e.g. the harness
     # crashed before any test ran), this fallback excerpt is what we have.
     generic_excerpt: str = ""
+    # Populated when ``test.log`` shows a Docker / port / image-pull failure
+    # that prevented the FT run. When set, ``failed_tests`` should be read
+    # as "blocked", not "the app broke these features".
+    infrastructure_failure: InfrastructureFailure | None = None
+
+    @property
+    def is_infrastructure_failure(self) -> bool:
+        return self.infrastructure_failure is not None
 
     def to_dict(self) -> dict[str, object]:
-        return {
+        out: dict[str, object] = {
             "iteration_id": self.iteration_id,
             "num_passed_ft": self.num_passed_ft,
             "num_total_ft": self.num_total_ft,
@@ -103,6 +227,9 @@ class FunctionalFailureReport:
             "passed_tests": list(self.passed_tests),
             "generic_excerpt": self.generic_excerpt,
         }
+        if self.infrastructure_failure is not None:
+            out["infrastructure_failure"] = self.infrastructure_failure.to_dict()
+        return out
 
     @classmethod
     def from_dict(cls, data: dict[str, object]) -> "FunctionalFailureReport":
@@ -114,6 +241,12 @@ class FunctionalFailureReport:
         )
         passed_raw = data.get("passed_tests") or []
         passed = tuple(str(x) for x in passed_raw if isinstance(passed_raw, list))
+        infra_raw = data.get("infrastructure_failure")
+        infra = (
+            InfrastructureFailure.from_dict(infra_raw)
+            if isinstance(infra_raw, dict)
+            else None
+        )
         return cls(
             iteration_id=str(data.get("iteration_id", "")),
             num_passed_ft=int(data.get("num_passed_ft", 0) or 0),
@@ -121,10 +254,24 @@ class FunctionalFailureReport:
             failed_tests=failed,
             passed_tests=passed,
             generic_excerpt=str(data.get("generic_excerpt", "")),
+            infrastructure_failure=infra,
         )
 
     def short_excerpt(self) -> str:
         """One-paragraph summary suitable for the FailedAttempt anti-example list."""
+        if self.infrastructure_failure is not None:
+            infra = self.infrastructure_failure
+            blocked = (
+                ", ".join(ft.name for ft in self.failed_tests)
+                if self.failed_tests
+                else "(no functional test reached the application)"
+            )
+            return (
+                f"[INFRASTRUCTURE FAILURE — not an application bug] "
+                f"{infra.description}. Functional tests blocked before any HTTP "
+                f"request reached the app: {blocked}. "
+                f"Evidence: {infra.evidence or '(none)'}"
+            )
         if not self.failed_tests:
             base = (
                 f"Functional tests: {self.num_passed_ft}/{self.num_total_ft} passed; "
@@ -147,9 +294,48 @@ class FunctionalFailureReport:
 
     def to_prompt_block(self) -> str:
         """Full failure block to embed in the next refinement prompt."""
-        if self.num_total_ft == 0 and not self.failed_tests:
+        if self.num_total_ft == 0 and not self.failed_tests and not self.infrastructure_failure:
             return ""
         lines: list[str] = []
+        if self.infrastructure_failure is not None:
+            infra = self.infrastructure_failure
+            lines.extend(
+                [
+                    f"**Previous iteration (`{self.iteration_id}`) was blocked by "
+                    f"an INFRASTRUCTURE failure — the test harness itself failed.**",
+                    "",
+                    f"- **Kind**: `{infra.kind}`",
+                    f"- **What broke**: {infra.description}",
+                ]
+            )
+            if infra.evidence:
+                lines.extend(
+                    [
+                        "- **Evidence (raw log line)**:",
+                        "  ```",
+                        f"  {infra.evidence}",
+                        "  ```",
+                    ]
+                )
+            blocked_names = [ft.name for ft in self.failed_tests]
+            if blocked_names:
+                lines.append(
+                    "- **Blocked tests** (these never reached the application; do "
+                    "NOT treat them as failing assertions): "
+                    + ", ".join(f"`{n}`" for n in blocked_names)
+                )
+            lines.extend(
+                [
+                    "",
+                    "**This is NOT a code bug.** The application was never "
+                    "exercised — the Docker/PostgreSQL harness could not start "
+                    "or could not bind a host port. Rewriting `app.js` will not "
+                    "help. Keep the application code unchanged and either rerun "
+                    "the same iteration or adjust the deployment shape so the "
+                    "harness can run.",
+                ]
+            )
+            return "\n".join(lines)
         lines.append(
             f"**Functional test outcome of the previous attempt "
             f"(`{self.iteration_id}`)**: "
@@ -262,6 +448,11 @@ def _container_error_excerpt_for_test(
        (e.g. ``Error simulating: bind message supplies 4 parameters…``),
        rather than the first one (which is usually the noisy startup
        ``Failed to initialize database`` race from PM2 cluster init).
+    4. If an infrastructure-failure marker (port conflict, Docker container
+       start failure, image pull error, …) appears in the slice, prepend it
+       to the excerpt. These lines are otherwise dropped as ``_HARNESS_LINE_RE``
+       boundaries, which is what made the LLM see ``ValueError: Could not
+       start docker container`` without the actual cause.
     """
     lines = test_log.splitlines()
 
@@ -281,6 +472,18 @@ def _container_error_excerpt_for_test(
             break
 
     section = lines[start:failed_idx]
+
+    # First pass: pull the most specific infra-failure line in this slice
+    # (port conflict, docker networking, etc.). This is information the
+    # block-based filter below would otherwise discard.
+    infra_evidence = ""
+    for line in section:
+        for _kind, pattern, _desc in _INFRA_FAILURE_PATTERNS:
+            if pattern.search(line):
+                infra_evidence = line.strip()
+                break
+        if infra_evidence:
+            break
 
     blocks: list[list[str]] = []
     current: list[str] = []
@@ -307,13 +510,20 @@ def _container_error_excerpt_for_test(
         b for b in blocks if any(_CONTAINER_ERROR_HINT_RE.search(l) for l in b)
     ]
     chosen = error_blocks[-1] if error_blocks else (blocks[-1] if blocks else [])
-    if not chosen:
+    head = chosen[:_CONTAINER_ERROR_TAIL_LINES] if chosen else []
+    body = "\n".join(head)
+    if infra_evidence:
+        # Always lead with the infra cause line so the LLM (and a human reading
+        # ``failure_report.json``) doesn't have to guess why the container
+        # could not start.
+        body = (
+            f"[infrastructure] {infra_evidence}\n\n{body}".rstrip()
+            if body
+            else f"[infrastructure] {infra_evidence}"
+        )
+    if not body:
         return ""
-    # The error *message* is at the head of the block (e.g. "Error simulating:
-    # bind message supplies 4 parameters…"), with stack trace and pg error
-    # object underneath. Keep the head, not the tail.
-    head = chosen[:_CONTAINER_ERROR_TAIL_LINES]
-    return _trim("\n".join(head), max_chars=_MAX_CONTAINER_ERROR_CHARS)
+    return _trim(body, max_chars=_MAX_CONTAINER_ERROR_CHARS)
 
 
 def build_functional_failure_report(
@@ -330,7 +540,7 @@ def build_functional_failure_report(
     next phase has signal.
     """
     log = logger or logging.getLogger(__name__)
-    ft_dir = iteration_path / "functional_tests"
+    ft_dir = iteration_functional_tests_dir(iteration_path)
     iid = iteration_id or iteration_path.name
 
     passed_n, total_n = _read_test_results(ft_dir)
@@ -374,6 +584,15 @@ def build_functional_failure_report(
         # next phase is not completely blind.
         generic_excerpt = _generic_excerpt_from_test_log(test_log)
 
+    infra = detect_infrastructure_failure(test_log)
+    if infra is not None:
+        log.warning(
+            "infrastructure failure detected for %s: %s (evidence: %s)",
+            iid,
+            infra.description,
+            infra.evidence,
+        )
+
     return FunctionalFailureReport(
         iteration_id=iid,
         num_passed_ft=passed_n,
@@ -381,6 +600,7 @@ def build_functional_failure_report(
         failed_tests=tuple(failures),
         passed_tests=tuple(passed_names),
         generic_excerpt=generic_excerpt,
+        infrastructure_failure=infra,
     )
 
 
@@ -400,33 +620,6 @@ def _generic_excerpt_from_test_log(test_log: str) -> str:
     return _tail("\n".join(lines), max_lines=20, max_chars=1200)
 
 
-def failure_report_path(iteration_path: Path) -> Path:
-    return iteration_path / FAILURE_REPORT_FILENAME
-
-
-def write_failure_report(
-    iteration_path: Path,
-    report: FunctionalFailureReport,
-) -> Path:
-    out = failure_report_path(iteration_path)
-    out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(
-        json.dumps(report.to_dict(), indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
-    )
-    return out
-
-
-def load_failure_report(
-    iteration_path: Path,
-) -> FunctionalFailureReport | None:
-    path = failure_report_path(iteration_path)
-    if not path.is_file():
-        return None
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return None
-    if not isinstance(data, dict):
-        return None
-    return FunctionalFailureReport.from_dict(data)
+# Persistence of :class:`FunctionalFailureReport` now lives in
+# ``workspace.artifacts`` (``write_failure_report`` / ``load_failure_report``).
+# This module is the *builder*; the filesystem is owned by ``workspace``.

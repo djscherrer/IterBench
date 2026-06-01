@@ -7,6 +7,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from .paths import (
+    PHASE_BENCH_DIRNAME,
+    PHASE_DEPLOY_DIRNAME,
+    PHASE_SPEC_DIRNAME,
     find_iteration_spec_path,
     iteration_bench_dir,
     iteration_code_snapshot_dir,
@@ -15,14 +18,21 @@ from .paths import (
 
 
 def ensure_iteration_core_layout(iteration_path: Path) -> None:
-    """Create directories always used by a k8s iteration phase."""
+    """
+    Create the directories that *every* iteration will populate.
+
+    The decision (``01-decision/``) and code (``02-code/``) phase folders are
+    intentionally **not** pre-created: they only exist for iterations that
+    actually ran a refinement decision or code regeneration step, and lazily
+    creating them keeps ``ls iteration-NNN/`` honest about what happened.
+    """
     iteration_path.mkdir(parents=True, exist_ok=True)
     for name in (
-        "spec",
-        "manifests",
-        "deploy",
-        "bench",
-        "bench/runs",
+        PHASE_SPEC_DIRNAME,
+        f"{PHASE_SPEC_DIRNAME}/manifests",
+        PHASE_DEPLOY_DIRNAME,
+        PHASE_BENCH_DIRNAME,
+        f"{PHASE_BENCH_DIRNAME}/runs",
     ):
         (iteration_path / name).mkdir(parents=True, exist_ok=True)
 

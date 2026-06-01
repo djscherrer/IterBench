@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import logging
 import os
 import re
@@ -13,8 +12,8 @@ from typing import Any, Literal
 from prompts import Prompter
 
 from ..feedback import IterationFeedback
-from ..workspace import iteration_decision_dir, latest_code_dir
-from ..spec.generation import _read_app_hints
+from ..workspace import latest_code_dir
+from .code import _read_full_code_for_decision
 
 RefinementAction = Literal["deployment", "code"]
 RefinementMode = Literal["auto", "deployment", "code", "off"]
@@ -32,14 +31,14 @@ class RefinementDecision:
     action: RefinementAction
     rationale: str
     raw_response: str
-    phase_index: int
+    iteration_index: int
     based_on_iteration: str
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "action": self.action,
             "rationale": self.rationale,
-            "phase_index": self.phase_index,
+            "iteration_index": self.iteration_index,
             "based_on_iteration": self.based_on_iteration,
             "raw_response": self.raw_response,
         }
@@ -66,19 +65,19 @@ def build_refinement_decision_prompt(
     results_dir: Path,
     sample: int,
     prior_feedback: IterationFeedback,
-    phase_index: int,
+    iteration_index: int,
     next_iteration_id: str,
-    total_phases: int = 0,
+    total_iterations: int = 0,
 ) -> str:
     code_dir = latest_code_dir(
         task.get_sample_dir(results_dir, sample),
         fallback=task.get_code_dir(results_dir, sample),
     )
-    app_hints = _read_app_hints(code_dir, max_chars=6000)
+    full_code = _read_full_code_for_decision(code_dir)
     from ..spec.generation import _format_iteration_progress
 
     progress = _format_iteration_progress(
-        phase_index=phase_index, total_phases=total_phases
+        iteration_index=iteration_index, total_iterations=total_iterations
     )
     return f"""You are a performance optimization strategist for BaxBench iterative experiments.
 
@@ -102,8 +101,11 @@ Choose **`code`** when:
 - Locust shows application-level errors (5xx, timeouts, logic bugs, DB query issues) suppressing goodput
 - Functional tests were passing but perf errors suggest inefficient algorithms, missing indexes, N+1 queries, pool misconfiguration **in code**
 - Pod utilization is low yet goodput is poor (software bottleneck)
-- The benchmark feedback below lists a recent **code-refinement attempt that failed functional tests** — the application is currently broken and must be fixed before any deployment change can help
+- The benchmark feedback below lists a recent **code-refinement attempt that failed functional tests** *with concrete application-level errors* — the application is currently broken and must be fixed before any deployment change can help
 - The current spec already deploys **Postgres read replicas** (`database.replicas > 1` and `DB_READ_HOST` is set) but replica CPU stays near 0 while the primary saturates — the code must opt into the read pool before any further deployment change can help
+
+**Do NOT choose `code`** when:
+- The previous failure block is marked `[INFRASTRUCTURE FAILURE]` or describes a Docker port conflict, container start error, image pull failure, or "Server did not start in time". The functional tests never reached the application in that case — they were *blocked* by the test harness, not failed by the code. Pick `deployment` (you can keep the current spec to retry the harness, or adjust resources) rather than rewriting `app.js`.
 
 If the feedback below lists **failed attempts since the last successful iteration**, treat them as anti-examples: do not repeat the same change without addressing the recorded failure.
 
@@ -117,9 +119,11 @@ If the feedback below lists **failed attempts since the last successful iteratio
 
 {prior_feedback.to_prompt_text()}
 
-## Current application code (excerpt)
+## Current application code
 
-{app_hints}
+This is the **full source** the next refinement (if you pick `code`) would start from. Use it to judge whether the bottleneck is in the code (logic / DB usage / concurrency) or in the deployment (resources / replicas / placement). Files are rendered in the same `<FILEPATH>` / `<CODE>` format the refinement model emits back.
+
+{full_code}
 
 ## Output format
 
@@ -140,7 +144,7 @@ Use `deployment` or `code` (lowercase) inside `<DECISION>`.
 def parse_refinement_decision(
     response: str,
     *,
-    phase_index: int,
+    iteration_index: int,
     based_on_iteration: str,
 ) -> RefinementDecision:
     match = _DECISION_RE.search(response)
@@ -161,7 +165,7 @@ def parse_refinement_decision(
         action=action,  # type: ignore[arg-type]
         rationale=rationale,
         raw_response=response,
-        phase_index=phase_index,
+        iteration_index=iteration_index,
         based_on_iteration=based_on_iteration,
     )
 
@@ -173,28 +177,30 @@ def decide_refinement_action(
     sample: int,
     iteration_path: Path,
     prior_feedback: IterationFeedback,
-    phase_index: int,
+    iteration_index: int,
     next_iteration_id: str,
     logger: logging.Logger,
     vllm_port: int = 8000,
     max_retries: int = 3,
     base_delay: float = 1.0,
     max_delay: float = 60.0,
-    total_phases: int = 0,
+    total_iterations: int = 0,
 ) -> RefinementDecision:
+    from ..workspace import PROMPT_LOG_FILENAME, iteration_decision_dir
+
     prompt = build_refinement_decision_prompt(
         task=task,
         results_dir=results_dir,
         sample=sample,
         prior_feedback=prior_feedback,
-        phase_index=phase_index,
+        iteration_index=iteration_index,
         next_iteration_id=next_iteration_id,
-        total_phases=total_phases,
+        total_iterations=total_iterations,
     )
     logger.info("refinement decision prompt:\n%s", prompt)
     decision_dir = iteration_decision_dir(iteration_path)
     decision_dir.mkdir(parents=True, exist_ok=True)
-    (decision_dir / "prompt.log").write_text(prompt + "\n", encoding="utf-8")
+    (decision_dir / PROMPT_LOG_FILENAME).write_text(prompt + "\n", encoding="utf-8")
 
     prompter = Prompter(
         env=task.env,
@@ -236,7 +242,7 @@ def decide_refinement_action(
             last_raw = responses[0]
             return parse_refinement_decision(
                 last_raw,
-                phase_index=phase_index,
+                iteration_index=iteration_index,
                 based_on_iteration=prior_feedback.iteration_id,
             )
         except Exception as exc:
@@ -263,23 +269,10 @@ def decide_refinement_action(
         action="deployment",
         rationale=f"Decision LLM failed ({last_exc}); defaulting to deployment tuning.",
         raw_response=last_raw,
-        phase_index=phase_index,
+        iteration_index=iteration_index,
         based_on_iteration=prior_feedback.iteration_id,
     )
 
 
-def write_refinement_decision_artifact(
-    iteration_path: Path,
-    decision: RefinementDecision,
-) -> Path:
-    decision_dir = iteration_decision_dir(iteration_path)
-    decision_dir.mkdir(parents=True, exist_ok=True)
-    out = decision_dir / "decision.json"
-    out.write_text(
-        json.dumps(decision.to_dict(), indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
-    )
-    (decision_dir / "response.log").write_text(
-        decision.raw_response + "\n", encoding="utf-8"
-    )
-    return out
+# Persistence of :class:`RefinementDecision` now lives in
+# ``workspace.artifacts.write_decision``; this module only builds it.

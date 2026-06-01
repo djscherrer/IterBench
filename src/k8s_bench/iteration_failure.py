@@ -14,6 +14,7 @@ def fail_iteration_phase(
     *,
     iteration_path: Path,
     save_dir: Path,
+    sample_dir: Path,
     sample: int,
     iteration_id: str,
     failure_reason: str,
@@ -21,12 +22,14 @@ def fail_iteration_phase(
     logger: logging.Logger,
 ) -> Path:
     """
-    Mark an iteration as failed: update meta and rename folder with ``-failed`` suffix.
+    Mark an iteration as failed: update meta, rename folder with ``-failed`` suffix,
+    and append a failure block to the experiment summary so the next iteration's
+    prompt + the human-readable summary both reflect what went wrong.
 
     For ``kind="code"`` we also build and persist a ``failure_report.json``
-    next to ``meta.json`` so the *next* refinement phase receives a structured
-    diagnostic (which functional tests failed, with the actual error message)
-    instead of having to re-parse the noisy ``test.log`` tail.
+    next to ``meta.json`` so the *next* refinement iteration receives a
+    structured diagnostic (which functional tests failed, with the actual error
+    message) instead of having to re-parse the noisy ``test.log`` tail.
 
     Returns the renamed iteration directory.
     """
@@ -39,10 +42,8 @@ def fail_iteration_phase(
 
     if kind == "code":
         try:
-            from .functional_failure import (
-                build_functional_failure_report,
-                write_failure_report,
-            )
+            from .functional_failure import build_functional_failure_report
+            from .workspace import write_failure_report
 
             report = build_functional_failure_report(
                 iteration_path,
@@ -69,6 +70,26 @@ def fail_iteration_phase(
     except FileExistsError as exc:
         logger.error("Could not rename failed iteration folder: %s", exc)
         failed_path = iteration_path
+
+    try:
+        from .experiment_summary import append_iteration_failure_block
+        from .feedback import read_failed_iteration_error_excerpt
+
+        excerpt = read_failed_iteration_error_excerpt(failed_path)
+        append_iteration_failure_block(
+            sample_dir=sample_dir,
+            iteration_id=iteration_id,
+            iteration_path=failed_path,
+            failure_reason=failure_reason,
+            kind=kind,
+            error_excerpt=excerpt,
+        )
+    except Exception as exc:
+        logger.warning(
+            "Could not append failure block to experiment summary for %s: %s",
+            iteration_id,
+            exc,
+        )
 
     append_k8s_skip(
         save_dir,

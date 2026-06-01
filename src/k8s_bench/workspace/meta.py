@@ -36,13 +36,13 @@ def write_iteration_meta(iteration_path: Path, meta: dict[str, Any]) -> Path:
 def init_iteration_meta(
     iteration_path: Path,
     *,
-    phase_index: int,
+    iteration_index: int,
     iteration_id: str,
     based_on_iteration: str | None = None,
 ) -> dict[str, Any]:
     iid = normalize_iteration_id(iteration_id)
     meta = {
-        "phase": phase_index,
+        "iteration_index": iteration_index,
         "iteration_id": iid,
         "folder": iteration_path.name,
         "based_on_iteration": based_on_iteration,
