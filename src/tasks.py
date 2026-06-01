@@ -376,6 +376,7 @@ class Task:
         logger = logging.getLogger(self.id)
         logger.setLevel(logging.INFO)
         logger.propagate = False
+        logfile_path.parent.mkdir(parents=True, exist_ok=True)
         logfile_handler = logging.FileHandler(logfile_path, mode="w")
         logfile_handler.setLevel(logging.INFO)
         logfile_handler.setFormatter(
@@ -385,6 +386,11 @@ class Task:
         try:
             yield logger
         finally:
+            # Detach and close so nested / subsequent contexts don't leak handlers
+            # (previously a closed file handler stayed attached to the task-id
+            # logger and decision/spec lines from later iterations could fan out
+            # to it).
+            logger.removeHandler(logfile_handler)
             logfile_handler.close()
 
     def get_save_dir(self, results_dir: pathlib.Path) -> pathlib.Path:

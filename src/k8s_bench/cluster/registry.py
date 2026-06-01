@@ -146,6 +146,22 @@ def _start_registry_local(registry: RegistryConfig, logger: logging.Logger) -> N
 
 
 def _configure_containerd_script(registry: RegistryConfig) -> str:
+    """
+    Ship two things to a worker so kubelet pulls work from our HTTP registry:
+
+    1. ``/etc/containerd/certs.d/<endpoint>/hosts.toml`` — per-registry config
+       enabling plain HTTP + ``skip_verify``.
+    2. Patch ``/etc/containerd/config.toml`` to set
+       ``config_path = "/etc/containerd/certs.d"`` under the CRI registry
+       section, so containerd actually *reads* (1). Without this, kubelet
+       pulls bypass certs.d and try HTTPS — which is why we historically had
+       to ``ctr --plain-http pull`` on every node (image preload) before
+       Pods could start.
+
+    Restart containerd after the patch is applied. Idempotent: a second
+    invocation only writes hosts.toml; the config.toml stanza is left alone
+    if ``config_path = "/etc/containerd/certs.d"`` is already present.
+    """
     ep = registry.endpoint
     certs_dir = _containerd_certs_dir(ep)
     return f"""set -euo pipefail
@@ -153,8 +169,39 @@ if command -v sudo >/dev/null 2>&1; then SUDO='sudo -n'; else SUDO=''; fi
 $SUDO mkdir -p {shlex.quote(certs_dir)}
 cat <<'HOSTS_EOF' | $SUDO tee {shlex.quote(certs_dir)}/hosts.toml >/dev/null
 {_hosts_toml(registry)}HOSTS_EOF
-$SUDO systemctl restart containerd
-echo 'containerd configured for {ep}'
+
+CFG=/etc/containerd/config.toml
+need_restart=false
+if [ ! -f "$CFG" ]; then
+  $SUDO mkdir -p /etc/containerd
+  $SUDO bash -c "containerd config default > $CFG"
+  need_restart=true
+fi
+
+# Ensure CRI registry section points at /etc/containerd/certs.d.
+if ! $SUDO grep -Eq 'config_path *= *"/etc/containerd/certs\\.d"' "$CFG"; then
+  if $SUDO grep -q '\\[plugins."io.containerd.grpc.v1.cri".registry\\]' "$CFG"; then
+    # Replace existing config_path = "" line, or insert one after the header.
+    if $SUDO grep -Eq 'config_path *= *"[^"]*"' "$CFG"; then
+      $SUDO sed -i 's|config_path *= *"[^"]*"|config_path = "/etc/containerd/certs.d"|' "$CFG"
+    else
+      $SUDO sed -i '/\\[plugins."io.containerd.grpc.v1.cri".registry\\]/a \\  config_path = "/etc/containerd/certs.d"' "$CFG"
+    fi
+  else
+    echo '' | $SUDO tee -a "$CFG" >/dev/null
+    echo '[plugins."io.containerd.grpc.v1.cri".registry]' | $SUDO tee -a "$CFG" >/dev/null
+    echo '  config_path = "/etc/containerd/certs.d"' | $SUDO tee -a "$CFG" >/dev/null
+  fi
+  need_restart=true
+fi
+
+if [ "$need_restart" = "true" ]; then
+  $SUDO systemctl restart containerd
+else
+  # hosts.toml may have changed even when config.toml didn't; force a reload.
+  $SUDO systemctl restart containerd
+fi
+echo 'containerd configured for {ep} (hosts.toml + config.toml certs.d)'
 """
 
 
@@ -215,8 +262,13 @@ def preload_registry_image_on_nodes(
     """
     Pull image into containerd's k8s.io namespace on each node.
 
-    CRI/kubelet on containerd 2.x may still use HTTPS for HTTP registries despite
-    certs.d/hosts.toml; ``ctr --plain-http`` matches what works in the lab.
+    Belt-and-suspenders step alongside the containerd ``certs.d`` config in
+    :func:`_configure_containerd_script` (which sets ``config_path`` so kubelet
+    honours per-registry ``hosts.toml`` and uses plain HTTP). With ``certs.d``
+    wired in, kubelet *can* pull the image on first pod scheduling, but
+    preloading still smooths over first-pull latency on cold nodes and any
+    transient registry errors. Safe to remove once we trust the registry path
+    end-to-end (see notes in :file:`registry.py`).
     """
     hosts = _dedupe_hosts(node_hosts)
     if not hosts:

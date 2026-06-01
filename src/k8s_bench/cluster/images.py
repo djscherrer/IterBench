@@ -83,6 +83,31 @@ def distribute_image_to_hosts(
         log.info("[%d/%d] %s — OK", i, len(targets), host)
 
 
+def expected_registry_reference(
+    image_id: str,
+    *,
+    sample_slug: str,
+    profile_name: str | None = None,
+) -> str | None:
+    """
+    Compute the registry reference :func:`prepare_image_for_k8s` would push to.
+
+    Pure / side-effect-free: lets callers cheaply check "would a probe-time push
+    have produced *this* tag?" without re-pushing or re-preloading. Returns
+    ``None`` when no registry is configured (legacy SSH-load path).
+    """
+    profile = (
+        (profile_name or os.environ.get("BAXBENCH_K8S_CLUSTER", "") or "").strip()
+        or None
+    )
+    registry = resolve_registry_config(profile)
+    if registry is None:
+        return None
+    short = image_id.removeprefix("sha256:")[:12]
+    repo = _slug_ref(sample_slug)
+    return f"{registry.endpoint}/baxbench/{repo}:{short}"
+
+
 def prepare_image_for_k8s(
     image_id: str,
     *,

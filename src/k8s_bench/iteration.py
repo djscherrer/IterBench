@@ -7,6 +7,8 @@ import json
 import logging
 import os
 import re
+import shutil
+import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -20,15 +22,21 @@ from locust_bench.load_topology import LoadTopology
 from locust_bench.utilization_logging import utilization_session_for_k8s
 
 from .cluster.deploy import DeployResult, deploy_iteration
-from .cluster.images import prepare_image_for_k8s
+from .cluster.images import (
+    PreparedImage,
+    expected_registry_reference,
+    prepare_image_for_k8s,
+)
 from .cluster.load_target import resolve_nodeport_target
 from .cluster.profiles import selected_cluster_profile
 from .spec.models import BackendSpec, DatabaseSpec, K8sWorkloadSpec
 from .workspace import (
     default_k8s_namespace,
+    deploy_bench_record_path,
+    deploy_probe_record_path,
     ensure_iteration_core_layout,
     find_iteration_spec_path,
-    iteration_id_for_phase,
+    iteration_id_for_index,
     iteration_spec_path,
     iterations_root,
     list_iteration_dirs,
@@ -44,6 +52,162 @@ from .spec.render import render_iteration
 
 def _slugify_run_part(s: str) -> str:
     return re.sub(r"[^a-zA-Z0-9_-]+", "-", s.strip()) or "default"
+
+
+def _namespace_exists(namespace: str, *, logger: logging.Logger) -> bool:
+    """Cheap check that the iteration namespace still lives in the cluster."""
+    proc = subprocess.run(
+        ["kubectl", "get", "namespace", namespace, "-o", "name"],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=30,
+    )
+    if proc.returncode != 0:
+        logger.info(
+            "namespace %s not found (rc=%s); cannot reuse probe deploy: %s",
+            namespace,
+            proc.returncode,
+            (proc.stderr or proc.stdout).strip()[:200],
+        )
+        return False
+    return True
+
+
+def _probe_deploy_is_reusable(
+    iteration_path: Path,
+    spec: K8sWorkloadSpec,
+    *,
+    image_reference: str,
+    logger: logging.Logger,
+) -> DeployResult | None:
+    """
+    Return the probe :class:`DeployResult` when the bench can skip its own deploy.
+
+    Reusable means:
+    1. ``04-deploy/probe.json`` exists with ``success: true``.
+    2. The recorded probe ran against the *same* manifest file we'd render now
+       (``03-spec/manifests/all.yaml`` mtime older than probe ``applied_at``).
+    3. The probe namespace still exists with ready ``backend`` endpoints (and
+       ``postgres`` endpoints when the spec has the database enabled).
+    4. The recorded probe used the same image reference as the one we just
+       prepared (otherwise pods could still be running stale code).
+    """
+    probe_path = deploy_probe_record_path(iteration_path)
+    if not probe_path.is_file():
+        return None
+    try:
+        record = json.loads(probe_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        logger.info("probe.json unreadable, redeploying: %s", exc)
+        return None
+    if not record.get("success"):
+        return None
+    if record.get("namespace") != spec.namespace:
+        logger.info(
+            "probe.json namespace=%s != current spec namespace=%s; redeploying",
+            record.get("namespace"),
+            spec.namespace,
+        )
+        return None
+
+    manifest_file = Path(record.get("manifest_file") or "")
+    spec_yaml = iteration_spec_path(iteration_path)
+    if (
+        manifest_file.is_file()
+        and spec_yaml.is_file()
+        and manifest_file.stat().st_mtime < spec_yaml.stat().st_mtime - 1
+    ):
+        logger.info(
+            "spec.yaml newer than probe manifest (%s); redeploying",
+            manifest_file.name,
+        )
+        return None
+
+    if not _namespace_exists(spec.namespace, logger=logger):
+        return None
+
+    # Late import to avoid the circular ``iteration → gates.deploy_probe →
+    # iteration.ensure_iteration_spec`` dependency at module load time.
+    from .gates.deploy_probe import check_service_endpoints_ready
+
+    backend_ok, backend_msg = check_service_endpoints_ready(
+        namespace=spec.namespace, service="backend", logger=logger
+    )
+    if not backend_ok:
+        logger.info("probe deploy unhealthy (backend): %s", backend_msg)
+        return None
+
+    if spec.database.enabled:
+        db_ok, db_msg = check_service_endpoints_ready(
+            namespace=spec.namespace,
+            service=spec.database.service_name,
+            logger=logger,
+        )
+        if not db_ok:
+            logger.info("probe deploy unhealthy (db): %s", db_msg)
+            return None
+
+    # Image-ref sanity check: pods may have already been scheduled against a
+    # different image tag if the build was rebuilt since probe time.
+    expected = image_reference.strip()
+    actual_image = None
+    backend_url = str(record.get("backend_service_url") or "")
+    if backend_url and expected:
+        # Cheap kubectl inspect, no rollout-restart.
+        get = subprocess.run(
+            [
+                "kubectl",
+                "get",
+                "deployment",
+                "backend",
+                "-n",
+                spec.namespace,
+                "-o",
+                "jsonpath={.spec.template.spec.containers[0].image}",
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=30,
+        )
+        actual_image = (get.stdout or "").strip()
+        if actual_image and actual_image != expected:
+            logger.info(
+                "deployed image %s differs from prepared %s; redeploying",
+                actual_image,
+                expected,
+            )
+            return None
+
+    logger.info(
+        "Reusing probe deploy for %s (namespace=%s, image=%s): %s",
+        iteration_path.name,
+        spec.namespace,
+        actual_image or "<unchecked>",
+        backend_msg,
+    )
+    return DeployResult(
+        success=True,
+        namespace=record.get("namespace") or spec.namespace,
+        manifest_file=str(manifest_file),
+        kubectl_context=record.get("kubectl_context"),
+        backend_service_url=record.get("backend_service_url") or "",
+        applied_at=record.get("applied_at") or "",
+        stdout=record.get("stdout") or "",
+        stderr=record.get("stderr") or "",
+        wait_details=dict(record.get("wait_details") or {}),
+    )
+
+
+def _copy_probe_record_to_bench(iteration_path: Path) -> None:
+    """Mirror ``04-deploy/probe.json`` to ``04-deploy/bench.json`` for downstream readers."""
+    probe = deploy_probe_record_path(iteration_path)
+    if not probe.is_file():
+        return
+    bench = deploy_bench_record_path(iteration_path)
+    bench.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(probe, bench)
 
 
 def resolve_iterations_to_run(
@@ -81,10 +245,10 @@ def ensure_iteration_spec(
 ) -> K8sWorkloadSpec:
     ensure_iteration_core_layout(iteration_path)
     spec_path = find_iteration_spec_path(iteration_path)
-    phase, _kind, _failed = parse_iteration_folder_name(iteration_path.name)
+    idx, _kind, _failed = parse_iteration_folder_name(iteration_path.name)
     iid = (
-        iteration_id_for_phase(phase)
-        if phase is not None
+        iteration_id_for_index(idx)
+        if idx is not None
         else normalize_iteration_id(iteration_path.name)
     )
     if spec_path is not None and spec_path.is_file():
@@ -189,23 +353,56 @@ def run_k8s_bench_iteration(
             "set load_master/load_workers in profiles.py"
         )
 
-    prepared = prepare_image_for_k8s(
-        image_id,
-        sample_slug=sample_slug,
-        profile_name=profile.name,
-        logger=logger,
+    # Fast path: when the probe just deployed this exact iteration we can
+    # reuse the running namespace — no docker push, no ctr preload, no
+    # kubectl apply, no readiness wait. We test this *before* paying the
+    # push/preload cost by computing the registry reference deterministically.
+    spec_yaml = find_iteration_spec_path(iteration_path)
+    expected_ref = expected_registry_reference(
+        image_id, sample_slug=sample_slug, profile_name=profile.name
     )
-    spec = ensure_iteration_spec(
-        iteration_path,
-        image_reference=prepared.reference,
-        app_port=app_port,
-        needs_db=needs_db,
-        labels=labels,
-    )
-    render_iteration(iteration_path)
-    deploy_result = deploy_iteration(iteration_path, wait_timeout_s=wait_timeout_s, logger=logger)
-    if not deploy_result.success:
-        raise RuntimeError(f"Kubernetes deploy failed for {iteration_path}")
+    reused: DeployResult | None = None
+    prepared: PreparedImage | None = None
+
+    if spec_yaml is not None and spec_yaml.is_file() and expected_ref is not None:
+        candidate_spec = K8sWorkloadSpec.from_yaml_file(spec_yaml)
+        reused = _probe_deploy_is_reusable(
+            iteration_path,
+            candidate_spec,
+            image_reference=expected_ref,
+            logger=logger,
+        )
+        if reused is not None:
+            spec = candidate_spec
+            prepared = PreparedImage(reference=expected_ref)
+            deploy_result = reused
+            _copy_probe_record_to_bench(iteration_path)
+
+    if reused is None:
+        # Probe did not run, isn't reusable, or no registry — full deploy path:
+        # docker push → ctr preload → cleanup → render → kubectl apply → wait.
+        prepared = prepare_image_for_k8s(
+            image_id,
+            sample_slug=sample_slug,
+            profile_name=profile.name,
+            logger=logger,
+        )
+        spec = ensure_iteration_spec(
+            iteration_path,
+            image_reference=prepared.reference,
+            app_port=app_port,
+            needs_db=needs_db,
+            labels=labels,
+        )
+        render_iteration(iteration_path)
+        deploy_result = deploy_iteration(
+            iteration_path, wait_timeout_s=wait_timeout_s, logger=logger
+        )
+        if not deploy_result.success:
+            raise RuntimeError(f"Kubernetes deploy failed for {iteration_path}")
+
+    assert prepared is not None
+    assert spec is not None
 
     entry_node = profile.worker_nodes[0] if profile.worker_nodes else profile.control_node
     target_base_url = resolve_nodeport_target(

@@ -102,17 +102,85 @@ def _iteration_heading_present(path: Path, iteration_id: str) -> bool:
 
 
 def _maybe_write_iteration_heading(path: Path, iteration_id: str) -> str:
+    """Deprecated for new writes — use :func:`_append_for_iteration` instead."""
     iid = normalize_iteration_id(iteration_id)
     if _iteration_heading_present(path, iid):
         return ""
     return f"\n## {iid}\n\n"
 
 
+def _insert_pos_for_iteration_section(content: str, iteration_id: str) -> int | None:
+    """
+    Return the byte offset where new blocks for ``iteration_id`` should be inserted.
+
+    Inserts immediately before the next ``## iteration-…`` heading, or at EOF if
+    this is the last iteration section. Returns ``None`` when the heading is absent.
+    """
+    iid = normalize_iteration_id(iteration_id)
+    heading_re = re.compile(rf"^## {re.escape(iid)}\s*$", re.M)
+    m = heading_re.search(content)
+    if not m:
+        return None
+    after_heading = m.end()
+    next_iter = re.search(r"^## iteration-\d+", content[after_heading:], re.M)
+    if next_iter:
+        return after_heading + next_iter.start()
+    return len(content)
+
+
+def _append_for_iteration(path: Path, iteration_id: str, text: str) -> None:
+    """
+    Append summary blocks for one iteration, keeping them under that iteration's section.
+
+    On a fresh experiment each iteration heading is written once and blocks are
+    appended at EOF (chronological). When an experiment is **continued** and an
+    iteration is re-run (e.g. ``iteration-007`` failed first, then succeeded on
+    retry), the heading already exists but old blocks must not be orphaned at the
+    end of the file — new blocks are inserted at the end of that iteration's
+    section (before the next ``## iteration-…`` heading).
+    """
+    iid = normalize_iteration_id(iteration_id)
+    block = text if text.endswith("\n") else text + "\n"
+
+    if not path.is_file():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(f"## {iid}\n\n{block}", encoding="utf-8")
+        return
+
+    content = path.read_text(encoding="utf-8")
+    if not _iteration_heading_present(path, iid):
+        prefix = "\n" if content and not content.endswith("\n\n") else ""
+        _append(path, f"{prefix}## {iid}\n\n{block}")
+        return
+
+    insert_at = _insert_pos_for_iteration_section(content, iid)
+    if insert_at is None:
+        _append(path, block)
+        return
+
+    before = content[:insert_at].rstrip("\n")
+    after = content[insert_at:].lstrip("\n")
+    new_content = before + "\n\n" + block.rstrip("\n")
+    if after:
+        new_content += "\n\n" + after
+    new_content += "\n"
+    path.write_text(new_content, encoding="utf-8")
+
+
+def _spec_diff_source_label(spec_path: Path) -> str:
+    """Human label for the iteration whose spec we diff against (not ``03-spec/``)."""
+    # spec.yaml lives at ``iteration-NNN-…/03-spec/spec.yaml``
+    iteration_dir = spec_path.parent.parent
+    if iteration_dir.name.startswith("iteration-"):
+        return f"`{iteration_dir.name}`"
+    return f"`{spec_path.parent.name}`"
+
+
 def _extract_llm_narrative(raw_response: str) -> str:
     """Text before the machine-readable SPEC / YAML block."""
     raw = (raw_response or "").strip()
     if not raw:
-        return "(no LLM narrative in spec_gen.log)"
+        return "(no LLM narrative in response.log)"
 
     for pattern in (
         re.compile(r"<SPEC>\s*", re.I),
@@ -175,30 +243,37 @@ def _spec_bullets(spec: K8sWorkloadSpec) -> list[str]:
 
 
 def _previous_spec_path(iteration_path: Path) -> Path | None:
-    """Locate the previous iteration's ``spec.yaml`` (suffix-aware, allows baseline 000)."""
-    phase, _kind, _failed = parse_iteration_folder_name(iteration_path.name)
-    if phase is None or phase <= 0:
+    """
+    Locate the most recent prior iteration's ``spec.yaml``.
+
+    Walks back through iteration indices ``[index - 1 .. 0]`` and returns the
+    first ``spec.yaml`` found, regardless of whether the iteration folder is
+    suffixed ``-failed``. This way a spec block can show the diff against the
+    immediately preceding attempt (failed or not), instead of silently saying
+    "first iteration" when the previous one happened to crash.
+    """
+    index, _kind, _failed = parse_iteration_folder_name(iteration_path.name)
+    if index is None or index <= 0:
         return None
 
     parent = iteration_path.parent
     if not parent.is_dir():
         return None
 
-    prev_phase = phase - 1
-    candidates: list[Path] = []
-    for child in parent.iterdir():
-        if not child.is_dir():
-            continue
-        p, _k, failed = parse_iteration_folder_name(child.name)
-        if p != prev_phase or failed:
-            continue
-        candidates.append(child)
-
-    candidates.sort(key=lambda c: c.name)
-    for cand in candidates:
-        spec = find_iteration_spec_path(cand)
-        if spec is not None:
-            return spec
+    for target_index in range(index - 1, -1, -1):
+        candidates: list[Path] = []
+        for child in parent.iterdir():
+            if not child.is_dir():
+                continue
+            p, _k, _f = parse_iteration_folder_name(child.name)
+            if p != target_index:
+                continue
+            candidates.append(child)
+        candidates.sort(key=lambda c: c.name)
+        for cand in candidates:
+            spec = find_iteration_spec_path(cand)
+            if spec is not None:
+                return spec
     return None
 
 
@@ -476,7 +551,7 @@ def append_spec_generation_block(
     raw_response: str,
     warnings: list[str],
     had_prior_feedback: bool,
-    phase_index: int,
+    iteration_index: int,
     load_profile: str | None = None,
 ) -> Path:
     """Append spec-generation subsection for one iteration."""
@@ -497,10 +572,10 @@ def append_spec_generation_block(
             diff_text = _spec_diff_markdown(
                 K8sWorkloadSpec.from_yaml_file(prev_path), spec
             )
-            diff_source = f"`{prev_path.parent.name}`"
+            diff_source = _spec_diff_source_label(prev_path)
         except ValueError:
             diff_text = f"(could not load previous spec at `{prev_path}`)"
-            diff_source = prev_path.parent.name
+            diff_source = _spec_diff_source_label(prev_path)
     else:
         diff_text = "First iteration in this experiment (no prior spec to diff)."
         diff_source = "—"
@@ -512,11 +587,10 @@ def append_spec_generation_block(
 
     body = "\n".join(
         [
-            _maybe_write_iteration_heading(path, iid),
             f"### Spec generation ({_utc_now_label()})",
             "",
-            f"- **Phase**: {phase_index}",
-            f"- **Prior Locust feedback in prompt**: {'yes' if had_prior_feedback else 'no (first phase)'}",
+            f"- **Iteration index**: {iteration_index}",
+            f"- **Prior Locust feedback in prompt**: {'yes' if had_prior_feedback else 'no (first iteration)'}",
             f"- **Spec path**: `{iteration_spec_path(iteration_path)}`",
             "",
             "**Deployment**",
@@ -527,7 +601,7 @@ def append_spec_generation_block(
             "",
             diff_text,
             "",
-            "**LLM rationale** (from `spec_gen.log`, text before `<SPEC>`)",
+            "**LLM rationale** (from `response.log`, text before `<SPEC>`)",
             "",
             narrative,
             warn_block,
@@ -536,7 +610,7 @@ def append_spec_generation_block(
             "",
         ]
     )
-    _append(path, body)
+    _append_for_iteration(path, iid, body)
     return path
 
 
@@ -580,9 +654,9 @@ def append_perf_run_block(
     locust_table = ""
     fb = feedback
     if fb is None:
-        from .feedback import load_feedback_from_run_dir
+        from .workspace import load_feedback
 
-        fb = load_feedback_from_run_dir(perf_run_dir)
+        fb = load_feedback(perf_run_dir)
 
     if fb and fb.locust_summary and "(no Locust stats" not in fb.locust_summary:
         locust_table = f"\n**Per-endpoint Locust** (from feedback)\n\n{fb.locust_summary}\n"
@@ -607,7 +681,6 @@ def append_perf_run_block(
 
     body = "\n".join(
         [
-            _maybe_write_iteration_heading(path, iid),
             f"### Locust run ({time_range})",
             "",
             f"- **Recorded**: {_utc_now_label()}",
@@ -628,7 +701,7 @@ def append_perf_run_block(
             "",
         ]
     )
-    _append(path, body)
+    _append_for_iteration(path, iid, body)
     return path
 
 
@@ -652,6 +725,167 @@ def _format_pod_utilization_for_summary(text: str) -> str:
     return "\n".join(lines)
 
 
+def append_iteration_failure_block(
+    *,
+    sample_dir: Path,
+    iteration_id: str,
+    iteration_path: Path,
+    failure_reason: str,
+    kind: str,
+    error_excerpt: str = "",
+    load_profile: str | None = None,
+) -> Path:
+    """
+    Append a failure narrative for an iteration that never produced bench data.
+
+    Renders failure stage, reason, error excerpt, and the spec that was attempted
+    (when present on disk). When a structured ``failure_report.json`` exists for
+    the iteration, the block also lists which functional tests passed / failed
+    and surfaces an explicit **Infrastructure failure** banner when the FT run
+    was blocked by the test harness rather than the application.
+    """
+    if os.environ.get("BAXBENCH_K8S_EXPERIMENT_SUMMARY", "true").lower() in (
+        "0",
+        "false",
+        "no",
+    ):
+        return experiment_summary_path(sample_dir)
+
+    path = experiment_summary_path(sample_dir)
+    _ensure_header(path, sample_dir=sample_dir, load_profile=load_profile)
+    iid = normalize_iteration_id(iteration_id)
+
+    # Load the structured FT report (if any) so we can render the *real* cause
+    # — infrastructure-failure banner, per-test outcome list — instead of
+    # leaving the reader to guess from the truncated Python traceback.
+    from .workspace import load_failure_report
+
+    report = None
+    if kind == "code":
+        try:
+            report = load_failure_report(iteration_path)
+        except Exception:
+            report = None
+
+    stage_label = (
+        "baseline spec (manifest could not be deployed)"
+        if kind == "baseline"
+        else "spec deployment (manifest could not be deployed)"
+        if kind == "spec"
+        else "code refinement (functional tests did not pass)"
+        if kind == "code"
+        else kind or "iteration"
+    )
+
+    body_lines: list[str] = [
+        f"### Iteration failure ({_utc_now_label()})",
+        "",
+        "- **Status**: `failed` (no benchmark data produced)",
+        f"- **Stage**: {stage_label}",
+        f"- **Reason**: {failure_reason or '(no reason recorded)'}",
+        f"- **Folder**: `{iteration_path.name}`",
+    ]
+
+    if report is not None and report.is_infrastructure_failure:
+        infra = report.infrastructure_failure
+        assert infra is not None
+        body_lines.extend(
+            [
+                "- **Cause**: **Infrastructure failure (not an application "
+                f"bug)** — `{infra.kind}`: {infra.description}",
+            ]
+        )
+
+    if report is not None:
+        body_lines.append(
+            f"- **Functional tests**: {report.num_passed_ft}/"
+            f"{report.num_total_ft} passed"
+        )
+
+    body_lines.append("")
+
+    if report is not None and report.is_infrastructure_failure:
+        infra = report.infrastructure_failure
+        assert infra is not None
+        body_lines.extend(
+            [
+                "**Infrastructure failure**",
+                "",
+                "The functional-test harness could not start the application or "
+                "its database container, so **no functional test actually "
+                "exercised the application code**. Treat the test outcome below "
+                "as *blocked*, not *failing*. Rewriting the application will "
+                "not help — investigate the test host (port collisions, leftover "
+                "Docker containers, image availability).",
+                "",
+            ]
+        )
+        if infra.evidence:
+            body_lines.extend(
+                [
+                    "**Evidence (raw log line)**",
+                    "",
+                    "```",
+                    infra.evidence,
+                    "```",
+                    "",
+                ]
+            )
+
+    if report is not None and (report.failed_tests or report.passed_tests):
+        body_lines.append("**Per-test outcome**")
+        body_lines.append("")
+        for ft in report.failed_tests:
+            label = "blocked" if report.is_infrastructure_failure else "failed"
+            body_lines.append(f"- `{ft.name}` — **{label}**")
+        for name in report.passed_tests:
+            body_lines.append(f"- `{name}` — passed")
+        body_lines.append("")
+
+    # Detailed application-level evidence (per failed test) when we are sure
+    # the failure is *not* infrastructure — otherwise the per-test excerpts
+    # just repeat the same Docker traceback five times.
+    if report is not None and report.failed_tests and not report.is_infrastructure_failure:
+        body_lines.append("**Failed-test evidence**")
+        body_lines.append("")
+        for ft in report.failed_tests:
+            body_lines.append(f"- `{ft.name}`")
+            snippet = ft.per_test_log_tail.strip() or ft.container_error_excerpt.strip()
+            if snippet:
+                if len(snippet) > 600:
+                    snippet = snippet[:600].rstrip() + "\n…(truncated)"
+                body_lines.append("  ```")
+                body_lines.extend("  " + l for l in snippet.splitlines())
+                body_lines.append("  ```")
+        body_lines.append("")
+
+    excerpt = (error_excerpt or "").strip()
+    if excerpt:
+        if len(excerpt) > _MAX_NARRATIVE_CHARS:
+            excerpt = excerpt[:_MAX_NARRATIVE_CHARS].rstrip() + "\n…(truncated)"
+        body_lines.extend(
+            ["**Error excerpt**", "", "```", excerpt, "```", ""]
+        )
+
+    spec_file = find_iteration_spec_path(iteration_path)
+    if spec_file is not None and spec_file.is_file():
+        try:
+            spec = K8sWorkloadSpec.from_yaml_file(spec_file)
+            body_lines.append("**Spec that was attempted**")
+            body_lines.append("")
+            body_lines.extend(_spec_bullets(spec))
+            body_lines.append("")
+        except Exception:
+            # Spec validation may fail on the same broken values that caused
+            # the failure (e.g. negative cpu); skip the bullet block rather
+            # than crash the summary writer.
+            pass
+
+    body_lines.extend(["---", ""])
+    _append_for_iteration(path, iid, "\n".join(body_lines))
+    return path
+
+
 def append_refinement_decision_block(
     *,
     sample_dir: Path,
@@ -672,8 +906,7 @@ def append_refinement_decision_block(
     iid = normalize_iteration_id(iteration_id)
     body = "\n".join(
         [
-            _maybe_write_iteration_heading(path, iid),
-            f"### Refinement decision (phase {decision.phase_index})",
+            f"### Refinement decision (iteration {decision.iteration_index})",
             "",
             f"- **Recorded**: {_utc_now_label()}",
             f"- **Action**: `{decision.action}`",
@@ -684,5 +917,5 @@ def append_refinement_decision_block(
             "",
         ]
     )
-    _append(path, body)
+    _append_for_iteration(path, iid, body)
     return path
