@@ -34,7 +34,7 @@ from .orchestration.preflight import (
 )
 from .stages.bench import run_locust_for_iteration
 from .util.sample import append_k8s_skip
-from .workspace import resolve_bench_dir
+from .workspace import latest_code_dir, resolve_bench_dir
 
 
 def find_latest_perf_run_dir(
@@ -183,6 +183,15 @@ def run_deploy_only_k8s_bench(
             run_dirs_created.append(run_dir)
             log_file = run_dir / "bench.log"
 
+            # Honour an iteration-local code snapshot (``02-code/code/``) the
+            # same way the iterative loop does. This is what lets manual replay
+            # experiments swap in a hand-edited ``app.js`` per iteration slug
+            # without touching the sample-level baseline ``code/`` directory.
+            source_code_dir = latest_code_dir(
+                ctx.sample_dir,
+                fallback=task.get_code_dir(results_dir, sample),
+            )
+
             with task.create_logger(log_file) as logger:
                 run_locust_for_iteration(
                     task,
@@ -197,6 +206,7 @@ def run_deploy_only_k8s_bench(
                     bench_run_time=bench_run_time,
                     k8s_wait_timeout=k8s_wait_timeout,
                     logger=logger,
+                    rebuild_code_dir=source_code_dir,
                 )
                 try:
                     from .experiment_summary import append_perf_run_block

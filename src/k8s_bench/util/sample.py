@@ -87,6 +87,27 @@ def ensure_docker_image(
     *,
     code_dir: Path | None = None,
 ) -> str | None:
+    """
+    Resolve a Docker image id for bench/deploy.
+
+    Reuses ``image_id`` when it is still present locally **unless** ``code_dir``
+    points at an iteration-local snapshot (``iterations/.../02-code/code/``),
+    which differs from the sample-level ``code/`` baseline. That case always
+    triggers a fresh build so hand-edited or LLM-refined code is picked up.
+    """
+    sample_code_dir = task.get_code_dir(results_dir, sample)
+    iteration_snapshot = (
+        code_dir is not None
+        and code_dir.is_dir()
+        and code_dir.resolve() != sample_code_dir.resolve()
+    )
+    if iteration_snapshot:
+        logger.info(
+            "Building image from iteration code snapshot (not sample baseline): %s",
+            code_dir,
+        )
+        return task._build_image_from_code_dir(code_dir, logger)
+
     if image_id:
         try:
             docker.from_env().images.get(image_id)
@@ -96,7 +117,7 @@ def ensure_docker_image(
                 "Image %s found in logs but not in Docker. Rebuilding...",
                 image_id,
             )
-    logger.info("Image not found or missing. Building...")
+
     if code_dir is not None and code_dir.is_dir():
         return task._build_image_from_code_dir(code_dir, logger)
     return task._build_image(results_dir, sample, logger)
