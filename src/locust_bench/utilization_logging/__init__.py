@@ -14,6 +14,7 @@ Use ``utilization_session_for_k8s`` or ``utilization_session_for_distributed``.
 from .base import UtilizationLogger, UtilizationSession, stats_root
 from .distributed import DistributedBenchUtilizationLogger
 from .kubernetes import KubernetesUtilizationLogger
+from .kubernetes_diagnostics import KubernetesDiagnosticsLogger
 from .load_hosts import LoadHostUtilizationLogger
 from .session import (
     utilization_session_for_distributed,
@@ -22,6 +23,7 @@ from .session import (
 
 __all__ = [
     "DistributedBenchUtilizationLogger",
+    "KubernetesDiagnosticsLogger",
     "KubernetesUtilizationLogger",
     "LoadHostUtilizationLogger",
     "UtilizationLogger",

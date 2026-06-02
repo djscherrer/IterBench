@@ -29,7 +29,14 @@ from .cluster.images import (
 )
 from .cluster.load_target import resolve_nodeport_target
 from .cluster.profiles import selected_cluster_profile
-from .spec.models import BackendSpec, DatabaseSpec, K8sWorkloadSpec
+from .spec.models import (
+    BackendSpec,
+    DatabaseSpec,
+    K8sWorkloadSpec,
+    POSTGRES_DATABASE,
+    POSTGRES_PASSWORD,
+    POSTGRES_USER,
+)
 from .workspace import (
     default_k8s_namespace,
     deploy_bench_record_path,
@@ -215,7 +222,15 @@ def resolve_iterations_to_run(
     *,
     iteration_id: str | None,
     auto_init: bool,
+    iteration_path: Path | None = None,
 ) -> list[Path]:
+    if iteration_path is not None:
+        path = Path(iteration_path).expanduser().resolve()
+        if not path.is_dir():
+            raise FileNotFoundError(f"Iteration path is not a directory: {path}")
+        if find_iteration_spec_path(path) is None:
+            raise FileNotFoundError(f"Missing spec for iteration: {path}")
+        return [path]
     if iteration_id:
         path = resolve_iteration_dir(sample_dir, iteration_id)
         if find_iteration_spec_path(path) is None:
@@ -253,6 +268,7 @@ def ensure_iteration_spec(
     )
     if spec_path is not None and spec_path.is_file():
         spec = K8sWorkloadSpec.from_yaml_file(spec_path)
+        db = spec.database
         updated = K8sWorkloadSpec(
             iteration_id=spec.iteration_id,
             namespace=spec.namespace,
@@ -262,13 +278,19 @@ def ensure_iteration_spec(
                 port=spec.backend.port or app_port,
                 resources=spec.backend.resources,
                 env=spec.backend.env,
+                placement_workers=spec.backend.placement_workers,
+                spread_replicas=spec.backend.spread_replicas,
             ),
             database=DatabaseSpec(
-                enabled=needs_db if needs_db else spec.database.enabled,
-                image=spec.database.image,
-                service_name=spec.database.service_name,
-                port=spec.database.port,
-                resources=spec.database.resources,
+                enabled=needs_db if needs_db else db.enabled,
+                image=db.image,
+                service_name=db.service_name,
+                port=db.port,
+                replicas=db.replicas,
+                max_connections=db.max_connections,
+                placement_worker=db.placement_worker,
+                placement_workers=db.placement_workers,
+                resources=db.resources,
             ),
             labels={**spec.labels, **(labels or {})},
         )
@@ -462,6 +484,10 @@ def run_k8s_bench_iteration(
         load_topology=topology,
         namespace=spec.namespace,
         logger=logger,
+        db_service_name=spec.database.service_name if spec.database.enabled else None,
+        db_user=POSTGRES_USER,
+        db_password=POSTGRES_PASSWORD,
+        db_name=POSTGRES_DATABASE,
     )
 
     logger.info(
