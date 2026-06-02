@@ -25,6 +25,7 @@ from ..refinement.decision import RefinementDecision, RefinementMode
 
 
 RefinementAction = Literal["baseline", "code", "deployment"]
+BaselineCodeMode = Literal["reuse", "regenerate"]
 
 
 @dataclass(frozen=True)
@@ -47,6 +48,19 @@ class RunConfig:
     base_delay: float
     max_delay: float
     force: bool
+    # Baseline (iteration-000) code source. ``reuse`` (default) takes the
+    # sample-level ``code/`` snapshot from ``--mode generate``; ``regenerate``
+    # runs a fresh LLM codegen + FT loop into ``iteration-000-baseline/02-code/``
+    # before iteration-000 spec/bench. See ``baseline.codegen`` for details.
+    baseline_code_mode: BaselineCodeMode = "reuse"
+    # Maximum LLM codegen attempts during baseline ``regenerate`` mode. Only
+    # consulted when ``baseline_code_mode == "regenerate"``.
+    baseline_code_max_attempts: int = 3
+    # Maximum baseline spec-generation attempts (LLM call + static validation
+    # + deploy probe). Applies to iteration-000 regardless of
+    # ``baseline_code_mode``; refinement iterations use a single attempt and
+    # rely on subsequent iterations for recovery.
+    baseline_spec_max_attempts: int = 5
 
 
 @dataclass(frozen=True)

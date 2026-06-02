@@ -92,6 +92,7 @@ def prepare_spec_or_fail(
             iteration_index=plan.iteration_index,
             total_iterations=cfg.total_iterations,
             vllm_port=cfg.vllm_port,
+            max_deploy_attempts=cfg.baseline_spec_max_attempts,
         )
         if spec_file is None:
             fail_iteration_phase(

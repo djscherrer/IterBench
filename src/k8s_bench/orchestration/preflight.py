@@ -26,7 +26,7 @@ from ..util.sample import (
     resolve_image_id_from_test_log,
 )
 from ..workspace import iteration_id_for_index, resolve_k8s_experiment_id
-from .config import RunConfig, SampleContext
+from .config import BaselineCodeMode, RunConfig, SampleContext
 
 
 def build_run_config(
@@ -47,6 +47,9 @@ def build_run_config(
     base_delay: float,
     max_delay: float,
     vllm_port: int,
+    baseline_code_mode: BaselineCodeMode = "reuse",
+    baseline_code_max_attempts: int = 3,
+    baseline_spec_max_attempts: int = 5,
 ) -> RunConfig:
     """Resolve env-derived knobs (load profile, refinement mode, iteration plan)."""
     iteration_ids = _plan_iteration_ids(
@@ -74,6 +77,9 @@ def build_run_config(
         base_delay=base_delay,
         max_delay=max_delay,
         force=force,
+        baseline_code_mode=baseline_code_mode,
+        baseline_code_max_attempts=baseline_code_max_attempts,
+        baseline_spec_max_attempts=baseline_spec_max_attempts,
     )
 
 
@@ -103,10 +109,27 @@ def sample_preflight(
     sample: int,
     cfg: RunConfig,
 ) -> SampleContext | None:
-    """Gate on FT, resolve/build the base docker image. ``None`` on skip."""
-    del cfg  # not used today; kept in signature for future hooks
+    """Gate on FT, resolve/build the base docker image. ``None`` on skip.
+
+    In ``baseline_code_mode='regenerate'``, baseline code generation has
+    already run by the time we get here — bypass the sample-level FT gate
+    (it would only check ``--mode test`` artifacts, which may be missing or
+    stale relative to the regenerated app) and instead use the iteration-000
+    snapshot + FT log produced by :func:`regenerate_baseline_sample_preflight`.
+    """
+    if cfg.baseline_code_mode == "regenerate":
+        return regenerate_baseline_sample_preflight(task, results_dir, sample, cfg)
+
     save_dir = task.get_save_dir(results_dir)
     if not functional_tests_gate(task, results_dir, sample):
+        # Add a hint pointing to the regenerate mode — the existing skip line
+        # already explains *what* failed, this one explains *how to bypass it*.
+        append_k8s_skip(
+            save_dir,
+            sample,
+            "hint: pass --baseline-code regenerate to generate fresh code "
+            "with the current prompt and run FTs against it before k8s bench",
+        )
         return None
 
     sample_dir = task.get_sample_dir(results_dir, sample)
@@ -144,6 +167,59 @@ def sample_preflight(
         sample_dir=sample_dir,
         save_dir=save_dir,
         base_image_id=image_id,
+    )
+
+
+def regenerate_baseline_sample_preflight(
+    task: Any,
+    results_dir: Path,
+    sample: int,
+    cfg: RunConfig,
+) -> SampleContext | None:
+    """
+    Preflight when ``--baseline-code regenerate`` is set.
+
+    Runs :func:`k8s_bench.baseline.codegen.run_baseline_codegen` to (re)generate
+    application code for iteration-000 with up to ``cfg.baseline_code_max_attempts``
+    FT-validated tries. On success the resulting iteration-local code dir and
+    its docker image become the :class:`SampleContext` baseline used by
+    iteration-000's spec/deploy/bench stages — exactly as if the sample had a
+    passing ``--mode test`` artifact, but driven by the model + prompt of
+    *this* experiment run.
+    """
+    from ..baseline.codegen import run_baseline_codegen
+
+    save_dir = task.get_save_dir(results_dir)
+    sample_dir = task.get_sample_dir(results_dir, sample)
+
+    result = run_baseline_codegen(
+        task=task,
+        results_dir=results_dir,
+        sample=sample,
+        sample_dir=sample_dir,
+        save_dir=save_dir,
+        max_attempts=cfg.baseline_code_max_attempts,
+        ft_timeout=cfg.ft_timeout,
+        num_ports=cfg.num_ports,
+        min_port=cfg.min_port,
+        vllm_port=cfg.vllm_port,
+        max_retries=cfg.max_retries,
+        base_delay=cfg.base_delay,
+        max_delay=cfg.max_delay,
+        force=cfg.force,
+    )
+    if result is None:
+        # ``run_baseline_codegen`` already logged the skip + marked the
+        # iteration folder as ``-baseline-failed``; nothing left to do here.
+        return None
+
+    return SampleContext(
+        task=task,
+        results_dir=results_dir,
+        sample=sample,
+        sample_dir=sample_dir,
+        save_dir=save_dir,
+        base_image_id=result.image_id,
     )
 
 

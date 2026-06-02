@@ -542,6 +542,132 @@ def _aggregate_locust_line(perf_run_dir: Path) -> str:
     return "(no bench_results_*_stats.csv found)"
 
 
+def append_baseline_codegen_block(
+    *,
+    sample_dir: Path,
+    iteration_path: Path,
+    task: Any,
+    attempts_used: int,
+    max_attempts: int,
+    winning_attempt: int | None,
+    status: str,
+    error: str | None,
+    load_profile: str | None = None,
+) -> Path:
+    """
+    Append a baseline-codegen subsection under ``iteration-000``.
+
+    Renders one line per attempt (status + FT pass counts + error excerpt) so
+    a reader can see at a glance how many tries it took to get the application
+    code to pass the functional test suite — and which attempts' transcripts
+    live under ``02-code/attempts/<NNN>/`` for forensics on the failures.
+    """
+    if os.environ.get("BAXBENCH_K8S_EXPERIMENT_SUMMARY", "true").lower() in (
+        "0",
+        "false",
+        "no",
+    ):
+        return experiment_summary_path(sample_dir)
+
+    path = experiment_summary_path(sample_dir)
+    _ensure_header(path, sample_dir=sample_dir, load_profile=load_profile)
+    iid = normalize_iteration_id("iteration-000")
+
+    from .workspace import (
+        baseline_codegen_meta_path as _meta_path,
+        iteration_code_attempts_dir as _attempts_dir,
+    )
+
+    attempt_blocks: list[str] = []
+    meta_path = _meta_path(iteration_path)
+    attempts_data: list[dict[str, Any]] = []
+    if meta_path.is_file():
+        try:
+            payload = (
+                __import__("json").loads(meta_path.read_text(encoding="utf-8"))
+            )
+            if isinstance(payload, dict):
+                raw = payload.get("attempts")
+                if isinstance(raw, list):
+                    attempts_data = [a for a in raw if isinstance(a, dict)]
+        except Exception:
+            attempts_data = []
+
+    any_infra = False
+    for a in attempts_data:
+        idx = a.get("attempt_index", "?")
+        st = a.get("status", "?")
+        ft_pass = a.get("num_passed_ft")
+        ft_total = a.get("num_total_ft")
+        err = (a.get("error") or "").strip()
+        is_infra = bool(a.get("infra_failure"))
+        if is_infra:
+            any_infra = True
+        ft_part = (
+            f"FT={ft_pass}/{ft_total}"
+            if ft_pass is not None and ft_total is not None
+            else "FT=—"
+        )
+        infra_tag = " **[infra]**" if is_infra else ""
+        line = f"- **Attempt {idx}**: `{st}`{infra_tag} ({ft_part})"
+        if err:
+            err_excerpt = err if len(err) <= 200 else err[:200].rstrip() + "…"
+            line += f" — {err_excerpt}"
+        line += f" → `{_attempts_dir(iteration_path)}/{int(idx):03d}/`"
+        attempt_blocks.append(line)
+
+        # Inline a short tail of test.log on infra failures so the operator
+        # sees the docker/port error directly in the summary without having
+        # to dig into the per-attempt directory.
+        if is_infra:
+            log_excerpt = (a.get("error_excerpt") or "").strip()
+            if log_excerpt:
+                tail = log_excerpt[-800:]
+                attempt_blocks.append("")
+                attempt_blocks.append("  <details><summary>test.log tail</summary>")
+                attempt_blocks.append("")
+                attempt_blocks.append("  ```")
+                for ln in tail.splitlines():
+                    attempt_blocks.append(f"  {ln}")
+                attempt_blocks.append("  ```")
+                attempt_blocks.append("")
+                attempt_blocks.append("  </details>")
+
+    body = "\n".join(
+        [
+            f"### Baseline code generation ({_utc_now_label()})",
+            "",
+            f"- **Mode**: `regenerate` (baseline LLM codegen + FT gate)",
+            f"- **Status**: `{status}`"
+            + (f" (winning attempt: **{winning_attempt}**)" if winning_attempt else ""),
+            f"- **Attempts used**: {attempts_used} / {max_attempts}",
+            f"- **Model**: `{task.model}` (provider `{task.provider}`, "
+            f"temperature {task.temperature})",
+            f"- **Code path**: `{iteration_path / '02-code' / 'code'}`",
+            "",
+            "**Attempts**" if attempt_blocks else "**Attempts**: (none recorded)",
+            "",
+            *attempt_blocks,
+            "",
+            *(
+                [
+                    "**Failure reason**"
+                    + (" — host environment issue (no LLM retries spent)" if status == "infra_failed" or any_infra else ""),
+                    "",
+                    f"> {error}" if error else "> (no error message recorded)",
+                    "",
+                ]
+                if status != "passed"
+                else []
+            ),
+            "---",
+            "",
+        ]
+    )
+    _append_for_iteration(path, iid, body)
+    return path
+
+
 def append_spec_generation_block(
     *,
     sample_dir: Path,

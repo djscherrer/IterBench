@@ -293,6 +293,11 @@ def main(args: Any) -> None:
             )
         from k8s_bench.handler import run_k8s_bench
 
+        k8s_iteration_path = (
+            pathlib.Path(args.k8s_iteration_path).expanduser().resolve()
+            if getattr(args, "k8s_iteration_path", None)
+            else None
+        )
         k8s_run_dirs = run_k8s_bench(
             task_handler.tasks,
             task_handler.results_dir,
@@ -300,6 +305,7 @@ def main(args: Any) -> None:
             timeout=args.timeout,
             force=args.force,
             k8s_iteration=args.k8s_iteration,
+            k8s_iteration_path=k8s_iteration_path,
             k8s_iterations=getattr(args, "k8s_iterations", 1),
             k8s_spec_gen=getattr(args, "k8s_spec_gen", True),
             k8s_wait_timeout=args.k8s_wait_timeout,
@@ -315,6 +321,13 @@ def main(args: Any) -> None:
             base_delay=args.base_delay,
             max_delay=args.max_delay,
             vllm_port=args.vllm_port,
+            baseline_code_mode=getattr(args, "baseline_code", "reuse"),
+            baseline_code_max_attempts=getattr(
+                args, "baseline_code_max_attempts", 3
+            ),
+            baseline_spec_max_attempts=getattr(
+                args, "baseline_spec_max_attempts", 5
+            ),
         )
         if getattr(args, "plot_after_bench", False) and k8s_run_dirs:
             for rd in k8s_run_dirs:
@@ -586,6 +599,15 @@ if __name__ == "__main__":
         ),
     )
     parser.add_argument(
+        "--k8s-iteration-path",
+        type=str,
+        default=None,
+        help=(
+            "Deploy+bench this iteration directory in place (any path under sampleN/). "
+            "Use with --no-k8s-spec-gen. Overrides --k8s-iteration path resolution."
+        ),
+    )
+    parser.add_argument(
         "--k8s-iterations",
         type=int,
         default=1,
@@ -657,6 +679,40 @@ if __name__ == "__main__":
             "Between k8s phases (iteration 002+): auto = LLM chooses deployment vs code "
             "refinement; deployment/code = force path; off = deployment-only (legacy). "
             "Also BAXBENCH_K8S_REFINEMENT (default: auto)."
+        ),
+    )
+    parser.add_argument(
+        "--baseline-code",
+        type=str,
+        default="reuse",
+        choices=["reuse", "regenerate"],
+        help=(
+            "Baseline (iteration-000) code source: 'reuse' (default) reuses the "
+            "sample-level code/ snapshot from --mode generate and requires its "
+            "functional tests to pass; 'regenerate' calls the LLM with the "
+            "current scenario prompt, lands code under iteration-000-baseline/"
+            "02-code/code/, and runs FTs against it (with retry on failure)."
+        ),
+    )
+    parser.add_argument(
+        "--baseline-code-max-attempts",
+        type=int,
+        default=3,
+        help=(
+            "Max LLM regeneration attempts when --baseline-code=regenerate (default 3). "
+            "Failed attempts are preserved under iteration-000-baseline/02-code/attempts/."
+        ),
+    )
+    parser.add_argument(
+        "--baseline-spec-max-attempts",
+        type=int,
+        default=5,
+        help=(
+            "Max baseline spec-generation attempts for iteration-000 (default 5). "
+            "Each attempt is one LLM call + static validation + deploy probe; "
+            "failures are preserved under iteration-000-baseline/03-spec/attempts/. "
+            "Refinement iterations (001+) always use a single spec attempt — they "
+            "rely on later iterations for recovery, not per-iteration retries."
         ),
     )
     parser.add_argument(

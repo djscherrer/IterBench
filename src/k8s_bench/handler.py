@@ -20,6 +20,7 @@ def run_k8s_bench(
     force: bool,
     *,
     k8s_iteration: str | None = None,
+    k8s_iteration_path: Path | None = None,
     k8s_iterations: int = 1,
     k8s_spec_gen: bool = True,
     k8s_wait_timeout: int = 300,
@@ -35,6 +36,9 @@ def run_k8s_bench(
     base_delay: float = 1.0,
     max_delay: float = 60.0,
     vllm_port: int = 8000,
+    baseline_code_mode: str = "reuse",
+    baseline_code_max_attempts: int = 3,
+    baseline_spec_max_attempts: int = 5,
 ) -> list[Path]:
     total = len(tasks) * max(1, len(samples))
     all_paths: list[Path] = []
@@ -57,6 +61,7 @@ def run_k8s_bench(
                         timeout,
                         force,
                         k8s_iteration=k8s_iteration,
+                        k8s_iteration_path=k8s_iteration_path,
                         k8s_iterations=k8s_iterations,
                         k8s_spec_gen=k8s_spec_gen,
                         k8s_wait_timeout=k8s_wait_timeout,
@@ -72,6 +77,9 @@ def run_k8s_bench(
                         base_delay=base_delay,
                         max_delay=max_delay,
                         vllm_port=vllm_port,
+                        baseline_code_mode=baseline_code_mode,
+                        baseline_code_max_attempts=baseline_code_max_attempts,
+                        baseline_spec_max_attempts=baseline_spec_max_attempts,
                     )
                 )
                 with pbar.get_lock():  # type: ignore[no-untyped-call]

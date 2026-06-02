@@ -34,7 +34,13 @@ from .orchestration.preflight import (
 )
 from .stages.bench import run_locust_for_iteration
 from .util.sample import append_k8s_skip
-from .workspace import latest_code_dir, resolve_bench_dir
+from .workspace import (
+    bench_dir_has_complete_run,
+    ensure_iteration_core_layout,
+    iteration_bench_dir,
+    iteration_code_snapshot_dir,
+    latest_code_dir,
+)
 
 
 def find_latest_perf_run_dir(
@@ -68,6 +74,9 @@ def run_iterative_k8s_bench(
     base_delay: float = 1.0,
     max_delay: float = 60.0,
     vllm_port: int = 8000,
+    baseline_code_mode: str = "reuse",
+    baseline_code_max_attempts: int = 3,
+    baseline_spec_max_attempts: int = 5,
 ) -> list[Path]:
     cfg = build_run_config(
         timeout=timeout,
@@ -86,6 +95,9 @@ def run_iterative_k8s_bench(
         base_delay=base_delay,
         max_delay=max_delay,
         vllm_port=vllm_port,
+        baseline_code_mode=baseline_code_mode,  # type: ignore[arg-type]
+        baseline_code_max_attempts=baseline_code_max_attempts,
+        baseline_spec_max_attempts=baseline_spec_max_attempts,
     )
     run_dirs_created: list[Path] = []
 
@@ -114,6 +126,7 @@ def run_deploy_only_k8s_bench(
     force: bool,
     *,
     k8s_iteration: str | None = None,
+    k8s_iteration_path: Path | None = None,
     k8s_wait_timeout: int = 300,
     k8s_auto_init: bool = False,
     bench_users: int | None = None,
@@ -158,6 +171,7 @@ def run_deploy_only_k8s_bench(
                 ctx.sample_dir,
                 iteration_id=k8s_iteration,
                 auto_init=k8s_auto_init,
+                iteration_path=k8s_iteration_path,
             )
         except FileNotFoundError as exc:
             append_k8s_skip(ctx.save_dir, ctx.sample, f"skipped: {exc}")
@@ -165,11 +179,9 @@ def run_deploy_only_k8s_bench(
 
         for iteration_path in iteration_paths:
             iteration_id = iteration_path.name
-            if not force and task.has_k8s_perf_run_for_iteration(
-                ctx.sample_dir,
-                iteration_id=iteration_id,
-                load_profile=load_profile,
-            ):
+            bench_dir = iteration_bench_dir(iteration_path)
+            already_benched = bench_dir_has_complete_run(bench_dir)
+            if not force and already_benched:
                 append_k8s_skip(
                     ctx.save_dir,
                     ctx.sample,
@@ -178,19 +190,23 @@ def run_deploy_only_k8s_bench(
                 )
                 continue
 
-            run_dir = task.get_k8s_bench_run_dir(results_dir, sample, iteration_id)
+            ensure_iteration_core_layout(iteration_path)
+            run_dir = bench_dir
             run_dir.mkdir(parents=True, exist_ok=True)
             run_dirs_created.append(run_dir)
             log_file = run_dir / "bench.log"
 
-            # Honour an iteration-local code snapshot (``02-code/code/``) the
-            # same way the iterative loop does. This is what lets manual replay
-            # experiments swap in a hand-edited ``app.js`` per iteration slug
-            # without touching the sample-level baseline ``code/`` directory.
-            source_code_dir = latest_code_dir(
-                ctx.sample_dir,
-                fallback=task.get_code_dir(results_dir, sample),
-            )
+            baseline_code = task.get_code_dir(results_dir, sample)
+            code_snap = iteration_code_snapshot_dir(iteration_path)
+            if code_snap.is_dir() and any(code_snap.iterdir()):
+                source_code_dir = code_snap
+            elif k8s_iteration_path is not None:
+                source_code_dir = baseline_code
+            else:
+                source_code_dir = latest_code_dir(
+                    ctx.sample_dir,
+                    fallback=baseline_code,
+                )
 
             with task.create_logger(log_file) as logger:
                 run_locust_for_iteration(
@@ -240,6 +256,7 @@ def bench_k8s_for_task(
     force: bool,
     *,
     k8s_iteration: str | None = None,
+    k8s_iteration_path: Path | None = None,
     k8s_iterations: int = 1,
     k8s_spec_gen: bool = True,
     k8s_wait_timeout: int = 300,
@@ -255,6 +272,9 @@ def bench_k8s_for_task(
     base_delay: float = 1.0,
     max_delay: float = 60.0,
     vllm_port: int = 8000,
+    baseline_code_mode: str = "reuse",
+    baseline_code_max_attempts: int = 3,
+    baseline_spec_max_attempts: int = 5,
 ) -> list[Path]:
     if k8s_spec_gen:
         return run_iterative_k8s_bench(
@@ -277,6 +297,9 @@ def bench_k8s_for_task(
             base_delay=base_delay,
             max_delay=max_delay,
             vllm_port=vllm_port,
+            baseline_code_mode=baseline_code_mode,
+            baseline_code_max_attempts=baseline_code_max_attempts,
+            baseline_spec_max_attempts=baseline_spec_max_attempts,
         )
     return run_deploy_only_k8s_bench(
         task,
@@ -285,6 +308,7 @@ def bench_k8s_for_task(
         timeout,
         force,
         k8s_iteration=k8s_iteration,
+        k8s_iteration_path=k8s_iteration_path,
         k8s_wait_timeout=k8s_wait_timeout,
         k8s_auto_init=k8s_auto_init,
         bench_users=bench_users,
