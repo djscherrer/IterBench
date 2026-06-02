@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import shutil
-from datetime import datetime, timezone
 from pathlib import Path
 
 from .paths import (
@@ -32,33 +31,23 @@ def ensure_iteration_core_layout(iteration_path: Path) -> None:
         f"{PHASE_SPEC_DIRNAME}/manifests",
         PHASE_DEPLOY_DIRNAME,
         PHASE_BENCH_DIRNAME,
-        f"{PHASE_BENCH_DIRNAME}/runs",
     ):
         (iteration_path / name).mkdir(parents=True, exist_ok=True)
 
 
-def archive_bench_dir_if_present(iteration_path: Path) -> Path | None:
-    """Move existing ``bench/`` contents to ``bench/runs/<timestamp>/`` before re-run."""
+def clear_bench_dir_if_present(iteration_path: Path) -> None:
+    """Remove a finished Locust run from ``05-bench/`` before ``--force`` re-run."""
     bench = iteration_bench_dir(iteration_path)
     if not bench.is_dir():
-        return None
+        return
     has_run = (bench / "config.json").is_file() or (bench / "bench.log").is_file()
     if not has_run:
-        return None
-    ts = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
-    archive = bench / "runs" / ts
-    archive.mkdir(parents=True, exist_ok=True)
+        return
     for item in list(bench.iterdir()):
-        if item.name == "runs":
-            continue
-        dest = archive / item.name
-        if dest.exists():
-            if dest.is_dir():
-                shutil.rmtree(dest)
-            else:
-                dest.unlink()
-        shutil.move(str(item), str(dest))
-    return archive
+        if item.is_dir():
+            shutil.rmtree(item)
+        else:
+            item.unlink()
 
 
 def _copy_tree(src: Path, dest: Path) -> None:

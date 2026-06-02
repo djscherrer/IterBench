@@ -19,7 +19,7 @@ from ..stages.code import refine_code_or_fail
 from ..stages.outcome import record_outcome
 from ..stages.spec import prepare_spec_or_fail
 from ..workspace import (
-    archive_bench_dir_if_present,
+    clear_bench_dir_if_present,
     iteration_bench_dir,
     iteration_log_path,
     iteration_spec_log_path,
@@ -116,6 +116,6 @@ def _append_iteration_outcome(iteration_path: Path, outcome: str) -> None:
 def _prepare_run_dir(iteration_path: Path, cfg: RunConfig) -> Path:
     run_dir = iteration_bench_dir(iteration_path)
     if cfg.force:
-        archive_bench_dir_if_present(iteration_path)
+        clear_bench_dir_if_present(iteration_path)
     run_dir.mkdir(parents=True, exist_ok=True)
     return run_dir

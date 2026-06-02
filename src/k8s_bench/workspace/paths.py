@@ -383,6 +383,68 @@ def iteration_functional_tests_dir(iteration_path: Path) -> Path:
     return iteration_code_phase_dir(iteration_path) / "functional_tests"
 
 
+# Per-attempt subdirectories for LLM-driven phases.
+#
+# When a phase needs multiple LLM rounds (codegen retry on FT failure, spec
+# validation retries, baseline deploy-probe retries) every round is captured
+# under ``<phase>/attempts/<NNN>/`` so the failed prompt+response+outcome stay
+# auditable instead of being overwritten by the winning attempt. The winning
+# attempt's prompt/response are also surfaced at the phase top level (keeping
+# the existing contract for ``experiment_summary`` and friends).
+ATTEMPTS_DIRNAME = "attempts"
+BASELINE_CODEGEN_META_FILENAME = "codegen.json"
+
+
+def iteration_code_attempts_dir(iteration_path: Path) -> Path:
+    """``02-code/attempts/`` — one numbered subdir per codegen attempt."""
+    return iteration_code_phase_dir(iteration_path) / ATTEMPTS_DIRNAME
+
+
+def iteration_spec_attempts_dir(iteration_path: Path) -> Path:
+    """``03-spec/attempts/`` — one numbered subdir per spec LLM call / probe round."""
+    return iteration_spec_dir(iteration_path) / ATTEMPTS_DIRNAME
+
+
+def baseline_codegen_meta_path(iteration_path: Path) -> Path:
+    """``02-code/codegen.json`` — metadata for the baseline regenerate-mode codegen."""
+    return iteration_code_phase_dir(iteration_path) / BASELINE_CODEGEN_META_FILENAME
+
+
+def _format_attempt_index(n: int) -> str:
+    if n < 1:
+        raise ValueError(f"attempt index must be >= 1, got {n}")
+    return f"{n:03d}"
+
+
+def attempt_subdir(attempts_dir: Path, attempt_index: int) -> Path:
+    """Return ``<attempts_dir>/<NNN>/`` for a 1-based attempt index."""
+    return attempts_dir / _format_attempt_index(attempt_index)
+
+
+def next_attempt_index(attempts_dir: Path) -> int:
+    """
+    Return the next 1-based index to use under ``attempts_dir``.
+
+    Reads existing ``NNN`` subdirectories (ignoring non-numeric names) and
+    returns ``max + 1`` — or ``1`` when the directory is empty / missing. Used
+    by codegen + spec stages so callers do not have to track attempt counters
+    in memory; the filesystem is the single source of truth.
+    """
+    if not attempts_dir.is_dir():
+        return 1
+    best = 0
+    for child in attempts_dir.iterdir():
+        if not child.is_dir():
+            continue
+        try:
+            n = int(child.name)
+        except ValueError:
+            continue
+        if n > best:
+            best = n
+    return best + 1
+
+
 def iteration_bench_dir(iteration_path: Path) -> Path:
     """Bench phase folder (``05-bench/``)."""
     return iteration_path / PHASE_BENCH_DIRNAME
@@ -454,10 +516,15 @@ def list_iteration_dirs(sample_dir: Path) -> list[Path]:
     ]
 
 
-def _bench_run_complete(bench: Path) -> bool:
-    return (bench / "config.json").is_file() or (
-        bench / "iteration_feedback.json"
+def bench_dir_has_complete_run(bench_dir: Path) -> bool:
+    """True when ``05-bench/`` already has a finished Locust run."""
+    return (bench_dir / "config.json").is_file() or (
+        bench_dir / "iteration_feedback.json"
     ).is_file()
+
+
+def _bench_run_complete(bench: Path) -> bool:
+    return bench_dir_has_complete_run(bench)
 
 
 def resolve_bench_dir(sample_dir: Path, iteration_id: str) -> Path | None:
