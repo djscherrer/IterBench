@@ -153,15 +153,33 @@ class Prompter:
 
         self.system_prompt = _SYSTEM_PROMPT
 
+        _NATIVE_PROVIDER_PREFIXES = (
+            "anthropic",
+            "openrouter",
+            "together_ai",
+            "swissai",
+            "openai",
+        )
         if provider is None:
             provider_prefix = self.model.split("/")[0]
-            if provider_prefix in ["anthropic", "openrouter", "together_ai", "swissai", "openai"]:
+            if provider_prefix in _NATIVE_PROVIDER_PREFIXES:
                 self.provider = provider_prefix
                 self.model = self.model[len(provider_prefix) + 1 :]
             else:
                 raise ValueError(f"Cannot infer provider from model name: {self.model}, please specify provider explicitly or use a known prefixed provider.")
         else:
             self.provider = provider
+            # Defensive: when the caller passes ``model="anthropic/claude-…"``
+            # *and* ``provider="anthropic"`` (instead of leaving provider=None),
+            # the native Anthropic SDK gets called with a literal model id that
+            # contains ``anthropic/`` and returns 404. Strip the matching
+            # prefix here so the two ways of specifying the model converge.
+            # Routing providers (openrouter, together_ai, swissai, vllm) still
+            # accept the ``vendor/model`` form, so we only strip when the
+            # provider equals the prefix.
+            head, sep, tail = self.model.partition("/")
+            if sep and head == provider and head in _NATIVE_PROVIDER_PREFIXES:
+                self.model = tail
 
         # NOTE: `self.model` may be normalized above (provider prefix stripped).
         # Any model-name based feature flags must use `self.model`, not the raw input `model`.
