@@ -12,8 +12,9 @@ from .models import (
 )
 from .placement import _pod_spec_affinity, _postgres_container_args
 
-# Bitnami image supports master/slave replication via env (common K8s pattern).
-BITNAMI_POSTGRES_IMAGE = "bitnami/postgresql:17"
+# Bitnami replication image. Short tags like ``bitnami/postgresql:17`` were removed
+# from docker.io/bitnami (2025 catalog change); use the legacy repo for PG 17.
+BITNAMI_POSTGRES_IMAGE = "bitnamilegacy/postgresql:17"
 REPLICATION_USER = "replicator"
 REPLICATION_PASSWORD = "replicator"
 
@@ -26,13 +27,22 @@ def _postgres_node_names(spec: K8sWorkloadSpec) -> tuple[str, ...]:
     return ()
 
 
-def _postgres_readiness_probe(*, bitnami: bool) -> dict[str, Any]:
+def _postgres_readiness_probe(
+    *, bitnami: bool, replica: bool = False
+) -> dict[str, Any]:
     user = POSTGRES_USER
     db = POSTGRES_DATABASE
-    if bitnami:
-        cmd = f"pg_isready -U {user} -d {db}"
-    else:
-        cmd = f"pg_isready -U {user} -d {db}"
+    cmd = f"pg_isready -U {user} -d {db}"
+    # Replicas run pg_basebackup from the primary on first boot; that can take
+    # minutes for a non-trivial dataset and used to hit failureThreshold long
+    # before the slave finished cloning.
+    if replica and bitnami:
+        return {
+            "exec": {"command": ["sh", "-c", cmd]},
+            "initialDelaySeconds": 30,
+            "periodSeconds": 10,
+            "failureThreshold": 60,  # ~10 min before declared NotReady
+        }
     return {
         "exec": {"command": ["sh", "-c", cmd]},
         "initialDelaySeconds": 10 if bitnami else 5,
@@ -132,6 +142,15 @@ def _bitnami_replica_env(spec: K8sWorkloadSpec) -> list[dict[str, str]]:
         {"name": "POSTGRESQL_USERNAME", "value": POSTGRES_USER},
         {"name": "POSTGRESQL_PASSWORD", "value": POSTGRES_PASSWORD},
         {"name": "POSTGRESQL_DATABASE", "value": POSTGRES_DATABASE},
+        # Postgres streaming replication requires the standby's
+        # ``max_connections`` to be **>=** the primary's, or recovery
+        # aborts with ``FATAL: recovery aborted because of insufficient
+        # parameter settings``. Mirror the primary's value so the replica
+        # can ever enter standby mode.
+        {
+            "name": "POSTGRESQL_MAX_CONNECTIONS",
+            "value": str(spec.database.max_connections),
+        },
     ]
 
 
@@ -229,7 +248,7 @@ def _replicated_postgres_manifests(
         "ports": [{"containerPort": spec.database.port}],
         "env": _bitnami_replica_env(spec),
         "resources": spec.database.resources.to_k8s_resources(),
-        "readinessProbe": _postgres_readiness_probe(bitnami=True),
+        "readinessProbe": _postgres_readiness_probe(bitnami=True, replica=True),
     }
     docs.extend(
         [
@@ -243,6 +262,11 @@ def _replicated_postgres_manifests(
                 },
                 "spec": {
                     "serviceName": f"{replica_name}-headless",
+                    # Parallel: both replicas can clone from the primary
+                    # concurrently. OrderedReady (the default) makes the wait
+                    # time scale with replica count, which routinely blew
+                    # past the deploy timeout in earlier runs.
+                    "podManagementPolicy": "Parallel",
                     "replicas": read_count,
                     "selector": {"matchLabels": replica_selector},
                     "template": {

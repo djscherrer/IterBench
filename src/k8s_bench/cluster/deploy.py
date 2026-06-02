@@ -63,6 +63,7 @@ def apply_manifests(
     wait_timeout_s: int = 300,
     wait_deployments: tuple[str, ...] = ("deployment/postgres", "deployment/backend"),
     wait_statefulsets: tuple[str, ...] = (),
+    statefulset_wait_timeout_s: int | None = None,
     logger: logging.Logger | None = None,
 ) -> DeployResult:
     log = logger or logging.getLogger(__name__)
@@ -146,17 +147,21 @@ def apply_manifests(
                     elif logs.stderr:
                         log.warning("backend pod logs unavailable: %s", logs.stderr.strip())
 
+        ss_timeout = statefulset_wait_timeout_s or wait_timeout_s
         for resource in wait_statefulsets:
+            # ``kubectl wait`` does not understand a StatefulSet rollout
+            # directly; use the rollout subcommand which polls
+            # ``.status.readyReplicas == .spec.replicas``.
             wait_proc = _kubectl(
                 [
-                    "wait",
-                    "--for=condition=ready",
+                    "rollout",
+                    "status",
                     resource,
                     "-n",
                     namespace,
-                    f"--timeout={wait_timeout_s}s",
+                    f"--timeout={ss_timeout}s",
                 ],
-                timeout_s=wait_timeout_s + 30,
+                timeout_s=ss_timeout + 30,
             )
             wait_details[resource] = (wait_proc.stdout or wait_proc.stderr or "").strip()
             if wait_proc.returncode != 0:
@@ -165,6 +170,27 @@ def apply_manifests(
                     continue
                 success = False
                 log.warning("wait failed for %s: %s", resource, wait_details[resource])
+                diag = _kubectl(
+                    ["get", "pods", "-n", namespace, "-l", "baxbench.dev/db-tier=replica", "-o", "wide"],
+                    timeout_s=30,
+                )
+                if diag.stdout:
+                    log.warning("replica pods:\n%s", diag.stdout.strip())
+                ev = _kubectl(
+                    ["describe", "pod", "-n", namespace, "-l", "baxbench.dev/db-tier=replica"],
+                    timeout_s=60,
+                )
+                if ev.stdout:
+                    tail = "\n".join((ev.stdout or "").splitlines()[-25:])
+                    log.warning("replica events (tail):\n%s", tail)
+                rlogs = _kubectl(
+                    ["logs", "-n", namespace, "-l", "baxbench.dev/db-tier=replica", "--tail=40", "--prefix=true"],
+                    timeout_s=30,
+                )
+                if rlogs.stdout:
+                    log.warning("replica logs (tail):\n%s", rlogs.stdout.strip())
+                elif rlogs.stderr:
+                    log.warning("replica logs unavailable: %s", rlogs.stderr.strip())
 
     backend_host = f"backend.{namespace}.svc.cluster.local"
     return DeployResult(
@@ -221,18 +247,24 @@ def deploy_iteration(
     spec = K8sWorkloadSpec.from_yaml_file(require_iteration_spec_path(iteration_path))
     waits: list[str] = ["deployment/backend"]
     statefulset_waits: list[str] = []
+    statefulset_wait_timeout_s = wait_timeout_s
     if spec.database.enabled:
         waits.insert(0, "deployment/postgres")
         if spec.database.replicas > 1:
             statefulset_waits.append(
                 f"statefulset/{spec.database.service_name}-replica"
             )
+            # Replicas pg_basebackup from the primary on first start. Allow at
+            # least 5 min wall-clock (per replica's readiness probe window),
+            # or wait_timeout_s if the caller asked for more.
+            statefulset_wait_timeout_s = max(wait_timeout_s, 300)
     result = apply_manifests(
         manifest_file,
         namespace=spec.namespace,
         wait_timeout_s=wait_timeout_s,
         wait_deployments=tuple(waits),
         wait_statefulsets=tuple(statefulset_waits),
+        statefulset_wait_timeout_s=statefulset_wait_timeout_s,
         logger=log,
     )
     write_deploy_record(iteration_path, result, kind=record_kind)
