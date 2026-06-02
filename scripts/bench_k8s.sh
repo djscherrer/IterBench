@@ -25,7 +25,7 @@
 set -euo pipefail
 
 # --- 1. Execution Targets ---
-MODELS="deepseek/deepseek-v3.2" # anthropic/claude-opus-4-6
+MODELS="deepseek/deepseek-v3.2" # deepseek/deepseek-v3.2  anthropic/claude-opus-4-6
 PROVIDER="openrouter"           # openai | anthropic | together_ai | openrouter | swissai | vllm
                                 # required when the model prefix is not auto-detected (e.g. deepseek/…)
 USE_OPENHANDS_MODES="false"
@@ -36,7 +36,7 @@ N_SAMPLES=""
 # --- 2. Project Scope ---
 ENVS="JavaScript-express"
 EXCLUDE_ENVS=""
-SCENARIOS="BranchWeave_InteractiveStoryGraph"
+SCENARIOS="LexiTally_WordCountDatasets"
 EXCLUDE_SCENARIOS=""
 TEMPERATURE="0.2"
 SAFETY_PROMPT="high_performance"
@@ -52,14 +52,29 @@ BENCH_RUN_TIME=""
 BAXBENCH_K8S_CLUSTER="baxbench-emulab"
 KUBECONFIG_PATH=""              # empty = path from cluster profile
 K8S_ITERATION=""                # pin one iteration; empty = use K8S_ITERATIONS
-K8S_EXPERIMENT="expA"               # e.g. adaptive-may20 → sampleN/k8s-experiments/<slug>/
-K8S_ITERATIONS="10"              # phases: iteration-001 .. iteration-NNN
+K8S_EXPERIMENT="expb"               # e.g. adaptive-may20 → sampleN/k8s-experiments/<slug>/
+K8S_ITERATIONS="25"              # phases: iteration-001 .. iteration-NNN
 K8S_SPEC_GEN="true"             # false = deploy-only with existing spec.yaml files
 K8S_WAIT_TIMEOUT="120"
 # Locust runs on profile load_master/workers; backend exposed via NodePort
 K8S_AUTO_INIT="false"           # only used with K8S_SPEC_GEN=false
 K8S_REQUIRE_CLUSTER="true"
 K8S_REFINEMENT="auto"               # auto | deployment | code | off (empty = default auto)
+
+# Baseline (iteration-000) code source.
+#   reuse      = use sampleN/code/ from --mode generate; require its FTs to pass (default)
+#   regenerate = LLM-generate code with the current prompt into iteration-000-baseline/
+#                02-code/code/, validate with functional tests, retry on failure
+#                (failed attempts preserved under 02-code/attempts/<NNN>/).
+BASELINE_CODE="regenerate"
+BASELINE_CODE_MAX_ATTEMPTS="3"      # only used when BASELINE_CODE=regenerate
+
+# Baseline (iteration-000) spec generation attempt cap. Each attempt is one
+# LLM call + static validation + deploy probe; failures are preserved under
+# iteration-000-baseline/03-spec/attempts/<NNN>/. Refinement iterations
+# (001+) always use a single spec attempt — recovery happens via subsequent
+# iterations, not per-iteration retries.
+BASELINE_SPEC_MAX_ATTEMPTS="5"
 
 # --- LLM cost tracking (estimated; see sampleN/k8s-experiments/<slug>/llm_cost_ledger.json) ---
 BAXBENCH_LLM_MAX_COST="10"            # e.g. "10.00" — stop when estimated experiment LLM spend exceeds this (USD)
@@ -154,6 +169,9 @@ for _model in $MODELS; do
     add_arg "--k8s-iterations" "$K8S_ITERATIONS"
     add_arg "--k8s-wait-timeout" "$K8S_WAIT_TIMEOUT"
     add_arg "--k8s-refinement" "$K8S_REFINEMENT"
+    add_arg "--baseline-code" "$BASELINE_CODE"
+    add_arg "--baseline-code-max-attempts" "$BASELINE_CODE_MAX_ATTEMPTS"
+    add_arg "--baseline-spec-max-attempts" "$BASELINE_SPEC_MAX_ATTEMPTS"
     add_arg "--max_retries" "$MAX_RETRIES"
     if [ "$K8S_REQUIRE_CLUSTER" == "false" ]; then
       ARGS+=("--no-k8s-require-cluster")
