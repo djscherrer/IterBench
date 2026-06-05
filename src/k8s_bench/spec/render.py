@@ -61,6 +61,14 @@ def _backend_container(spec: K8sWorkloadSpec, *, port: int, env_list: list[dict[
             "exec gunicorn --preload --workers=${WEB_CONCURRENCY:-2} "
             "--bind 0.0.0.0:${PORT:-5001} app:app",
         ]
+    elif "express" in env_id or "javascript" in env_id or "node" in env_id:
+        # Pin PM2 cluster size to WEB_CONCURRENCY instead of the image default
+        # (``-i max`` = one worker per CPU), so concurrency is controlled by the spec.
+        container["command"] = [
+            "sh",
+            "-c",
+            "exec npx --no-install pm2-runtime start app.js -i ${WEB_CONCURRENCY:-2}",
+        ]
     return container
 
 

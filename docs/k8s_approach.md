@@ -254,9 +254,9 @@ After **generate** + **test**:
 Phase 1 prompt: scenario, framework, `high_performance`, app code excerpt, cluster capacity.
 
 Phase 2+ prompt adds **feedback**: Locust per-endpoint stats as a markdown table
-(from ``bench_results_*_stats.csv``), Locust top errors, Kubernetes pod/node
-utilization aggregated over the run (min/avg/max from ``stats/kubernetes/*.csv``),
-previous ``spec.yaml``. The full LLM prompt is logged in
+(from ``locust/results/<test>_stats.csv``), Locust top errors, Kubernetes pod/node
+utilization aggregated over the run (min/avg/max from
+``diagnostics/kubernetes/cluster/kubectl_top_*.csv``), previous ``spec.yaml``. The full LLM prompt is logged in
 ``iterations/iteration-NNN/spec/spec_gen_prompt.log``; feedback-only text is in
 ``iterations/iteration-NNN/bench/iteration_feedback.txt``.
 

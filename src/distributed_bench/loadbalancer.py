@@ -113,8 +113,11 @@ class LoadBalancerManager:
         )
 
     def copy_timing_access_log(self) -> None:
-        lb_stats_dir = self.ctx.sample_dir / "stats" / host_slug(self.plan.lb_host)
-        lb_stats_dir.mkdir(parents=True, exist_ok=True)
+        from bench_diagnostics.paths import distributed_host_dir
+
+        lb_stats_dir = distributed_host_dir(
+            self.ctx.sample_dir, host_slug(self.plan.lb_host)
+        )
         materialize_cmd = (
             "set -euo pipefail; "
             f"docker cp {shlex.quote(self.ctx.lb_container_name)}:{shlex.quote(self.nginx_log_path_container)} "

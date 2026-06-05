@@ -17,9 +17,9 @@ from locust_bench.locust_run import (
     DistributedLocustSession,
     prepare_locust_run_dir,
 )
+from bench_diagnostics import diagnostics_session_for_k8s
 from locust_bench.load_profiles import resolve_load_profile
 from locust_bench.load_topology import LoadTopology
-from locust_bench.utilization_logging import utilization_session_for_k8s
 
 from .cluster.deploy import DeployResult, deploy_iteration
 from .cluster.images import (
@@ -276,6 +276,7 @@ def ensure_iteration_spec(
                 image=image_reference,
                 replicas=spec.backend.replicas,
                 port=spec.backend.port or app_port,
+                web_concurrency=spec.backend.web_concurrency,
                 resources=spec.backend.resources,
                 env=spec.backend.env,
                 placement_workers=spec.backend.placement_workers,
@@ -479,9 +480,9 @@ def run_k8s_bench_iteration(
         sample_slug=_slugify_run_part(sample_slug),
         logger=logger,
     )
-    utilization = utilization_session_for_k8s(
+    diagnostics = diagnostics_session_for_k8s(
         run_dir,
-        load_topology=topology,
+        load_hosts=topology.all_hosts,
         namespace=spec.namespace,
         logger=logger,
         db_service_name=spec.database.service_name if spec.database.enabled else None,
@@ -496,7 +497,7 @@ def run_k8s_bench_iteration(
         ",".join(topology.workers) or "(none)",
         target_base_url,
     )
-    with utilization:
+    with diagnostics:
         DistributedLocustSession(config).run(target=entry_node)
 
     return deploy_result

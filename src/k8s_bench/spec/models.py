@@ -10,6 +10,11 @@ POSTGRES_USER = "postgres"
 POSTGRES_PASSWORD = "postgres"
 POSTGRES_DATABASE = "testdb"
 
+# Default number of app worker processes per backend pod when a spec does not
+# set ``backend.web_concurrency``. Propagated as the ``WEB_CONCURRENCY`` env var
+# (gunicorn ``--workers`` for Python, PM2 ``-i`` for JavaScript).
+DEFAULT_WEB_CONCURRENCY = 2
+
 
 @dataclass(frozen=True)
 class ResourceSpec:
@@ -42,29 +47,15 @@ class ResourceSpec:
         }
 
 
-def infer_gunicorn_workers(resources: ResourceSpec) -> int:
-    """
-    Worker count aligned with pod CPU/memory limits.
-
-    BaxBench Flask images default to ``gunicorn --workers=$(nproc)``, which can
-    spawn dozens of workers inside a small K8s pod and OOM. We inject
-    ``WEB_CONCURRENCY`` from this estimate and override the container command.
-    """
-    from ..cluster.capacity import _parse_cpu_to_millicores, _parse_memory_to_bytes
-
-    cpu_m = _parse_cpu_to_millicores(resources.cpu_limit)
-    mem_b = _parse_memory_to_bytes(resources.memory_limit)
-    by_cpu = max(1, min(cpu_m // 400, 16))
-    by_mem = max(1, mem_b // (100 * 1024 * 1024))
-    return max(1, min(by_cpu, by_mem))
-
-
 @dataclass(frozen=True)
 class BackendSpec:
     image: str
     replicas: int = 1
     port: int = 8080
     resources: ResourceSpec = field(default_factory=ResourceSpec)
+    # App worker processes per pod. Propagated as WEB_CONCURRENCY
+    # (gunicorn --workers for Python, PM2 -i for JavaScript).
+    web_concurrency: int = DEFAULT_WEB_CONCURRENCY
     # Env vars passed to the app container (DB_* added automatically when DB enabled).
     env: dict[str, str] = field(default_factory=dict)
     # Kubernetes node hostnames (from cluster capacity) allowed for backend pods.
@@ -89,6 +80,10 @@ class BackendSpec:
             replicas=int(data.get("replicas", 1)),
             port=int(data.get("port", 8080)),
             resources=ResourceSpec.from_mapping(data.get("resources")),
+            web_concurrency=max(
+                1,
+                int(data.get("web_concurrency", DEFAULT_WEB_CONCURRENCY)),
+            ),
             env={str(k): str(v) for k, v in (data.get("env") or {}).items()},
             placement_workers=tuple(workers),
             spread_replicas=spread,
@@ -207,6 +202,7 @@ class K8sWorkloadSpec:
                 "image": self.backend.image,
                 "replicas": self.backend.replicas,
                 "port": self.backend.port,
+                "web_concurrency": self.backend.web_concurrency,
                 "resources": asdict(self.backend.resources),
                 "env": dict(self.backend.env),
                 "placement": {
@@ -236,7 +232,7 @@ class K8sWorkloadSpec:
     def backend_env(self) -> dict[str, str]:
         env = dict(self.backend.env)
         env.setdefault("PORT", str(self.backend.port))
-        env.setdefault("WEB_CONCURRENCY", str(infer_gunicorn_workers(self.backend.resources)))
+        env.setdefault("WEB_CONCURRENCY", str(self.backend.web_concurrency))
         if self.database.enabled:
             host = f"{self.database.service_name}.{self.namespace}.svc.cluster.local"
             env.setdefault("DB_HOST", host)

@@ -1,15 +1,14 @@
-"""Base types for utilization capture during a perf run."""
+"""Base types for diagnostics collection during a bench run."""
 
 from __future__ import annotations
 
 import logging
 import threading
 from abc import ABC, abstractmethod
-from pathlib import Path
 
 
-class UtilizationLogger(ABC):
-    """Background utilization sampling; call ``start()`` then ``stop()``."""
+class DiagnosticsCollector(ABC):
+    """Background diagnostics sampling; call ``start()`` then ``stop()``."""
 
     def __init__(self, *, logger: logging.Logger | None = None) -> None:
         self._log = logger or logging.getLogger(self.__class__.__name__)
@@ -39,7 +38,7 @@ class UtilizationLogger(ABC):
         self._threads = []
         self._started = False
 
-    def __enter__(self) -> UtilizationLogger:
+    def __enter__(self) -> DiagnosticsCollector:
         self.start()
         return self
 
@@ -51,29 +50,23 @@ class UtilizationLogger(ABC):
         raise NotImplementedError
 
 
-class UtilizationSession:
-    """Start/stop several loggers together."""
+class DiagnosticsSession:
+    """Start and stop several collectors together (LIFO shutdown)."""
 
-    def __init__(self, loggers: list[UtilizationLogger]) -> None:
-        self._loggers = loggers
+    def __init__(self, collectors: list[DiagnosticsCollector]) -> None:
+        self._collectors = collectors
 
     def start(self) -> None:
-        for lg in self._loggers:
-            lg.start()
+        for c in self._collectors:
+            c.start()
 
     def stop(self) -> None:
-        for lg in reversed(self._loggers):
-            lg.stop()
+        for c in reversed(self._collectors):
+            c.stop()
 
-    def __enter__(self) -> UtilizationSession:
+    def __enter__(self) -> DiagnosticsSession:
         self.start()
         return self
 
     def __exit__(self, *exc: object) -> None:
         self.stop()
-
-
-def stats_root(run_dir: Path) -> Path:
-    root = run_dir / "stats"
-    root.mkdir(parents=True, exist_ok=True)
-    return root

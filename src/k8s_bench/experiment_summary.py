@@ -520,7 +520,7 @@ def _adaptive_table_markdown(
 
 
 def _aggregate_locust_line(perf_run_dir: Path) -> str:
-    for stats_path in sorted(perf_run_dir.glob("bench_results_*_stats.csv")):
+    for stats_path in sorted((perf_run_dir / "locust" / "results").glob("*_stats.csv")):
         with stats_path.open(newline="", encoding="utf-8", errors="replace") as f:
             rows = list(csv.DictReader(f))
         if not rows:
@@ -539,7 +539,7 @@ def _aggregate_locust_line(perf_run_dir: Path) -> str:
             f"**Locust aggregate** ({stats_path.name}): {total_req} requests, "
             f"{total_fail} failures ({fail_pct}), ~{rps:.1f} req/s summed across endpoints."
         )
-    return "(no bench_results_*_stats.csv found)"
+    return "(no locust/results/*_stats.csv found)"
 
 
 def append_baseline_codegen_block(

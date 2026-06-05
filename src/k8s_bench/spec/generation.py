@@ -25,7 +25,13 @@ from ..cluster.capacity import (
     capacity_as_json,
     collect_cluster_capacity,
 )
-from .models import BackendSpec, DatabaseSpec, K8sWorkloadSpec, ResourceSpec
+from .models import (
+    DEFAULT_WEB_CONCURRENCY,
+    BackendSpec,
+    DatabaseSpec,
+    K8sWorkloadSpec,
+    ResourceSpec,
+)
 from .scheduling import (
     SpecValidationError,
     infer_pool_max_from_hints,
@@ -180,7 +186,8 @@ Propose deployment parameters for iteration `{iteration_id}` so the application 
 - Scenario: {scenario.id}
 - Environment: {env.id} (listen port {env.port})
 - Database required: {scenario.needs_db}
-- App DB connection pool (per replica): **{pool_max}** connections (from generated code)
+- App DB connection pool (per worker process): **{pool_max}** connections (from generated code)
+- A replica runs `backend.web_concurrency` worker processes, so DB connections per replica ≈ `web_concurrency × {pool_max}`
 
 {app_hints}
 
@@ -200,7 +207,7 @@ Schedulable **workers only** (control-plane excluded). Use **requests** for sche
 
 ## Scheduling rules (critical — hard limits enforced before deploy)
 1. **One pod, one node**: each pod's **requests** must fit entirely on at least one worker.
-2. **Connection budget**: `backend.replicas × {pool_max} ≤ database.max_connections` on the **primary** (app pools connect to primary only).
+2. **Connection budget**: `backend.replicas × backend.web_concurrency × {pool_max} ≤ database.max_connections` on the **primary** (each worker process keeps its own pool; pools connect to primary only).
 3. **Cluster budget**: sum of all pod requests (backends + all database pods) must fit cluster capacity after reserve.
 4. Optional **placement**: restrict or pin which workers may run postgres/backends; `spread_replicas: true` spreads backend pods across nodes.
 5. Use worker **`name` values** from the per-worker list (short names like `node3` are accepted).
@@ -213,6 +220,7 @@ Use **benchmark feedback** from prior iterations to refine replicas and resource
 
 **`backend`** (horizontally scalable — many stateless pods):
 - `replicas`: pod count behind the Service
+- `web_concurrency`: app worker processes per pod (gunicorn `--workers` / PM2 instances). More workers = more in-pod parallelism but also more DB connections (`web_concurrency × {pool_max}` per replica). Size it against pod CPU limits and the connection budget.
 - `resources`: per-pod CPU/memory requests & limits (scheduling uses **requests**)
 - `placement.workers`: optional node allow-list (omit = any worker)
 - `placement.spread_replicas`: prefer spreading pods across nodes (default true)
@@ -242,6 +250,7 @@ Return exactly one block:
 <SPEC>
 backend:
   replicas: <int>
+  web_concurrency: <int>             # worker processes per pod (gunicorn/PM2)
   resources:
     cpu_request: <quantity>
     cpu_limit: <quantity>
@@ -253,7 +262,7 @@ backend:
 database:
   enabled: true
   replicas: <int>                    # 1 = standalone; N>1 = 1 primary + (N-1) read replicas
-  max_connections: <int>             # primary only; must fit backend.replicas × {pool_max}
+  max_connections: <int>             # primary only; must fit backend.replicas × web_concurrency × {pool_max}
   resources:
     cpu_request: <quantity>
     cpu_limit: <quantity>
@@ -315,6 +324,9 @@ def merge_fragment_into_spec(
         image=str(backend_raw.get("image") or _IMAGE_PLACEHOLDER),
         replicas=max(1, int(backend_raw.get("replicas", 1))),
         port=int(backend_raw.get("port") or app_port),
+        web_concurrency=max(
+            1, int(backend_raw.get("web_concurrency", DEFAULT_WEB_CONCURRENCY))
+        ),
         resources=ResourceSpec.from_mapping(backend_raw.get("resources")),
         env={},
         placement_workers=placement_workers,
@@ -804,6 +816,7 @@ def generate_k8s_specs_for_task(
                             image=spec.backend.image,
                             replicas=spec.backend.replicas,
                             port=task.env.port,
+                            web_concurrency=spec.backend.web_concurrency,
                             resources=spec.backend.resources,
                             env=spec.backend.env,
                             placement_workers=spec.backend.placement_workers,
@@ -890,6 +903,7 @@ def _apply_task_labels_to_spec(
             image=spec.backend.image,
             replicas=spec.backend.replicas,
             port=task.env.port,
+            web_concurrency=spec.backend.web_concurrency,
             resources=spec.backend.resources,
             env=spec.backend.env,
             placement_workers=spec.backend.placement_workers,

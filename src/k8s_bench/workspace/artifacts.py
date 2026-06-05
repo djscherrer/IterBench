@@ -71,6 +71,9 @@ def write_feedback(
         "error_excerpt": feedback.error_excerpt,
         "pod_utilization": feedback.pod_utilization,
         "previous_spec_yaml": feedback.previous_spec_yaml,
+        "benchmark_context": feedback.benchmark_context,
+        "load_run_summary": feedback.load_run_summary,
+        "diagnostics_summary": feedback.diagnostics_summary,
         "notes": feedback.notes,
         "failed_attempts": [fa.to_dict() for fa in feedback.failed_attempts],
         "status": feedback.status,
@@ -99,13 +102,16 @@ def load_feedback(perf_run_dir: Path) -> "IterationFeedback | None":
     json_path = feedback_artifact_path(perf_run_dir)
     if json_path.is_file():
         data = json.loads(json_path.read_text(encoding="utf-8"))
-        return IterationFeedback(
+        fb = IterationFeedback(
             iteration_id=str(data.get("iteration_id", "")),
             perf_run_dir=str(data.get("perf_run_dir", perf_run_dir)),
             locust_summary=str(data.get("locust_summary", "")),
             error_excerpt=str(data.get("error_excerpt", "")),
             pod_utilization=str(data.get("pod_utilization", "")),
             previous_spec_yaml=str(data.get("previous_spec_yaml", "")),
+            benchmark_context=str(data.get("benchmark_context", "")),
+            load_run_summary=str(data.get("load_run_summary", "")),
+            diagnostics_summary=str(data.get("diagnostics_summary", "")),
             notes=str(data.get("notes", "")),
             failed_attempts=_failed_attempts_from_payload(data, FailedAttempt),
             status=str(data.get("status", "success")),
@@ -113,6 +119,22 @@ def load_feedback(perf_run_dir: Path) -> "IterationFeedback | None":
             failure_kind=str(data.get("failure_kind", "")),
             decision_rationale=str(data.get("decision_rationale", "")),
         )
+        if (
+            fb.status == "success"
+            and not fb.diagnostics_summary.strip()
+            and (perf_run_dir / "diagnostics" / "kubernetes").is_dir()
+        ):
+            try:
+                cfg = json.loads((perf_run_dir / "config.json").read_text(encoding="utf-8"))
+                iter_path = Path((cfg.get("k8s_iteration") or {}).get("path", ""))
+                if iter_path.is_dir():
+                    return collect_iteration_feedback(
+                        perf_run_dir=perf_run_dir,
+                        iteration_path=iter_path,
+                    )
+            except (json.JSONDecodeError, OSError):
+                pass
+        return fb
     txt = perf_run_dir / FEEDBACK_TEXT_FILENAME
     if txt.is_file():
         return IterationFeedback(

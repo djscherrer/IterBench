@@ -13,6 +13,14 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from bench_diagnostics.summary import (
+    benchmark_context_from_config,
+    load_profile_from_config,
+    read_run_config,
+    summarize_load_run,
+    summarize_run_dir,
+)
+
 from .spec.models import K8sWorkloadSpec
 from .cluster.preflight import _kubectl
 from .workspace import (
@@ -81,6 +89,9 @@ class IterationFeedback:
     error_excerpt: str
     pod_utilization: str
     previous_spec_yaml: str
+    benchmark_context: str = ""
+    load_run_summary: str = ""
+    diagnostics_summary: str = ""
     notes: str = ""
     failed_attempts: tuple[FailedAttempt, ...] = field(default_factory=tuple)
     status: str = "success"  # "success" | "failed"
@@ -101,16 +112,25 @@ class IterationFeedback:
         parts = [
             f"Most recent successful iteration: {self.iteration_id}",
             "",
+            "## Context",
+            self.benchmark_context.strip() or "(context unavailable)",
+            "",
+            "## Benchmark run",
+            self.load_run_summary.strip() or "(load run details unavailable)",
+            "",
+            "## Diagnostics (from benchmark run)",
+            "Aggregated pod logs, PostgreSQL stats, pod health, cluster events, and "
+            "``kubectl top`` utilization (min / avg / max per pod and node).",
+            "",
+            self.diagnostics_summary.strip() or "(no diagnostics collected)",
+            "",
             "## Locust results (per endpoint)",
-            "Source: Locust ``bench_results_*_stats.csv`` (markdown table; includes p95/p99 from Locust percentiles).",
+            "Source: Locust ``locust/results/<test>_stats.csv`` (markdown table; includes p95/p99 from Locust percentiles).",
             self.locust_summary or "(no Locust stats found)",
             "",
-            "## Kubernetes utilization (aggregated over benchmark run)",
-            "From periodic ``kubectl top`` samples during the run (min / avg / max per pod and per node).",
-            self.pod_utilization or "(kubernetes metrics unavailable)",
-            "",
-            "## Top errors",
-            self.error_excerpt or "(no error report)",
+            "## Locust HTTP errors",
+            "Client-side failure messages from Locust (often generic 500s; see diagnostics above for root cause).",
+            self.error_excerpt or "(no Locust error report)",
             "",
             "## Previous spec.yaml",
             "```yaml",
@@ -184,7 +204,7 @@ class IterationFeedback:
 
 
 def _format_locust_stats_csv(stats_path: Path) -> str:
-    """Format ``bench_results_*_stats.csv`` as a markdown table (LLM-friendly vs raw CSV)."""
+    """Format ``locust/results/<test>_stats.csv`` as a markdown table (LLM-friendly vs raw CSV)."""
     with stats_path.open(newline="", encoding="utf-8", errors="replace") as f:
         rows = list(csv.DictReader(f))
     if not rows:
@@ -268,7 +288,7 @@ def _extract_locust_table_from_bench_log(bench_log: str) -> str:
 
 
 def _locust_summary_from_run_dir(perf_run_dir: Path, bench_log: str) -> str:
-    candidates = sorted(perf_run_dir.glob("bench_results_*_stats.csv"))
+    candidates = sorted((perf_run_dir / "locust" / "results").glob("*_stats.csv"))
     if candidates:
         table = _format_locust_stats_csv(candidates[0])
         if table:
@@ -455,23 +475,11 @@ def _summarize_node_top_csv(path: Path) -> str:
 
 
 def _summarize_k8s_utilization_csv(perf_run_dir: Path) -> str:
-    """Aggregate ``stats/kubernetes/*.csv`` over the whole perf run."""
-    k8s_dir = perf_run_dir / "stats" / "kubernetes"
-    pod_csv = k8s_dir / "pod_top.csv"
-    node_csv = k8s_dir / "node_top.csv"
-    parts: list[str] = []
+    """Aggregate ``diagnostics/kubernetes/cluster/kubectl_top_*.csv`` over the whole perf run."""
+    from bench_diagnostics.summary.utilization import summarize_k8s_utilization
 
-    pod_block = _summarize_pod_top_csv(pod_csv)
-    if pod_block:
-        parts.append("### Pods")
-        parts.append(pod_block)
-
-    node_block = _summarize_node_top_csv(node_csv)
-    if node_block:
-        parts.append("### Nodes")
-        parts.append(node_block)
-
-    return "\n\n".join(parts)
+    text = summarize_k8s_utilization(perf_run_dir)
+    return "" if text == "(kubernetes metrics unavailable)" else text
 
 
 def _replica_usage_note(
@@ -550,15 +558,14 @@ def collect_iteration_feedback(
         except ValueError:
             spec = None
 
+    cfg_path = perf_run_dir / "config.json"
     ns = namespace
-    if not ns:
-        cfg_path = perf_run_dir / "config.json"
-        if cfg_path.is_file():
-            try:
-                cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
-                ns = (cfg.get("k8s_iteration") or {}).get("namespace")
-            except json.JSONDecodeError:
-                pass
+    if not ns and cfg_path.is_file():
+        try:
+            cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+            ns = (cfg.get("k8s_iteration") or {}).get("namespace")
+        except json.JSONDecodeError:
+            pass
     if not ns and spec is not None:
         ns = spec.namespace
 
@@ -568,6 +575,27 @@ def collect_iteration_feedback(
 
     notes = _replica_usage_note(k8s_util, spec)
 
+    run_config = read_run_config(perf_run_dir)
+    max_connections = None
+    if spec is not None:
+        max_connections = spec.database.max_connections
+    elif run_config.get("k8s_workload_spec"):
+        try:
+            max_connections = int(
+                (run_config["k8s_workload_spec"].get("database") or {}).get(
+                    "max_connections"
+                )
+            )
+        except (TypeError, ValueError):
+            max_connections = None
+
+    diagnostics = summarize_run_dir(
+        perf_run_dir,
+        bench_log=bench_log,
+        max_connections=max_connections,
+    )
+    load_profile = load_profile_from_config(run_config)
+
     return IterationFeedback(
         iteration_id=iteration_path.name,
         perf_run_dir=str(perf_run_dir),
@@ -575,6 +603,9 @@ def collect_iteration_feedback(
         error_excerpt=_extract_error_excerpt(bench_log),
         pod_utilization=k8s_util,
         previous_spec_yaml=spec_yaml,
+        benchmark_context=benchmark_context_from_config(run_config),
+        load_run_summary=summarize_load_run(bench_log, load_profile=load_profile),
+        diagnostics_summary=diagnostics.to_prompt_block(),
         notes=notes,
     )
 

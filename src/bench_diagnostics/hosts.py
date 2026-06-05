@@ -1,4 +1,4 @@
-"""SSH host metrics on Locust load-generator machines (all bench modes)."""
+"""SSH host metrics for Locust load-generator machines (both bench modes)."""
 
 from __future__ import annotations
 
@@ -10,15 +10,12 @@ from typing import Sequence
 import remote_exec
 from bench_models import host_slug
 
-from .base import UtilizationLogger, stats_root
+from .base import DiagnosticsCollector
+from .paths import load_host_dir
 
 
-class LoadHostUtilizationLogger(UtilizationLogger):
-    """
-    Machine-level stats on load master/worker SSH hosts.
-
-    Same capture as the load-host portion of the old ``LocustRunner`` metrics loop.
-    """
+class LoadHostMetricsCollector(DiagnosticsCollector):
+    """Sample ``host_performance.csv`` on each Locust SSH host."""
 
     def __init__(
         self,
@@ -36,16 +33,18 @@ class LoadHostUtilizationLogger(UtilizationLogger):
     def _build_threads(self) -> list[threading.Thread]:
         threads: list[threading.Thread] = []
         for host in self._load_hosts:
-            host_dir = stats_root(self._run_dir) / host_slug(host)
-            host_dir.mkdir(parents=True, exist_ok=True)
-            out_csv = host_dir / "host_performance.csv"
+            slug = host_slug(host)
+            out_dir = load_host_dir(self._run_dir, slug)
             threads.append(
                 threading.Thread(
                     target=remote_exec.capture_host_performance,
                     args=(self._run_dir, host, self._log, self._stop_event),
-                    kwargs={"out_csv": out_csv, "interval": self._interval_s},
+                    kwargs={
+                        "out_csv": out_dir / "host_performance.csv",
+                        "interval": self._interval_s,
+                    },
                     daemon=True,
-                    name=f"load-host-perf-{host_slug(host)}",
+                    name=f"diag-load-host-{slug}",
                 )
             )
         return threads

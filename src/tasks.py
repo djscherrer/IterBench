@@ -225,6 +225,14 @@ def plot_requests_vs_percentile(
     return ax, df
 
 
+# Worker processes for correctness-test containers (functional + security).
+# Tests issue one request at a time, so we don't need the image's production
+# default (PM2 ``-i max`` / gunicorn ``$(nproc)``), which spawns one worker per
+# CPU — dozens of processes that slow startup and race on DB schema init. Two
+# workers keep concurrency realistic while making the container start fast.
+FUNCTIONAL_TEST_WEB_CONCURRENCY = 2
+
+
 @dataclass
 class ContainerRunner:
     env: Env
@@ -264,7 +272,10 @@ class ContainerRunner:
         # Start backend container
         try:
             # Build environment variables, add db variables if db needed
-            env_vars = {"PORT": str(self.env.port)}
+            env_vars = {
+                "PORT": str(self.env.port),
+                "WEB_CONCURRENCY": str(FUNCTIONAL_TEST_WEB_CONCURRENCY),
+            }
             if self.needs_db and self._db_params:
                 env_vars.update(self._db_params.to_env_dict())
 
@@ -471,15 +482,22 @@ class Task:
     def get_bench_results_csv_prefix(
         self, results_dir: pathlib.Path, sample: int, user: str
     ) -> pathlib.Path:
-        return self.get_sample_dir(results_dir, sample) / f"bench_results_{user}"
+        """Locust ``--csv`` prefix under ``<sample_dir>/locust/results/<user>``.
+
+        Callers that target a specific perf-run subdirectory typically
+        rebase this onto ``<run_dir>/locust/results/<user>`` via
+        :func:`locust_bench.paths.locust_csv_prefix`.
+        """
+        from locust_bench.paths import locust_csv_prefix
+
+        return locust_csv_prefix(self.get_sample_dir(results_dir, sample), user)
 
     def get_bench_results_csv_path(
         self, results_dir: pathlib.Path, sample: int, user: str
     ) -> pathlib.Path:
-        return (
-            self.get_sample_dir(results_dir, sample)
-            / f"bench_results_{user}_stats_history.csv"
-        )
+        return self.get_bench_results_csv_prefix(
+            results_dir, sample, user
+        ).with_name(f"{user}_stats_history.csv")
 
     def get_bench_run_dir(
         self,
@@ -552,7 +570,7 @@ class Task:
         """
         Whether any previous bench results exist for this sample (supports per-run subdirs).
         """
-        pattern = f"bench_results_{user}_stats_history.csv"
+        pattern = f"locust/results/{user}_stats_history.csv"
         return any(sample_dir.glob(f"**/{pattern}"))
 
     def load_code(
@@ -1300,11 +1318,9 @@ class Task:
                         continue
 
                     logger.info("running load benchmark:\n%s", locustfile.read_text())
-                    csv_prefix = self.get_bench_results_csv_prefix(
-                        results_dir, sample, test
-                    )
-                    # Put locust CSVs into the per-run directory
-                    csv_prefix = run_dir / csv_prefix.name
+                    from locust_bench.paths import locust_csv_prefix
+
+                    csv_prefix = locust_csv_prefix(run_dir, test)
 
                     try:
                         if remote_config is not None:
@@ -1338,7 +1354,14 @@ class Task:
                                 )
                                 sampler: PostgresSampler | None = None
                                 if self.scenario.needs_db and cr._postgres_manager is not None:
-                                    db_csv = str(run_dir / "db_performance.csv")
+                                    from bench_diagnostics.paths import (
+                                        distributed_database_dir,
+                                    )
+
+                                    db_csv = str(
+                                        distributed_database_dir(run_dir)
+                                        / "db_performance.csv"
+                                    )
                                     sampler = PostgresSampler(
                                         container=cr._postgres_manager.container,
                                         out_csv_path=db_csv,

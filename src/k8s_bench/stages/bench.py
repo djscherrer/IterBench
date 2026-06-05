@@ -11,6 +11,8 @@ import logging
 from pathlib import Path
 from typing import Any
 
+from locust_bench.paths import locust_csv_prefix
+
 from ..iteration import run_k8s_bench_iteration
 from ..util.sample import (
     append_k8s_skip,
@@ -115,7 +117,7 @@ def run_locust_for_iteration(
     labels = bench_labels(task, iteration_index=iteration_index)
 
     for test in tests:
-        csv_prefix = run_dir / f"bench_results_{test}"
+        csv_prefix = locust_csv_prefix(run_dir, test)
         logger.info(
             "running k8s bench iteration=%s locustfile=%s",
             iteration_id,

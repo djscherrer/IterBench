@@ -10,7 +10,7 @@ from ..cluster.capacity import (
     _parse_cpu_to_millicores,
     _parse_memory_to_bytes,
 )
-from .models import K8sWorkloadSpec, ResourceSpec, infer_gunicorn_workers
+from .models import K8sWorkloadSpec, ResourceSpec
 
 DEFAULT_APP_POOL_MAX = 20
 _NODE_RESERVE_FRACTION = 0.10
@@ -253,18 +253,20 @@ def validate_spec_against_cluster(
         )
 
     pool_max = infer_pool_max_from_hints(app_hints)
-    workers_per_pod = infer_gunicorn_workers(spec.backend.resources)
-    conn_per_replica = max(pool_max, workers_per_pod)
+    workers_per_pod = spec.backend.web_concurrency
+    # Each worker process keeps its own connection pool, so a single replica can
+    # open up to web_concurrency × pool_max connections.
+    conn_per_replica = workers_per_pod * pool_max
     if spec.database.enabled:
         needed = spec.backend.replicas * conn_per_replica
         if needed > spec.database.max_connections:
             errors.append(
                 f"Connection budget exceeded: {spec.backend.replicas} replicas × "
-                f"{conn_per_replica} conns/replica (pool≤{pool_max}, "
-                f"gunicorn_workers={workers_per_pod}) = {needed} connections, but "
-                f"database.max_connections={spec.database.max_connections}. "
-                f"Lower replicas, raise max_connections, or shrink WEB_CONCURRENCY "
-                f"(memory/cpu limits)."
+                f"{workers_per_pod} workers/pod × pool≤{pool_max} = {needed} "
+                f"connections, but database.max_connections="
+                f"{spec.database.max_connections}. Lower replicas, lower "
+                f"backend.web_concurrency, raise max_connections, or shrink the "
+                f"app connection pool."
             )
 
     be_cpu_req = _request_cpu_m(spec.backend.resources)

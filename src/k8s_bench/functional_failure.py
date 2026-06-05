@@ -196,6 +196,38 @@ class FunctionalFailure:
             container_error_excerpt=str(data.get("container_error_excerpt", "")),
         )
 
+    @property
+    def category(self) -> str:
+        """
+        Coarse, human-readable failure class derived from the evidence.
+
+        This is the "category" we surface to the coding agent (alongside the
+        test name and the app's own error output) so it knows *what kind* of
+        thing went wrong without seeing the test's assertion or expected
+        values. We read the oracle lines here only to classify — they are
+        never rendered (see ``_sanitize_test_log_tail``).
+        """
+        tail = (self.per_test_log_tail or "").lower()
+        err = (self.container_error_excerpt or "").lower()
+        blob = f"{tail}\n{err}"
+        if "timed out" in blob or "timeout" in blob:
+            return "timeout — endpoint did not respond in time"
+        if (
+            re.search(r"\b5\d\d\b", tail)
+            or "traceback" in err
+            or "exception" in err
+            or "error:" in err
+            or "panic" in err
+        ):
+            return "server error (5xx / unhandled exception)"
+        if re.search(r"\b4\d\d\b", tail):
+            return "request rejected (4xx) where success was expected"
+        if "mismatch" in tail or "expected" in tail:
+            return "incorrect response (wrong body / values)"
+        if err.strip():
+            return "application error during the request"
+        return "unexpected behaviour (no explicit error captured)"
+
 
 @dataclass(frozen=True)
 class FunctionalFailureReport:
@@ -283,7 +315,7 @@ class FunctionalFailureReport:
         names = ", ".join(ft.name for ft in self.failed_tests)
         first = self.failed_tests[0]
         first_evidence = (
-            first.per_test_log_tail.strip()
+            _sanitize_test_log_tail(first.per_test_log_tail)
             or first.container_error_excerpt.strip()
         )
         first_evidence = _trim(first_evidence, max_chars=400)
@@ -350,19 +382,31 @@ class FunctionalFailureReport:
         if self.failed_tests:
             lines.append("")
             lines.append("### Failed tests")
+            lines.append(
+                "For each failed test you get its **name**, a **failure "
+                "category**, and your **application's own error output**. The "
+                "test source and its expected values are intentionally withheld "
+                "— fix the behaviour required by the API spec, do not target the "
+                "tests."
+            )
             for ft in self.failed_tests:
                 lines.append("")
                 lines.append(f"- **`{ft.name}`**")
-                if ft.per_test_log_tail.strip():
-                    lines.append("  - Test logged:")
+                lines.append(f"  - Failure category: {ft.category}")
+                observed = _sanitize_test_log_tail(ft.per_test_log_tail)
+                if observed:
+                    lines.append("  - Test harness observed:")
                     lines.append("    ```")
                     lines.extend(
                         "    " + l
-                        for l in _trim(ft.per_test_log_tail, max_chars=800).splitlines()
+                        for l in _trim(observed, max_chars=800).splitlines()
                     )
                     lines.append("    ```")
                 if ft.container_error_excerpt.strip():
-                    lines.append("  - Application error from container logs:")
+                    lines.append(
+                        "  - Application error from container logs (your app's "
+                        "own output):"
+                    )
                     lines.append("    ```")
                     lines.extend(
                         "    " + l
@@ -384,6 +428,22 @@ class FunctionalFailureReport:
             for name in self.passed_tests:
                 lines.append(f"- `{name}`")
         return "\n".join(lines)
+
+
+# Lines that reveal the test's expected (oracle) values. BaxBench scenarios
+# consistently log assertions as ``... mismatch. Expected <X>, got <Y>``; we
+# drop any line naming the *expected* side so the coding agent can't hardcode
+# outputs to pass the test instead of implementing the behaviour. The ``got``
+# side and status-code failures are the app's own output and stay.
+_ORACLE_HINT_RE = re.compile(r"\bexpected\b", re.IGNORECASE)
+
+
+def _sanitize_test_log_tail(text: str) -> str:
+    """Strip oracle-revealing lines from a per-test harness log tail."""
+    if not text:
+        return ""
+    kept = [ln for ln in text.splitlines() if not _ORACLE_HINT_RE.search(ln)]
+    return "\n".join(kept).strip()
 
 
 def _trim(text: str, *, max_chars: int) -> str:

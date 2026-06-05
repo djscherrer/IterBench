@@ -11,11 +11,11 @@ from bench_models import host_slug
 
 
 def _read_locust_stats_history(run_dir: pathlib.Path) -> pd.DataFrame:
-    stats_candidates = sorted(run_dir.glob("bench_results_*_stats_history.csv"))
+    stats_candidates = sorted((run_dir / "locust" / "results").glob("*_stats_history.csv"))
     if not stats_candidates:
         raise FileNotFoundError(
             f"No locust stats_history CSV found in {run_dir} "
-            f"(expected bench_results_*_stats_history.csv)"
+            f"(expected locust/results/*_stats_history.csv)"
         )
     stats_path = stats_candidates[0]
     df = pd.read_csv(stats_path)
@@ -39,13 +39,23 @@ def _read_locust_stats_history(run_dir: pathlib.Path) -> pd.DataFrame:
 
 
 def _iter_stats_files(run_dir: pathlib.Path, filename: str) -> Iterable[tuple[str, pathlib.Path]]:
-    stats_root = run_dir / "stats"
-    if not stats_root.exists():
-        return []
+    """Yield ``(host_slug, path)`` from load-host and distributed workload trees."""
+    host_roots = [
+        run_dir / "diagnostics" / "hosts",
+        run_dir / "diagnostics" / "distributed" / "hosts",
+    ]
     out: list[tuple[str, pathlib.Path]] = []
-    for p in sorted(stats_root.glob(f"*/{filename}")):
-        host = p.parent.name
-        out.append((host, p))
+    seen: set[tuple[str, str]] = set()
+    for hosts_root in host_roots:
+        if not hosts_root.exists():
+            continue
+        for p in sorted(hosts_root.glob(f"*/{filename}")):
+            host = p.parent.name
+            key = (host, filename)
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append((host, p))
     return out
 
 
@@ -167,11 +177,16 @@ def _host_roles_from_config(run_dir: pathlib.Path) -> dict[str, set[str]] | None
     if not isinstance(erc, dict):
         return None
 
-    # Collect hosts present in stats/ (these are the machines we have telemetry for)
-    stats_root = run_dir / "stats"
-    hosts = []
-    if stats_root.exists():
-        hosts = sorted([p.name for p in stats_root.iterdir() if p.is_dir()])
+    # Collect hosts from load-host and distributed workload telemetry trees
+    host_roots = [
+        run_dir / "diagnostics" / "hosts",
+        run_dir / "diagnostics" / "distributed" / "hosts",
+    ]
+    hosts: list[str] = []
+    for hosts_root in host_roots:
+        if hosts_root.exists():
+            hosts.extend(p.name for p in hosts_root.iterdir() if p.is_dir())
+    hosts = sorted(set(hosts))
 
     roles: dict[str, set[str]] = {h: set() for h in hosts}
 
@@ -224,11 +239,15 @@ def _infer_host_roles(run_dir: pathlib.Path) -> dict[str, set[str]]:
 
     roles: dict[str, set[str]] = {}
 
-    # Collect hosts present in stats/ (these are the machines we have telemetry for)
-    stats_root = run_dir / "stats"
-    hosts = []
-    if stats_root.exists():
-        hosts = sorted([p.name for p in stats_root.iterdir() if p.is_dir()])
+    host_roots = [
+        run_dir / "diagnostics" / "hosts",
+        run_dir / "diagnostics" / "distributed" / "hosts",
+    ]
+    hosts: list[str] = []
+    for hosts_root in host_roots:
+        if hosts_root.exists():
+            hosts.extend(p.name for p in hosts_root.iterdir() if p.is_dir())
+    hosts = sorted(set(hosts))
     for h in hosts:
         roles[h] = set()
 
@@ -335,7 +354,9 @@ def _read_nginx_timing_csv(run_dir: pathlib.Path) -> pd.DataFrame | None:
     Note: upstream_* fields can be '-' or a comma-separated list if multiple upstreams were tried.
     We take the first numeric value we can parse.
     """
-    candidates = sorted((run_dir / "stats").glob("*/nginx_access_timing.csv"))
+    candidates = sorted(
+        (run_dir / "diagnostics" / "distributed" / "hosts").glob("*/nginx_access_timing.csv")
+    )
     if not candidates:
         return None
     path = candidates[0]
@@ -390,9 +411,14 @@ def _read_nginx_timing_csv(run_dir: pathlib.Path) -> pd.DataFrame | None:
 
 def _read_db_performance_csv(run_dir: pathlib.Path) -> pd.DataFrame | None:
     """
-    Read db_performance.csv from stats/* if present and compute avg statement time series.
+    Read db_performance.csv from diagnostics/hosts/* if present and compute avg statement time series.
     """
-    candidates = sorted((run_dir / "stats").glob("*/db_performance.csv"))
+    candidates = sorted(
+        (run_dir / "diagnostics" / "distributed" / "hosts").glob("*/db_performance.csv")
+    )
+    if not candidates:
+        local_db = run_dir / "diagnostics" / "distributed" / "database" / "db_performance.csv"
+        candidates = [local_db] if local_db.exists() else []
     if not candidates:
         return None
     db_path = candidates[0]
@@ -429,10 +455,11 @@ def plot_remote_perf_for_run_dir(
     Plot remote performance metrics for a single perf run directory.
 
     Expected in run_dir:
-      - bench_results_*_stats_history.csv
-      - stats/<host>/host_performance.csv (optional, but recommended)
-      - stats/<host>/socket_queue.csv (optional)
-      - stats/<host>/db_queue.csv (optional)
+      - locust/results/*_stats_history.csv
+      - diagnostics/hosts/<host>/host_performance.csv (Locust load hosts)
+      - diagnostics/distributed/hosts/<host>/host_performance.csv (workload hosts)
+      - diagnostics/distributed/hosts/<host>/socket_queue.csv (optional)
+      - diagnostics/distributed/hosts/<host>/db_queue.csv (optional)
 
     Produces plots into out_dir (default: run_dir/plots_remote_perf).
     """
@@ -788,7 +815,7 @@ def plot_remote_perf_for_run_dir(
     try:
         df_ng = _read_nginx_timing_csv(run_dir)
         df_db = _read_db_performance_csv(run_dir)
-        stats_candidates = sorted(run_dir.glob("bench_results_*_stats_history.csv"))
+        stats_candidates = sorted((run_dir / "locust" / "results").glob("*_stats_history.csv"))
         if stats_candidates:
             loc = pd.read_csv(stats_candidates[0])
             loc = loc[loc["Name"] == "Aggregated"].copy()

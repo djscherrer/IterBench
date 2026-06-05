@@ -2,17 +2,12 @@
 Locust load generation for BaxBench.
 
 - ``locust_run.py`` — remote master/worker Locust + ``LocustRunner`` (distributed bench)
-- ``utilization_logging/`` — per-run host/pod metrics
+- ``paths.py`` — Locust artifact paths under ``locust/``
 - ``load_profiles/`` — load shapes
+
+Bench observability lives in the top-level :mod:`bench_diagnostics` package.
 """
 
-from .locust_run import (
-    DistributedLocustConfig,
-    DistributedLocustSession,
-    LocustRunner,
-    prepare_locust_run_dir,
-    resolve_locust_user_class,
-)
 from .load_profiles import (
     LOAD_PROFILE_REGISTRY,
     AdaptiveLoadProfile,
@@ -25,37 +20,33 @@ from .load_profiles import (
     resolve_load_profile,
 )
 from .load_topology import LoadTopology
-from .utilization_logging import (
-    DistributedBenchUtilizationLogger,
-    KubernetesUtilizationLogger,
-    LoadHostUtilizationLogger,
-    UtilizationLogger,
-    UtilizationSession,
-    utilization_session_for_distributed,
-    utilization_session_for_k8s,
+from .locust_run import (
+    DistributedLocustConfig,
+    DistributedLocustSession,
+    LocustRunner,
+    prepare_locust_run_dir,
+    resolve_locust_user_class,
 )
+from .paths import locust_csv_prefix, locust_dir, locust_logs_dir, locust_results_dir
 
 __all__ = [
     "LOAD_PROFILE_REGISTRY",
     "AdaptiveLoadProfile",
     "BaseLoadProfile",
     "ContinuousLoadProfile",
-    "DistributedBenchUtilizationLogger",
     "DistributedLocustConfig",
     "DistributedLocustSession",
-    "KubernetesUtilizationLogger",
-    "LoadHostUtilizationLogger",
     "LoadProfile",
     "LoadTopology",
     "LocustRunner",
     "SpikeLoadProfile",
     "StairsLoadProfile",
     "SteadyLoadProfile",
-    "UtilizationLogger",
-    "UtilizationSession",
+    "locust_csv_prefix",
+    "locust_dir",
+    "locust_logs_dir",
+    "locust_results_dir",
     "prepare_locust_run_dir",
     "resolve_load_profile",
     "resolve_locust_user_class",
-    "utilization_session_for_distributed",
-    "utilization_session_for_k8s",
 ]

@@ -280,7 +280,7 @@ def main(argv: list[str] | None = None) -> None:
         return
 
     # Check if the provided path is a single benchmark directory containing the stats_history file
-    stats_files = list(base_path.glob("bench_results_*_stats_history.csv"))
+    stats_files = list((base_path / "locust" / "results").glob("*_stats_history.csv"))
 
     if stats_files:
         # SINGLE DIRECTORY MODE (Sanity Check)
@@ -306,7 +306,7 @@ def main(argv: list[str] | None = None) -> None:
     else:
         # RECURSIVE CONSOLIDATED MODE
         print(f"Scanning for benchmarks in {base_path}...\n")
-        all_stats_files = list(base_path.rglob("bench_results_*_stats_history.csv"))
+        all_stats_files = list(base_path.rglob("locust/results/*_stats_history.csv"))
 
         if args.profile:
             all_stats_files = [f for f in all_stats_files if args.profile in str(f)]
@@ -322,7 +322,7 @@ def main(argv: list[str] | None = None) -> None:
                 peak_rps, _ = res
 
                 # Current structure is typically:
-                # results/<MODEL>/<SCENARIO>/<ENV>/<PROMPT>/<SAMPLE>/<PERF_DIR>/bench_results_..._stats_history.csv
+                # results/<MODEL>/<SCENARIO>/<ENV>/<PROMPT>/<SAMPLE>/<PERF_DIR>/locust/results/<test>_stats_history.csv
                 # Keep fallbacks for other layouts.
                 parts = f.parts
                 model = "unknown"
@@ -330,7 +330,8 @@ def main(argv: list[str] | None = None) -> None:
                 env = "unknown"
                 prompt = "unknown"
                 sample_str = "unknown"
-                perf_dir = f.parent
+                # f = .../<PERF_DIR>/locust/results/<test>_stats_history.csv
+                perf_dir = f.parent.parent.parent
 
                 results_root = _find_results_root(f)
                 if results_root is not None:
@@ -338,11 +339,11 @@ def main(argv: list[str] | None = None) -> None:
                     if len(rel) >= 6:
                         model, scenario, env, prompt, sample_str = rel[0], rel[1], rel[2], rel[3], rel[4]
                 else:
-                    # Fallback heuristics
-                    model = parts[-7] if len(parts) >= 7 else model
-                    scenario = parts[-6] if len(parts) >= 6 else scenario
-                    env = parts[-5] if len(parts) >= 5 else env
-                    prompt = parts[-4] if len(parts) >= 4 else prompt
+                    # Fallback heuristics — locust/results adds two trailing segments
+                    model = parts[-9] if len(parts) >= 9 else model
+                    scenario = parts[-8] if len(parts) >= 8 else scenario
+                    env = parts[-7] if len(parts) >= 7 else env
+                    prompt = parts[-6] if len(parts) >= 6 else prompt
                     for p in parts:
                         if p.startswith("sample"):
                             sample_str = p

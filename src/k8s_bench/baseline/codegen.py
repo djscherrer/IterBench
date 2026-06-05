@@ -31,6 +31,10 @@ import docker
 
 from prompts import Parser, Prompter
 
+from ..functional_failure import (
+    FunctionalFailureReport,
+    build_functional_failure_report,
+)
 from ..util.sample import (
     append_k8s_skip,
     ensure_docker_image,
@@ -341,6 +345,38 @@ def _write_codegen_meta(
     return path
 
 
+def _baseline_retry_feedback_block(
+    *,
+    prior_code: str,
+    failure_report: "FunctionalFailureReport",
+) -> str:
+    """
+    Render the retry suffix appended to the canonical baseline prompt.
+
+    Gives the next attempt (1) the code it produced last time and (2) a
+    structured description of which functional tests failed — test name,
+    failure category, and the app's own error output — without exposing the
+    test source or its expected values (see ``FunctionalFailureReport``).
+    """
+    block = failure_report.to_prompt_block()
+    parts = [
+        "## Your previous attempt failed the functional tests — fix it",
+        "",
+        "The program you generated on the previous attempt is shown below. It "
+        "did not pass the functional tests. Produce a **complete corrected "
+        "program** (same output format as before). The functional test source "
+        "is intentionally withheld — implement the behaviour the API spec "
+        "requires; do not try to special-case the tests.",
+        "",
+        "### Your previous code",
+        prior_code.strip() or "(previous code unavailable)",
+        "",
+        "### What failed",
+        block or "(no structured failure detail captured)",
+    ]
+    return "\n".join(parts)
+
+
 def _llm_call_for_baseline(
     *,
     task: Any,
@@ -350,6 +386,8 @@ def _llm_call_for_baseline(
     base_delay: float,
     max_delay: float,
     logger: logging.Logger,
+    prior_code: str = "",
+    failure_report: "FunctionalFailureReport | None" = None,
 ) -> tuple[str, str, Prompter]:
     """
     Single-shot LLM call returning ``(prompt_text, raw_response, prompter)``.
@@ -359,6 +397,10 @@ def _llm_call_for_baseline(
     provider errors don't waste an attempt slot. Prompter's constructor builds
     the canonical scenario prompt, which is exactly the legacy
     ``--mode generate`` prompt — what makes this a baseline (not a refinement).
+
+    When ``failure_report`` is provided (a retry after a failed attempt), the
+    prior code + the structured functional-test failure are appended so the
+    model can correct its mistake instead of blindly re-rolling.
     """
     prompter = Prompter(
         env=task.env,
@@ -375,6 +417,12 @@ def _llm_call_for_baseline(
         use_stubs=task.use_stubs,
     )
     prompt_text = prompter.prompt
+    if failure_report is not None:
+        feedback = _baseline_retry_feedback_block(
+            prior_code=prior_code, failure_report=failure_report
+        )
+        prompt_text = f"{prompt_text}\n\n{feedback}"
+        prompter.prompt = prompt_text
 
     retries = 0
     while True:
@@ -526,6 +574,10 @@ def run_baseline_codegen(
     last_error: str | None = None
     winning_attempt: int | None = None
     terminal_infra_failure: bool = False
+    # Carried between attempts so a retry sees its previous (failing) code and
+    # a structured description of which functional tests failed.
+    last_failure_report: FunctionalFailureReport | None = None
+    last_attempt_code: str = ""
 
     with task.create_logger(log_file) as logger:
         logger.info(
@@ -567,6 +619,8 @@ def run_baseline_codegen(
                     base_delay=base_delay,
                     max_delay=max_delay,
                     logger=logger,
+                    prior_code=last_attempt_code,
+                    failure_report=last_failure_report,
                 )
             except Exception as exc:
                 last_error = f"LLM call failed: {exc}"
@@ -779,6 +833,26 @@ def run_baseline_codegen(
                     max_attempts,
                     last_error,
                 )
+            # Capture this attempt's code + structured FT failure so the next
+            # attempt can correct it (skip on infra failures — those abort the
+            # loop and are not the application's fault).
+            if not is_infra:
+                from ..refinement.code import _read_full_code_for_refinement
+
+                try:
+                    last_attempt_code = _read_full_code_for_refinement(code_dir)
+                    last_failure_report = build_functional_failure_report(
+                        iteration_path,
+                        iteration_id=iteration_id_for_index(0),
+                        logger=logger,
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "could not build baseline FT failure feedback for "
+                        "attempt %d: %s",
+                        attempt_idx,
+                        exc,
+                    )
             attempt_dir = attempt_subdir(
                 iteration_code_attempts_dir(iteration_path), attempt_idx
             )

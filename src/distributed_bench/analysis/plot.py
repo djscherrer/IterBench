@@ -684,7 +684,15 @@ def plot_backend_vs_db_latency_by_rps(
         stats_path = task.get_bench_results_csv_path(
             results_dir, sample, task.scenario.performance_tests[0]
         )
-        db_path = stats_path.parent / "db_performance.csv"
+        # stats_path is .../locust/results/<test>_stats_history.csv;
+        # db_performance.csv lives under diagnostics/distributed/.
+        db_path = (
+            stats_path.parent.parent.parent
+            / "diagnostics"
+            / "distributed"
+            / "database"
+            / "db_performance.csv"
+        )
         if not stats_path.exists() or not db_path.exists():
             continue
         merged = _prepare_backend_db_merged(
@@ -803,8 +811,9 @@ def plot_backend_vs_db_latency_for_run_dir(
     Plot backend vs DB latency for a single per-run directory.
 
     Expected files inside run_dir:
-      - bench_results_*_stats_history.csv (Locust stats history)
-      - stats/*/db_performance.csv (distributed bench layout)
+      - locust/results/*_stats_history.csv (Locust stats history)
+      - diagnostics/distributed/hosts/*/db_performance.csv (distributed bench) or
+        diagnostics/distributed/database/db_performance.csv (local docker bench)
     Optional:
       - server_performance.csv (not required for this plot)
     """
@@ -812,16 +821,23 @@ def plot_backend_vs_db_latency_for_run_dir(
     if not run_dir.exists() or not run_dir.is_dir():
         raise FileNotFoundError(f"run_dir does not exist or is not a directory: {run_dir}")
 
-    stats_candidates = sorted(run_dir.glob("bench_results_*_stats_history.csv"))
+    stats_candidates = sorted((run_dir / "locust" / "results").glob("*_stats_history.csv"))
     if not stats_candidates:
         raise FileNotFoundError(
-            f"No locust stats_history CSV found in {run_dir} (expected bench_results_*_stats_history.csv)"
+            f"No locust stats_history CSV found in {run_dir} (expected locust/results/*_stats_history.csv)"
         )
     stats_path = stats_candidates[0]
 
-    db_paths = sorted((run_dir / "stats").glob("*/db_performance.csv"))
+    db_paths = sorted(
+        (run_dir / "diagnostics" / "distributed" / "hosts").glob("*/db_performance.csv")
+    )
     if not db_paths:
-        raise FileNotFoundError(f"Missing {run_dir}/stats/*/db_performance.csv")
+        local_db = run_dir / "diagnostics" / "distributed" / "database" / "db_performance.csv"
+        db_paths = [local_db] if local_db.exists() else []
+    if not db_paths:
+        raise FileNotFoundError(
+            f"Missing {run_dir}/diagnostics/distributed/{{hosts/*,database}}/db_performance.csv"
+        )
     db_path = db_paths[0]
 
     rw = max(1, int(rolling_window))
@@ -907,16 +923,16 @@ def plot_throughput_over_time_for_run_dir(
     """
     Plot served vs successful throughput over time for a single per-run directory.
 
-    Uses the first bench_results_*_stats_history.csv found in run_dir.
+    Uses the first locust/results/*_stats_history.csv found in run_dir.
     """
     run_dir = pathlib.Path(run_dir)
     if not run_dir.exists() or not run_dir.is_dir():
         raise FileNotFoundError(f"run_dir does not exist or is not a directory: {run_dir}")
 
-    stats_candidates = sorted(run_dir.glob("bench_results_*_stats_history.csv"))
+    stats_candidates = sorted((run_dir / "locust" / "results").glob("*_stats_history.csv"))
     if not stats_candidates:
         raise FileNotFoundError(
-            f"No locust stats_history CSV found in {run_dir} (expected bench_results_*_stats_history.csv)"
+            f"No locust stats_history CSV found in {run_dir} (expected locust/results/*_stats_history.csv)"
         )
     stats_path = stats_candidates[0]
 
@@ -1005,10 +1021,10 @@ def plot_throughput_by_rps_for_run_dir(
     if not run_dir.exists() or not run_dir.is_dir():
         raise FileNotFoundError(f"run_dir does not exist or is not a directory: {run_dir}")
 
-    stats_candidates = sorted(run_dir.glob("bench_results_*_stats_history.csv"))
+    stats_candidates = sorted((run_dir / "locust" / "results").glob("*_stats_history.csv"))
     if not stats_candidates:
         raise FileNotFoundError(
-            f"No locust stats_history CSV found in {run_dir} (expected bench_results_*_stats_history.csv)"
+            f"No locust stats_history CSV found in {run_dir} (expected locust/results/*_stats_history.csv)"
         )
     stats_path = stats_candidates[0]
 

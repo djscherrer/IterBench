@@ -75,7 +75,7 @@ class Env:
     port: int = 5001
 
     # How much time (in seconds) we should wait for the app in the container to start.
-    wait_to_start_time: float = 20.0
+    wait_to_start_time: float = 45.0
 
     # The name of the process to check for in the container. If None, check for the entrypoint_cmd.
     process_name: str | None = None

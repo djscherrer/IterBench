@@ -25,10 +25,12 @@ from bench_models import DistributedBenchContext, host_slug
 from distributed_bench.config import RuntimeToggles
 from distributed_bench.system_configs import SystemTopology
 
+from bench_diagnostics import diagnostics_session_for_distributed
+
+from .paths import locust_dir, locust_logs_dir
 from .load_profiles import LoadProfile
 from .load_profiles.env import format_baxbench_locust_env_shell
 from .load_topology import LoadTopology
-from .utilization_logging import utilization_session_for_distributed
 
 _BAXBENCH_SHAPE = Path(__file__).resolve().parent / "load_profiles" / "_baxbench_shape.py"
 
@@ -47,12 +49,13 @@ def resolve_locust_user_class(locustfile: Path, requested: str = "default") -> s
 
 
 def prepare_locust_run_dir(run_dir: Path, locustfile: Path) -> Path:
-    run_dir.mkdir(parents=True, exist_ok=True)
-    dest_locust = run_dir / locustfile.name
+    """Stage the locustfile + shape under ``<run_dir>/locust/``."""
+    staging = locust_dir(run_dir)
+    dest_locust = staging / locustfile.name
     if locustfile.resolve() != dest_locust.resolve():
         shutil.copy2(locustfile, dest_locust)
     if _BAXBENCH_SHAPE.is_file():
-        shutil.copy2(_BAXBENCH_SHAPE, run_dir / "_baxbench_shape.py")
+        shutil.copy2(_BAXBENCH_SHAPE, staging / "_baxbench_shape.py")
     return dest_locust
 
 
@@ -80,8 +83,9 @@ class DistributedLocustConfig:
 
     @property
     def logs_dir(self) -> Path:
-        base = self.sample_dir or self.csv_prefix.parent
-        return base / "logs" / f"loader-{self.sample_slug}"
+        """``<run_dir>/locust/logs/`` for the bench run that owns this config."""
+        base = self.sample_dir or self.csv_prefix.parent.parent.parent
+        return locust_logs_dir(base)
 
 
 class _LocustStaging:
@@ -177,7 +181,7 @@ class LocustWorker:
             remote_exec.scp_from_remote(
                 self.host,
                 self.logfile,
-                logs_dir / f"locust-worker-{host_slug(self.host)}-{self.index}.log",
+                logs_dir / f"worker-{host_slug(self.host)}-{self.index}.log",
                 log,
             )
         except Exception as exc:
@@ -269,7 +273,7 @@ class LocustMaster:
         worker_hosts: list[str],
     ) -> None:
         master_host = self._cfg.topology.master
-        loader_log_path = logs_dir / f"locust-master-{host_slug(master_host)}.log"
+        loader_log_path = logs_dir / f"master-{host_slug(master_host)}.log"
         try:
             loader_log_path.write_text(
                 "## mode: distributed\n"
@@ -384,9 +388,9 @@ class LocustRunner:
         )
         run_dir = self.ctx.sample_dir
 
-        utilization = utilization_session_for_distributed(
+        diagnostics = diagnostics_session_for_distributed(
             run_dir,
-            load_topology=topology,
+            load_hosts=topology.all_hosts,
             backend_hosts=self.plan.backend_hosts,
             app_port=int(self.plan.app_port),
             needs_db=self.plan.needs_db,
@@ -416,5 +420,5 @@ class LocustRunner:
             logger=self.logger,
         )
 
-        with utilization:
+        with diagnostics:
             DistributedLocustSession(config).run(target=target)

@@ -124,11 +124,12 @@ def ensure_docker_image(
 
 
 def resolve_locustfile(task: Any, run_dir: Path) -> Path | None:
+    from locust_bench.paths import locust_dir
     from scenario_files import SCENARIO_FILE_PATH
 
     shared = SCENARIO_FILE_PATH.joinpath(f"locustfiles/{task.scenario.id.lower()}.py")
     if task.scenario.locustfile:
-        locustfile = run_dir / f"locustfile-{task.scenario.id.lower()}.py"
+        locustfile = locust_dir(run_dir) / f"locustfile-{task.scenario.id.lower()}.py"
         locustfile.write_text(task.scenario.locustfile, encoding="utf-8")
         return locustfile
     if shared.is_file():

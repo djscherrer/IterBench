@@ -60,7 +60,7 @@ def warn_if_metrics_api_unavailable(
         logger.info("Metrics API OK (kubectl top nodes)")
         return
     logger.warning(
-        "Metrics API not available — perf runs will have empty stats/kubernetes/*.csv. "
+        "Metrics API not available — perf runs will have empty diagnostics/kubernetes/cluster/kubectl_top_*.csv. "
         "Install metrics-server: re-run ./scripts/k8s_setup_cluster.sh (idempotent), or "
         "kubectl apply -f %s && patch metrics-server with %s for kubeadm lab clusters.",
         _METRICS_SERVER_MANIFEST,

@@ -36,7 +36,7 @@ N_SAMPLES=""
 # --- 2. Project Scope ---
 ENVS="JavaScript-express"
 EXCLUDE_ENVS=""
-SCENARIOS="LexiTally_WordCountDatasets"
+SCENARIOS="LexiTally_WordCountDatasets TextWeaver_PatternRewriter"
 EXCLUDE_SCENARIOS=""
 TEMPERATURE="0.2"
 SAFETY_PROMPT="high_performance"
@@ -52,8 +52,8 @@ BENCH_RUN_TIME=""
 BAXBENCH_K8S_CLUSTER="baxbench-emulab"
 KUBECONFIG_PATH=""              # empty = path from cluster profile
 K8S_ITERATION=""                # pin one iteration; empty = use K8S_ITERATIONS
-K8S_EXPERIMENT="expb"               # e.g. adaptive-may20 → sampleN/k8s-experiments/<slug>/
-K8S_ITERATIONS="25"              # phases: iteration-001 .. iteration-NNN
+K8S_EXPERIMENT="exp-AAA"               # e.g. adaptive-may20 → sampleN/k8s-experiments/<slug>/
+K8S_ITERATIONS="10"              # phases: iteration-001 .. iteration-NNN
 K8S_SPEC_GEN="true"             # false = deploy-only with existing spec.yaml files
 K8S_WAIT_TIMEOUT="120"
 # Locust runs on profile load_master/workers; backend exposed via NodePort
@@ -67,7 +67,7 @@ K8S_REFINEMENT="auto"               # auto | deployment | code | off (empty = de
 #                02-code/code/, validate with functional tests, retry on failure
 #                (failed attempts preserved under 02-code/attempts/<NNN>/).
 BASELINE_CODE="regenerate"
-BASELINE_CODE_MAX_ATTEMPTS="3"      # only used when BASELINE_CODE=regenerate
+BASELINE_CODE_MAX_ATTEMPTS="5"      # only used when BASELINE_CODE=regenerate
 
 # Baseline (iteration-000) spec generation attempt cap. Each attempt is one
 # LLM call + static validation + deploy probe; failures are preserved under

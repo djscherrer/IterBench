@@ -158,9 +158,10 @@ class DatabaseManager:
     def stop_sampler_and_copy(self) -> None:
         if not self.sampler.remote_db_csv:
             return
+        from bench_diagnostics.paths import distributed_host_dir
+
         db_host = self.plan.db_hosts[0]
-        db_stats_dir = self.ctx.sample_dir / "stats" / host_slug(db_host)
-        db_stats_dir.mkdir(parents=True, exist_ok=True)
+        db_stats_dir = distributed_host_dir(self.ctx.sample_dir, host_slug(db_host))
         remote_exec.ssh(
             db_host,
             f"bash -lc \"touch {shlex.quote(self.sampler.remote_db_stop)} || true\"",

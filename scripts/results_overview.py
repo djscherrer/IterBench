@@ -120,10 +120,10 @@ def _load_test_results_json(p: Path) -> dict[str, Any] | None:
 
 def _locust_aggregate_failure_ratio(run_dir: Path) -> float | None:
     """
-    Best-effort: read Locust ``bench_results_*_stats.csv`` Aggregated row.
+    Best-effort: read Locust ``locust/results/<test>_stats.csv`` Aggregated row.
     Returns failure_count / request_count, or None if not computable.
     """
-    for stats in sorted(run_dir.glob("bench_results_*_stats.csv")):
+    for stats in sorted((run_dir / "locust" / "results").glob("*_stats.csv")):
         try:
             with stats.open("r", encoding="utf-8", errors="replace", newline="") as f:
                 r = csv.DictReader(f)
@@ -476,7 +476,7 @@ def main() -> int:
         default=0.5,
         help=(
             "Mark a perf run as failed if Locust Aggregated failures/requests exceeds this "
-            "(default: 0.5). Requires bench_results_*_stats.csv in the perf dir."
+            "(default: 0.5). Requires locust/results/*_stats.csv in the perf dir."
         ),
     )
     args = ap.parse_args()
