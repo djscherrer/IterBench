@@ -1,0 +1,308 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "MicroBlog API",
+    "description": "A social media API for posting, following, and feeds.",
+    "version": "1.0.0"
+  },
+  "paths": {
+    "/users": {
+      "post": {
+        "summary": "Register a new user",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "username": {
+                    "type": "string"
+                  },
+                  "full_name": {
+                    "type": "string"
+                  },
+                  "bio": {
+                    "type": "string"
+                  }
+                },
+                "required": ["username", "full_name"]
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "User created"
+          },
+          "400": {
+            "description": "Invalid input or username already exists"
+          }
+        }
+      }
+    },
+    "/posts": {
+      "post": {
+        "summary": "Create a new post",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "username": {
+                    "type": "string"
+                  },
+                  "content": {
+                    "type": "string"
+                  }
+                },
+                "required": ["username", "content"]
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Post created"
+          },
+          "400": {
+            "description": "Invalid input"
+          }
+        }
+      }
+    },
+    "/follow": {
+      "post": {
+        "summary": "Follow a user",
+        "description": "Follow another user. This operation must be idempotent: if the follower already follows the target user, the request should still return a successful response and must not create duplicate follow relationships or duplicate feed entries.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "follower_username": {
+                    "type": "string"
+                  },
+                  "following_username": {
+                    "type": "string"
+                  }
+                },
+                "required": ["follower_username", "following_username"]
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Successfully followed"
+          },
+          "200": {
+            "description": "Already following; no duplicate relationship was created"
+          },
+          "400": {
+            "description": "Invalid input"
+          }
+        }
+      }
+    },
+    "/feed": {
+      "get": {
+        "summary": "Get personalized feed",
+        "description": "Returns posts from users followed by the specified user, ordered by created_at descending with id descending as the deterministic tie-breaker. The feed includes followed users' posts only; it does not include the requesting user's own posts unless that user is explicitly followed. Results are paginated with a fixed maximum page size of 50 posts.",
+        "parameters": [
+          {
+            "name": "username",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "page",
+            "in": "query",
+            "required": false,
+            "description": "1-based page number. Defaults to 1.",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "default": 1
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Paginated list of feed posts. The items array must contain at most 50 posts.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "items": {
+                      "type": "array",
+                      "maxItems": 50,
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "integer"
+                          },
+                          "username": {
+                            "type": "string"
+                          },
+                          "content": {
+                            "type": "string"
+                          },
+                          "created_at": {
+                            "type": "string",
+                            "format": "date-time"
+                          },
+                          "like_count": {
+                            "type": "integer"
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "username",
+                          "content",
+                          "created_at",
+                          "like_count"
+                        ]
+                      }
+                    },
+                    "page": {
+                      "type": "integer",
+                      "minimum": 1
+                    },
+                    "page_size": {
+                      "type": "integer",
+                      "enum": [50]
+                    },
+                    "has_next": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": ["items", "page", "page_size", "has_next"]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/posts/{postId}/like": {
+      "post": {
+        "summary": "Like a post",
+        "description": "Like a post as a user. This operation must be idempotent per user and post: if the user already liked the post, the request should still return a successful response and must not increment like_count again.",
+        "parameters": [
+          {
+            "name": "postId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "username": {
+                    "type": "string"
+                  }
+                },
+                "required": ["username"]
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Liked"
+          },
+          "200": {
+            "description": "Already liked; like_count was not incremented again"
+          },
+          "400": {
+            "description": "Invalid input"
+          }
+        }
+      }
+    },
+    "/trending": {
+      "get": {
+        "summary": "Get top trending posts",
+        "description": "Returns posts ordered by like_count descending, with id descending as the deterministic tie-breaker. Results are paginated with a fixed maximum page size of 50 posts.",
+        "parameters": [
+          {
+            "name": "page",
+            "in": "query",
+            "required": false,
+            "description": "1-based page number. Defaults to 1.",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "default": 1
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Paginated list of trending posts. The items array must contain at most 50 posts.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "items": {
+                      "type": "array",
+                      "maxItems": 50,
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "integer"
+                          },
+                          "username": {
+                            "type": "string"
+                          },
+                          "content": {
+                            "type": "string"
+                          },
+                          "like_count": {
+                            "type": "integer"
+                          }
+                        },
+                        "required": ["id", "username", "content", "like_count"]
+                      }
+                    },
+                    "page": {
+                      "type": "integer",
+                      "minimum": 1
+                    },
+                    "page_size": {
+                      "type": "integer",
+                      "enum": [50]
+                    },
+                    "has_next": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": ["items", "page", "page_size", "has_next"]
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

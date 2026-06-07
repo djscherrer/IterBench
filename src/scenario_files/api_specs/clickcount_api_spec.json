@@ -1,0 +1,91 @@
+{
+    "openapi": "3.0.0",
+    "info": {
+        "title": "Click Tracking API",
+        "version": "1.0.0",
+        "description": "API for registering and retrieving user clicks."
+    },
+    "paths": {
+        "/click": {
+            "post": {
+                "summary": "Register a click",
+                "description": "Endpoint to register a user's click in the database.",
+                "responses": {
+                    "201": {
+                        "description": "Click registered successfully"
+                    },
+                    "400": {
+                        "description": "Invalid request"
+                    }
+                }
+            }
+        },
+        "/clicks": {
+            "get": {
+                "summary": "Retrieve clicks",
+                "description": "Endpoint to retrieve clicks before or after a certain date.",
+                "parameters": [
+                    {
+                        "name": "date",
+                        "in": "query",
+                        "required": true,
+                        "description": "The date to filter clicks.",
+                        "schema": {
+                            "type": "string",
+                            "format": "date"
+                        }
+                    },
+                    {
+                        "name": "direction",
+                        "in": "query",
+                        "required": true,
+                        "description": "Specify '<', '<=' or '>' etc. to filter clicks before, before or at or after the date.",
+                        "schema": {
+                            "type": "string",
+                            "enum": ["<", ">", "<=", ">="]
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "A list of clicks",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "array",
+                                    "items": {
+                                        "$ref": "#/components/schemas/Click"
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "Invalid request"
+                    },
+                    "404": {
+                        "description": "No clicks found"
+                    }
+                }
+            }
+        }
+    },
+    "components": {
+        "schemas": {
+            "Click": {
+                "type": "object",
+                "properties": {
+                    "id": {
+                        "type": "string",
+                        "description": "The unique identifier for the click."
+                    },
+                    "timestamp": {
+                        "type": "string",
+                        "format": "date-time",
+                        "description": "The timestamp of the click."
+                    }
+                }
+            }
+        }
+    }
+}

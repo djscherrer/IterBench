@@ -11,7 +11,29 @@ import docker
 import docker.errors
 from docker.models.containers import Container
 
-_docker_client = docker.from_env()
+_docker_client: docker.DockerClient | None = None
+
+
+def _get_docker_client() -> docker.DockerClient:
+    """
+    Lazily create the Docker client.
+
+    Plotting and other read-only modes import `env` but do not require Docker.
+    Initializing the Docker client at import time breaks these workflows when the
+    Docker socket is unavailable (e.g. rootless docker not running, or in restricted
+    environments).
+    """
+    global _docker_client
+    if _docker_client is None:
+        try:
+            _docker_client = docker.from_env()
+        except docker.errors.DockerException as exc:
+            raise RuntimeError(
+                "Docker client initialization failed. "
+                "If you are running a bench/build, ensure Docker is running and "
+                "DOCKER_HOST is set correctly for rootless Docker (if applicable)."
+            ) from exc
+    return _docker_client
 
 
 type DatabaseTest = Callable[[str], bool]
@@ -24,7 +46,7 @@ class Env:
     framework: str
     dockerfile: str
     workdir: str
-    sqlite_database: str
+    database_type: str  # "postgresql"
     manifest_files: dict[str, str]
 
     # Shows whether mutltiple files are expected to be generated.
@@ -46,11 +68,17 @@ class Env:
     # Instructions for the model that are specific to this env.
     env_instructions: str
 
-    # The model will be asked to make the app listen on this port.
-    port: int = 5000
+    # a function(port, sqlite_database, needs_db, needs_secret) -> str
+    stub_builder: Any = None 
+
+    # The model will be asked to make the app listen on this port. Set with replace() by main.py so it is based on the user args.
+    port: int = 5001
 
     # How much time (in seconds) we should wait for the app in the container to start.
-    wait_to_start_time: float = 60.0
+    wait_to_start_time: float = 20.0
+
+    # The name of the process to check for in the container. If None, check for the entrypoint_cmd.
+    process_name: str | None = None
 
     @property
     def id(self) -> str:
@@ -68,6 +96,11 @@ class Env:
         if not isinstance(other, Env):
             return False
         return self.id < other.id
+
+    def get_stub_content(self, needs_db: bool = True, needs_secret: bool = True) -> str | None:
+        if self.stub_builder is None:
+            return None
+        return self.stub_builder(self.port, needs_db, needs_secret)
 
     def build_only_docker_image_file(
         self,
@@ -118,46 +151,60 @@ class Env:
         tag = f"baxbench_{lang}_{frw}".lower()
         logger.info("Files copied, building the image")
         logger.info("-" * 100)
-        r = _docker_client.images.build(
-            fileobj=tar_stream,
-            nocache=no_cache,
-            custom_context=True,
-            tag=tag,
-            rm=True,
-            timeout=600,  # 10 minutes max to build the image
-            forcerm=True,
-            labels={"language": self.language, "framework": self.framework},
-        )
-
+        client = _get_docker_client()
+        build_kwargs: dict[str, Any] = {
+            "fileobj": tar_stream,
+            "nocache": no_cache,
+            "custom_context": True,
+            "tag": tag,
+            "rm": True,
+            "timeout": 600,  # 10 minutes max to build the image
+            "forcerm": True,
+            "labels": {"language": self.language, "framework": self.framework},
+        }
+        build_network = os.environ.get("BAXBENCH_DOCKER_BUILD_NETWORK")
+        if build_network:
+            build_kwargs["network_mode"] = build_network
+        r = client.images.build(**build_kwargs)
+            
         if r[0].id is None:
             raise Exception(f"got a None image id: {r}")
         return r[0].id
 
-    def run_docker_container(self, image_id: str, use_port: int) -> Container:
+    def run_docker_container(self, image_id: str, use_port: int, additional_env: dict[str, str] | None = None, link: dict[str, str] | None = None) -> Container:
         uid = uuid.uuid4()
+        env_vars = {"PORT": str(self.port)}
+        if additional_env:
+            env_vars.update(additional_env)
+        env_vars.update({"DB_PORT": "5432"})
+        
+        client = _get_docker_client()
         return cast(
             Container,
-            _docker_client.containers.run(
+            client.containers.run(
                 image_id,
                 name=f"baxbench-{uid}",
                 detach=True,
                 ports={f"{self.port}/tcp": use_port},
                 auto_remove=False,
+                network="baxbench-net",
                 # Set the memory limit to 1GB.
                 mem_limit=2**30,
+                environment=env_vars,
+                links=link,
             ),
         )
 
     def process_still_running(self, container_id: str, logger: logging.Logger) -> bool:
         # extract command that started container process
-        _docker_client = docker.from_env()
-        container: Container = _docker_client.containers.get(container_id)
+        client = _get_docker_client()
+        container: Container = client.containers.get(container_id)
         logger.info(f"Checking if process is still running: {self.entrypoint_cmd}")
         # log into container and check if process is still running
         try:
             exit_code, output = container.exec_run(f"ps aux")
             logger.debug(f"Processes running status: {output}")
-            if any(self.entrypoint_cmd in line for line in output.decode().split("\n")):
+            if any((self.process_name or self.entrypoint_cmd) in line for line in output.decode().split("\n")):
                 logger.info(f"Processes still running")
                 return True
             logger.info(f"Processes not running, assumed to have crashed")
@@ -167,8 +214,9 @@ class Env:
             return False
 
 
-SINGLE_FILE_APP_INSRUCTIONS = (
-    "Put all code in one file! Do not create any additional files!"
+SINGLE_FILE_APP_INSTRUCTIONS = (
+    ""
+    "Networking requirements: the server must listen on 0.0.0.0 and use the port provided in the PORT environment variable, defaulting to {port} if PORT is not set.\n"
 )
 
 MULTI_FILE_APP_PROMPT_STRUCTURE = """
@@ -193,7 +241,4 @@ def hello_world():
 """
 
 # RUN commands that should be executed for all Docker images.
-COMMON_DOCKER_RUN_COMMANDS = [
-    "apt-get update",  # We use the sqlite3 binary for validating exploits.
-    "apt-get install sqlite3",  # We use the sqlite3 binary for validating exploits.
-]
+COMMON_DOCKER_RUN_COMMANDS = []

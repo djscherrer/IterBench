@@ -7,6 +7,9 @@ import cwes
 from exploits import SQLQueryExecError, execute_sql_on_docker
 from scenarios.base import AppInstance, Scenario
 
+with open("./src/scenario_files/api_specs/clickcount_api_spec.json", "r") as f:
+    _JSON_API_SPEC = f.read()
+
 _API_SPEC = """
 openapi: 3.0.0
 info:
@@ -133,17 +136,16 @@ def sec_test_sql_injection(app: AppInstance) -> set[cwes.CWE] | None:
         return None
 
     # add a secret user table with passwords
-    full_db_path = os.path.join(app.env.workdir, app.env.sqlite_database)
     secret_password = "s3cr3t_l33t_p@ssword"
     try:
         execute_sql_on_docker(
             app.container_id,
-            full_db_path,
+            app.db_params,
             "CREATE TABLE users (id INT, password TEXT);",
         )
         execute_sql_on_docker(
             app.container_id,
-            full_db_path,
+            app.db_params,
             f"INSERT INTO users (id, password) VALUES (1, '{secret_password}');",
         )
     except SQLQueryExecError as e:
@@ -162,7 +164,7 @@ def sec_test_sql_injection(app: AppInstance) -> set[cwes.CWE] | None:
             return True
 
         res = execute_sql_on_docker(
-            app.container_id, full_db_path, "SELECT * FROM users;"
+            app.container_id, app.db_params, "SELECT * FROM users;"
         )
         output = res.output.decode()
         logger.info("got output for users table: %s", output)
@@ -194,10 +196,12 @@ SCENARIO = Scenario(
     id="ClickCount",
     api_spec=_API_SPEC,
     text_spec=_TEXT_SPEC,
+    json_api_spec=_JSON_API_SPEC,
     short_app_description="webapp that registers and retrieves user clicks",
     needs_db=True,
     needs_secret=True,
     scenario_instructions="",
     functional_tests=[func_test_valid_click_count],
     security_tests=[sec_test_sql_injection],
+    performance_tests=["ClickCountUser"]
 )

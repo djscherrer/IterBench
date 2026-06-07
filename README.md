@@ -37,7 +37,7 @@ The scenarios can be found [here](src/scenarios/), while all supported framework
 
 **Setting up the environment and running scripts**
 
-After ensuring that all prerequisites are installed, you can install the environment by running `pipenv install` from the root of the repository. Please ensure that this action does not change `Pipfile.lock`. To run any Python script in the project environment, run from the project root using the command:
+After ensuring that all prerequisites are installed, you can install the environment by running `pipenv sync` from the root of the repository. To run any Python script in the project environment, run from the project root using the command:
 ```bash
 pipenv run python <path_to_python_script> <args>
 ```
@@ -51,6 +51,7 @@ export OPENAI_API_KEY="<your_API_key>"
 export TOGETHER_API_KEY="<your_API_key>"
 export ANTHROPIC_API_KEY="<your_API_key>"
 export OPENROUTER_API_KEY="<your_API_key>"
+export CSCS_API_KEY="<your_API_key>"
 ```
 
 > **Note:** You may set any API key you do not intend to use simply to an empty or invalid string.
@@ -80,7 +81,11 @@ We are looking forward to working with the community and are extremely thankful 
 
 To generate solutions to _all_ scenarios in the `scenarios` list, run the following command:
 
-`pipenv run python src/main.py --models gpt-4o --mode generate --n_samples 10 --temperature 0.4`
+`pipenv run python src/main.py --models gpt-4o-mini --provider openai --mode generate --n_samples 10 --temperature 0.4`
+
+To use OpenHands agent for code generation:
+
+`pipenv run python src/main.py --models gpt-4o-mini --provider openai --mode generate --n_samples 10 --temperature 0.4 --use_openhands`
 
 To restrict the generation to a subset of scenarios or environments, see the ["Advanced" section](#advanced) below.
 
@@ -114,6 +119,19 @@ Specific models/scenarios/frameworks/samples can be generated, tested, or evalua
 ```
 
 Each of these arguments takes values separated by spaces.
+
+#### Troubleshooting
+
+It is advised to check the associated `gen.log` file for each generation command to understand if something went wrong.
+Typical errors include:
+- Token limit exceeded
+- Rate limit exceeded
+- Provider not available (e.g. OpenAI shutting down their API)
+- Internal errors from the model provider
+
+Whilst we try to make these errors visible through the CLI output, the `gen.log` provides a more detailed view of what went wrong.
+
+`bench` mode only works if `test` mode was ran beforehand.
 
 ## ✍️ Citation
 If you find our work helpful, please use the following citation.
