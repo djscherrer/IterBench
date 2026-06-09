@@ -1,4 +1,4 @@
-"""K8s benchmark LLM cost recording (delegates to ``llm_usage``)."""
+"""K8s benchmark LLM cost recording (delegates to ``llm.usage``)."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ import logging
 from pathlib import Path
 from typing import Any
 
-from llm_usage import (
+from llm.usage import (
     LlmUsageRecord,
     enforce_cost_budget,
     ensure_cost_section_in_summary,

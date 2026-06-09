@@ -1,7 +1,7 @@
 """
 Persistent, conversational :class:`Prompter` for k8s iterative experiments.
 
-Legacy BaxBench builds a fresh :class:`prompts.Prompter` for every LLM call —
+Legacy BaxBench builds a fresh :class:`llm.Prompter` for every LLM call —
 each call is a single ``[system, user(prompt)]`` exchange with no memory. For a
 k8s *experiment* (one sample, many iterations: baseline codegen → decision →
 code/spec refinement → …) we instead want **one conversation per
@@ -30,7 +30,7 @@ import logging
 from pathlib import Path
 from typing import Any
 
-from prompts import Prompter
+from llm import Prompter
 
 from .workspace import k8s_workspace_root, resolve_k8s_experiment_id
 

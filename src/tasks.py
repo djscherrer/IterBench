@@ -31,7 +31,7 @@ from distributed_bench.analysis import plot
 from db_metrics import PostgresSampler
 from db_manager import PostgresConnectionParams, PostgresManager
 from env.base import COMMON_DOCKER_RUN_COMMANDS, Env
-from prompts import Prompter
+from llm import Prompter
 from bench_models import RemoteConfig
 from distributed_bench import run_remote_bench
 from scenarios.base import AppInstance, FunctionalTest, Scenario, SecurityTest
@@ -707,7 +707,7 @@ class Task:
                 logger.info(f"Using OpenHands agent for code generation")
 
                 # Lazy import so single-shot runs don't require OpenHands deps.
-                from prompts_openhands import OpenHandsPrompter
+                from llm import OpenHandsPrompter
 
                 prompter_oh = OpenHandsPrompter(
                     env=self.env,

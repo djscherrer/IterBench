@@ -16,7 +16,7 @@ from typing import Any
 import yaml
 
 from env.base import Env
-from prompts import Prompter
+from llm import Prompter
 from scenarios.base import Scenario
 
 from ..feedback import IterationFeedback
@@ -562,6 +562,15 @@ def generate_k8s_workload_spec(
             session.append_assistant(last_raw)
         if per_attempt_dir is not None:
             (per_attempt_dir / RESPONSE_LOG_FILENAME).write_text(
+                last_raw + "\n", encoding="utf-8"
+            )
+        # Persist the raw reply next to the prompt regardless of validation
+        # outcome. ``write_spec_generation_artifacts`` only runs on success, so
+        # without this a failed refinement spec leaves a ``prompt.log`` with no
+        # ``response.log`` to inspect. On a passing attempt this is overwritten
+        # with the identical accepted reply.
+        if iteration_path is not None:
+            (iteration_spec_dir(iteration_path) / RESPONSE_LOG_FILENAME).write_text(
                 last_raw + "\n", encoding="utf-8"
             )
         try:

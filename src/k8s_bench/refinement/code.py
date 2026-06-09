@@ -12,7 +12,7 @@ from typing import Any
 
 import docker
 
-from prompts import Parser
+from llm import Parser
 
 from ..feedback import IterationFeedback
 from ..functional_failure import FunctionalFailureReport

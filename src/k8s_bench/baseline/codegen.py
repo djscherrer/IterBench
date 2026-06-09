@@ -29,7 +29,7 @@ from typing import Any
 
 import docker
 
-from prompts import Parser, Prompter
+from llm import Parser, Prompter
 
 from ..functional_failure import (
     FunctionalFailureReport,

@@ -47,7 +47,7 @@ except Exception as e:
 from db_manager import PostgresConnectionParams, PostgresManager
 from env.base import Env
 from env.templates import copy_template_to_workspace
-from prompts import KeyLocs
+from .keys import KeyLocs
 from scenarios.base import Scenario
 
 # from typing import Any
@@ -407,7 +407,8 @@ class OpenHandsPrompter:
                         condenser=condenser,
                         security_analyzer=None,
                         system_prompt_filename=str(
-                            pathlib.Path(__file__).parent / "openhands_system_prompt.j2"
+                            pathlib.Path(__file__).resolve().parent.parent
+                            / "openhands_system_prompt.j2"
                         ),
                     )
 
