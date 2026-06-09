@@ -122,6 +122,7 @@ def normalize_spec_placement(
             replicas=spec.backend.replicas,
             port=spec.backend.port,
             resources=spec.backend.resources,
+            web_concurrency=spec.backend.web_concurrency,
             env=spec.backend.env,
             placement_workers=tuple(dict.fromkeys(backend_workers)),
             spread_replicas=spec.backend.spread_replicas,
