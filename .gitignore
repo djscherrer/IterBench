@@ -353,3 +353,5 @@ results_snapshots/**/performance
 results_snapshots/**/*perf*/
 *.tar
 throughput*.csv
+
+prompts/*

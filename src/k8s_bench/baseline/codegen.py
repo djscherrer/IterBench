@@ -381,6 +381,7 @@ def _llm_call_for_baseline(
     *,
     task: Any,
     sample: int,
+    sample_dir: Path,
     vllm_port: int,
     max_retries: int,
     base_delay: float,
@@ -402,35 +403,27 @@ def _llm_call_for_baseline(
     prior code + the structured functional-test failure are appended so the
     model can correct its mistake instead of blindly re-rolling.
     """
-    prompter = Prompter(
-        env=task.env,
-        scenario=task.scenario,
-        model=task.model,
-        spec_type=task.spec_type,
-        safety_prompt=task.safety_prompt,
-        batch_size=1,
-        offset=sample,
-        temperature=task.temperature,
-        reasoning_effort=task.reasoning_effort,
-        vllm_port=vllm_port,
-        provider=task.provider,
-        use_stubs=task.use_stubs,
+    from ..session import get_experiment_session, persist_session
+
+    prompter = get_experiment_session(
+        task, sample_dir, sample, vllm_port=vllm_port, logger=logger
     )
+    # ``Prompter.__init__`` builds the canonical scenario prompt and stores it on
+    # ``self.prompt``; that's our baseline user message (the legacy ``generate``
+    # prompt). On a retry we append the structured failure feedback to it.
     prompt_text = prompter.prompt
     if failure_report is not None:
         feedback = _baseline_retry_feedback_block(
             prior_code=prior_code, failure_report=failure_report
         )
         prompt_text = f"{prompt_text}\n\n{feedback}"
-        prompter.prompt = prompt_text
 
     retries = 0
     while True:
         try:
-            responses = prompter.prompt_model(logger)
-            if not responses:
-                raise RuntimeError("LLM returned no completion for baseline code gen")
-            return prompt_text, responses[0], prompter
+            raw = prompter.send(prompt_text, logger)
+            persist_session(prompter, sample_dir, logger=logger)
+            return prompt_text, raw, prompter
         except Exception as exc:
             retries += 1
             if retries > max_retries:
@@ -614,6 +607,7 @@ def run_baseline_codegen(
                 prompt_text, raw_response, prompter = _llm_call_for_baseline(
                     task=task,
                     sample=sample,
+                    sample_dir=sample_dir,
                     vllm_port=vllm_port,
                     max_retries=max_retries,
                     base_delay=base_delay,

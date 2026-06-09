@@ -12,7 +12,7 @@ from typing import Any
 
 import docker
 
-from prompts import Parser, Prompter
+from prompts import Parser
 
 from ..feedback import IterationFeedback
 from ..functional_failure import FunctionalFailureReport
@@ -570,21 +570,11 @@ def regenerate_iteration_code(
     refine_log.write_text(prompt + "\n", encoding="utf-8")
     logger.info("code refinement prompt written to %s", refine_log)
 
-    prompter = Prompter(
-        env=task.env,
-        scenario=task.scenario,
-        model=task.model,
-        spec_type=task.spec_type,
-        safety_prompt=task.safety_prompt,
-        batch_size=1,
-        offset=sample,
-        temperature=task.temperature,
-        reasoning_effort=task.reasoning_effort,
-        vllm_port=vllm_port,
-        provider=task.provider,
-        use_stubs=task.use_stubs,
+    from ..session import get_experiment_session, persist_session
+
+    prompter = get_experiment_session(
+        task, sample_dir, sample, vllm_port=vllm_port, logger=logger
     )
-    prompter.prompt = prompt
 
     retries = 0
     while True:
@@ -592,7 +582,7 @@ def regenerate_iteration_code(
             from ..llm_cost import check_k8s_llm_budget, record_k8s_llm_call
 
             check_k8s_llm_budget(sample_dir)
-            responses = prompter.prompt_model(logger)
+            raw = prompter.send(prompt, logger)
             idx, _kind, _failed = parse_iteration_folder_name(iteration_path.name)
             iter_id = (
                 iteration_id_for_index(idx)
@@ -608,9 +598,7 @@ def regenerate_iteration_code(
                 iteration_id=iter_id,
                 note=f"attempt={retries + 1}",
             )
-            if not responses:
-                raise RuntimeError("LLM returned no completion for code refinement")
-            raw = responses[0]
+            persist_session(prompter, sample_dir, logger=logger)
             (phase_dir / RESPONSE_LOG_FILENAME).write_text(
                 raw + "\n", encoding="utf-8"
             )

@@ -436,6 +436,7 @@ def generate_k8s_workload_spec(
     iteration_index: int = 0,
     total_iterations: int = 0,
     enable_attempts: bool = False,
+    session: "Prompter | None" = None,
 ) -> tuple[K8sWorkloadSpec, str, list[str]]:
     """Call the configured LLM and return (spec, raw_response, validation_warnings).
 
@@ -494,26 +495,43 @@ def generate_k8s_workload_spec(
                 (per_attempt_dir / PROMPT_LOG_FILENAME).write_text(
                     prompt + "\n", encoding="utf-8"
                 )
-        prompter = Prompter(
-            env=env,
-            scenario=scenario,
-            model=model,
-            spec_type="openapi",
-            safety_prompt=safety_prompt,
-            batch_size=1,
-            offset=0,
-            temperature=temperature,
-            reasoning_effort=reasoning_effort,
-            vllm_port=vllm_port,
-            provider=provider,
-            use_stubs=False,
-        )
-        prompter.prompt = prompt
-        if sample_dir is not None:
-            from ..llm_cost import check_k8s_llm_budget, record_k8s_llm_call
+        if session is not None:
+            # Conversation mode: reuse the shared per-experiment Prompter so the
+            # spec turn is appended to the running thread. Mirror the rollback
+            # semantics of ``Prompter.send`` but keep the user turn long enough
+            # to record an ``empty_response`` attempt below if needed.
+            prompter = session
+            prompter.append_user(prompt)
+            if sample_dir is not None:
+                from ..llm_cost import check_k8s_llm_budget, record_k8s_llm_call
 
-            check_k8s_llm_budget(sample_dir)
-        responses = prompter.prompt_model(logger)
+                check_k8s_llm_budget(sample_dir)
+            try:
+                responses = prompter.prompt_model(logger)
+            except Exception:
+                prompter.history.pop()
+                raise
+        else:
+            prompter = Prompter(
+                env=env,
+                scenario=scenario,
+                model=model,
+                spec_type="openapi",
+                safety_prompt=safety_prompt,
+                batch_size=1,
+                offset=0,
+                temperature=temperature,
+                reasoning_effort=reasoning_effort,
+                vllm_port=vllm_port,
+                provider=provider,
+                use_stubs=False,
+            )
+            prompter.prompt = prompt
+            if sample_dir is not None:
+                from ..llm_cost import check_k8s_llm_budget, record_k8s_llm_call
+
+                check_k8s_llm_budget(sample_dir)
+            responses = prompter.prompt_model(logger)
         if sample_dir is not None:
             record_k8s_llm_call(
                 prompter=prompter,
@@ -526,6 +544,9 @@ def generate_k8s_workload_spec(
                 note=f"validation_attempt={attempt} global_attempt={global_attempt_idx}",
             )
         if not responses:
+            if session is not None and session.history:
+                # Drop the dangling user turn so a retry re-appends cleanly.
+                session.history.pop()
             if per_attempt_dir is not None:
                 _write_spec_attempt_meta(
                     per_attempt_dir,
@@ -537,6 +558,8 @@ def generate_k8s_workload_spec(
                 )
             raise RuntimeError("LLM returned no completion for k8s spec generation")
         last_raw = responses[0]
+        if session is not None:
+            session.append_assistant(last_raw)
         if per_attempt_dir is not None:
             (per_attempt_dir / RESPONSE_LOG_FILENAME).write_text(
                 last_raw + "\n", encoding="utf-8"
@@ -789,6 +812,11 @@ def generate_k8s_specs_for_task(
                 "baxbench.dev/spec-gen": "true",
             }
 
+            from ..session import get_experiment_session, persist_session
+
+            spec_session = get_experiment_session(
+                task, sample_dir, sample, vllm_port=vllm_port, logger=logger
+            )
             retries = 0
             while True:
                 try:
@@ -808,7 +836,9 @@ def generate_k8s_specs_for_task(
                         prior_feedback=prior_feedback,
                         sample_dir=sample_dir,
                         iteration_path=iteration_path,
+                        session=spec_session,
                     )
+                    persist_session(spec_session, sample_dir, logger=logger)
                     spec = K8sWorkloadSpec(
                         iteration_id=spec.iteration_id,
                         namespace=spec.namespace,
@@ -942,6 +972,11 @@ def generate_and_write_spec(
         sample_dir, fallback=task.get_code_dir(results_dir, sample)
     )
     app_hints = _read_app_hints(code_dir)
+    from ..session import get_experiment_session, persist_session
+
+    spec_session = get_experiment_session(
+        task, sample_dir, sample, vllm_port=vllm_port, logger=logger
+    )
     try:
         spec, raw, warnings = generate_k8s_workload_spec(
             env=task.env,
@@ -964,7 +999,9 @@ def generate_and_write_spec(
             iteration_index=iteration_index,
             total_iterations=total_iterations,
             enable_attempts=enable_attempts,
+            session=spec_session,
         )
+        persist_session(spec_session, sample_dir, logger=logger)
         spec = _apply_task_labels_to_spec(
             spec, task=task, results_dir=results_dir, sample=sample
         )

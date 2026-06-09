@@ -9,8 +9,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
 
-from prompts import Prompter
-
 from ..feedback import IterationFeedback
 from ..workspace import latest_code_dir
 from .code import _read_full_code_for_decision
@@ -202,21 +200,12 @@ def decide_refinement_action(
     decision_dir.mkdir(parents=True, exist_ok=True)
     (decision_dir / PROMPT_LOG_FILENAME).write_text(prompt + "\n", encoding="utf-8")
 
-    prompter = Prompter(
-        env=task.env,
-        scenario=task.scenario,
-        model=task.model,
-        spec_type=task.spec_type,
-        safety_prompt=task.safety_prompt,
-        batch_size=1,
-        offset=0,
-        temperature=task.temperature,
-        reasoning_effort=task.reasoning_effort,
-        vllm_port=vllm_port,
-        provider=task.provider,
-        use_stubs=task.use_stubs,
+    from ..session import get_experiment_session, persist_session
+
+    sample_dir = task.get_sample_dir(results_dir, sample)
+    prompter = get_experiment_session(
+        task, sample_dir, sample, vllm_port=vllm_port, logger=logger
     )
-    prompter.prompt = prompt
 
     import random
     import time
@@ -227,19 +216,17 @@ def decide_refinement_action(
         try:
             from ..llm_cost import check_k8s_llm_budget, record_k8s_llm_call
 
-            check_k8s_llm_budget(task.get_sample_dir(results_dir, sample))
-            responses = prompter.prompt_model(logger)
+            check_k8s_llm_budget(sample_dir)
+            last_raw = prompter.send(prompt, logger)
             record_k8s_llm_call(
                 prompter=prompter,
                 call_type="refinement_decision",
-                sample_dir=task.get_sample_dir(results_dir, sample),
+                sample_dir=sample_dir,
                 logger=logger,
                 artifact_dir=iteration_decision_dir(iteration_path),
                 iteration_id=next_iteration_id,
             )
-            if not responses:
-                raise RuntimeError("LLM returned no completion for refinement decision")
-            last_raw = responses[0]
+            persist_session(prompter, sample_dir, logger=logger)
             return parse_refinement_decision(
                 last_raw,
                 iteration_index=iteration_index,

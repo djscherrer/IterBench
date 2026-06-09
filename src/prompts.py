@@ -5,6 +5,7 @@ import random
 import re
 import time
 import traceback
+from datetime import datetime
 from enum import Enum
 from typing import Any, cast, no_type_check
 from venv import logger
@@ -20,6 +21,18 @@ from llm_usage import TokenUsage, usage_from_anthropic, usage_from_openai_style
 from scenarios.base import Scenario
 
 _SYSTEM_PROMPT = "You are an experienced full-stack developer"
+
+
+def _prompt_log_dir() -> pathlib.Path:
+    """
+    Top-level directory (sibling of ``results/``) where every outgoing prompt
+    is dumped for quick inspection. Override with ``BAXBENCH_PROMPT_LOG_DIR``.
+    Defaults to ``<repo_root>/prompts`` (``src/prompts.py`` → repo root).
+    """
+    override = os.environ.get("BAXBENCH_PROMPT_LOG_DIR")
+    if override:
+        return pathlib.Path(override)
+    return pathlib.Path(__file__).resolve().parent.parent / "prompts"
 
 
 class KeyLocs(Enum):
@@ -196,6 +209,172 @@ class Prompter:
         )
         self.last_usage: TokenUsage | None = None
 
+        # --- Conversation mode (opt-in) ---------------------------------
+        # When ``conversational`` is True the provider methods send the full
+        # ``history`` (a list of {role, content} turns) instead of the single
+        # ``self.prompt`` user message. This lets one ``Prompter`` instance be
+        # reused across k8s iterations so the model sees prior prompts and its
+        # own prior responses. ``history`` is empty by default, so every
+        # existing single-shot call site is unaffected.
+        self.conversational: bool = False
+        self.history: list[dict[str, str]] = []
+        # Stable per-conversation key (set by the k8s session factory). Used as
+        # OpenAI's ``prompt_cache_key`` so all calls in one experiment route to
+        # the same cache shard. ``None`` for legacy single-shot callers.
+        self.cache_key: str | None = None
+
+    # ------------------------------------------------------------------
+    # Conversation helpers
+    # ------------------------------------------------------------------
+    def _chat_turns(self) -> list[dict[str, str]]:
+        """User/assistant turns to send (excludes the system prompt).
+
+        Conversation mode → the accumulated ``history``. Otherwise the legacy
+        single user message built from ``self.prompt``.
+        """
+        if self.conversational and self.history:
+            return [dict(turn) for turn in self.history]
+        return [{"role": "user", "content": self.prompt}]
+
+    def append_user(self, content: str) -> None:
+        """Append a user turn to the conversation."""
+        self.history.append({"role": "user", "content": content})
+
+    def append_assistant(self, content: str) -> None:
+        """Append an assistant turn to the conversation."""
+        self.history.append({"role": "assistant", "content": content})
+
+    def send(self, content: str, logger: logging.Logger) -> str:
+        """
+        Append ``content`` as a user turn, query the model with the full
+        conversation, append the assistant reply, and return it.
+
+        Only mutates ``history`` on a *successful* completion — transient
+        provider errors raised by :meth:`prompt_model` leave the conversation
+        unchanged so retries do not duplicate the user turn.
+        """
+        if not self.conversational:
+            raise RuntimeError(
+                "Prompter.send() requires conversational=True; use a session "
+                "from k8s_bench.session.get_experiment_session()"
+            )
+        self.append_user(content)
+        try:
+            responses = self.prompt_model(logger)
+        except Exception:
+            # Roll back the just-added user turn so a retry re-appends cleanly.
+            self.history.pop()
+            raise
+        if not responses:
+            self.history.pop()
+            raise RuntimeError("LLM returned no completion")
+        reply = responses[0]
+        self.append_assistant(reply)
+        return reply
+
+    def _system_role(self) -> str | None:
+        """
+        Role under which the system prompt is embedded in the ``messages`` list,
+        or ``None`` when it is sent out-of-band (anthropic) / omitted (o1-mini).
+        """
+        if self.provider == "anthropic":
+            return None
+        if getattr(self, "openai_reasoning", False):
+            return "developer"
+        if self.model == "o1-mini":
+            return None
+        return "system"
+
+    def _provider_messages(self) -> list[dict[str, str]]:
+        """
+        The exact value passed as ``messages=`` to the current provider.
+
+        This is the single source of truth shared by every ``prompt_*`` method
+        **and** the outgoing-prompt dump, so what you inspect on disk is exactly
+        what is sent on the wire. It is append-only across a conversation (the
+        system message + prior turns never change), which is what keeps the
+        provider-side prefix cache valid.
+        """
+        turns = self._chat_turns()
+        role = self._system_role()
+        if role is None:
+            return turns
+        return [{"role": role, "content": self.system_prompt}, *turns]
+
+    # Anthropic cache TTL: 1h so the prefix survives multi-minute benchmark gaps
+    # (the only options are "5m" and "1h").
+    _ANTHROPIC_CACHE_TTL = "1h"
+
+    def _anthropic_system_param(self) -> Any:
+        """
+        System prompt for the Anthropic call.
+
+        In conversation mode it is returned as a typed text block carrying a
+        ``cache_control`` breakpoint so the (stable) system prefix is cached;
+        otherwise it stays a plain string (legacy behaviour, no caching).
+        """
+        if not self.conversational:
+            return self.system_prompt
+        return [
+            {
+                "type": "text",
+                "text": self.system_prompt,
+                "cache_control": {
+                    "type": "ephemeral",
+                    "ttl": self._ANTHROPIC_CACHE_TTL,
+                },
+            }
+        ]
+
+    def _anthropic_messages(self) -> list[dict[str, Any]]:
+        """
+        Anthropic ``messages`` payload.
+
+        **Cache correctness:** in conversation mode *every* turn is rendered as
+        the same typed content-block shape — ``content: [{"type": "text",
+        "text": ...}]`` — and only the **last** block additionally carries a
+        rolling ``cache_control`` breakpoint. This is the key fix for prompt
+        caching: previously an earlier turn was replayed as a plain ``str`` but
+        had been sent as a typed array when it was last, so the same text
+        serialized two different ways across calls and the cached prefix never
+        matched. Keeping a single, stable wire shape means a turn is
+        byte-identical whether it is the last message now or an earlier message
+        on the next iteration (the ``cache_control`` marker is metadata, not
+        content, so moving it does not change the cached tokens). The breakpoint
+        therefore caches the whole conversation-so-far each call; the next call
+        reads that prefix at the discounted rate and only writes the new delta.
+
+        Non-conversational callers keep the legacy plain-string shape (no
+        caching), exactly as before.
+        """
+        turns = self._chat_turns()
+        if not self.conversational or not turns:
+            return turns
+        last_idx = len(turns) - 1
+        out: list[dict[str, Any]] = []
+        for i, turn in enumerate(turns):
+            block: dict[str, Any] = {"type": "text", "text": turn["content"]}
+            if i == last_idx:
+                block["cache_control"] = {
+                    "type": "ephemeral",
+                    "ttl": self._ANTHROPIC_CACHE_TTL,
+                }
+            out.append({"role": turn["role"], "content": [block]})
+        return out
+
+    def _openai_cache_kwargs(self) -> dict[str, Any]:
+        """
+        ``create()`` kwargs enabling OpenAI's 24h prompt-cache retention for
+        conversational runs (no-op otherwise). ``prompt_cache_key`` pins all
+        calls in one experiment to the same cache shard.
+        """
+        if not (self.conversational and self.provider == "openai"):
+            return {}
+        kwargs: dict[str, Any] = {"prompt_cache_retention": "24h"}
+        if self.cache_key:
+            kwargs["prompt_cache_key"] = self.cache_key
+        return kwargs
+
     def _store_openai_usage(self, usage: Any, *, provider: str) -> None:
         self.last_usage = usage_from_openai_style(
             usage, model=self.model, provider=provider
@@ -238,8 +417,12 @@ class Prompter:
         context = context_lengths.get(self.model)
         if context is None:
             return default_cap
-        prompt_tokens = self._estimate_tokens(self.system_prompt) + \
-                        self._estimate_tokens(self.prompt)
+        prompt_tokens = self._estimate_tokens(self.system_prompt)
+        if self.conversational and self.history:
+            for turn in self.history:
+                prompt_tokens += self._estimate_tokens(turn.get("content", ""))
+        else:
+            prompt_tokens += self._estimate_tokens(self.prompt)
         remaining = context - prompt_tokens - slack
         if remaining <= 0:
             raise ValueError(
@@ -256,6 +439,9 @@ class Prompter:
         try:
             if self.anthropic_thinking:
                 text, thinking = "", ""
+                thinking_extra: dict[str, Any] = {}
+                if self.conversational:
+                    thinking_extra["system"] = self._anthropic_system_param()
                 with client.messages.stream(
                     model=self.model,
                     thinking={
@@ -264,10 +450,9 @@ class Prompter:
                         # "budget_tokens": self.anthropic_thinking_lengths[self.model] - 1,
                         "type": "adaptive",
                     },
-                    messages=[
-                        {"role": "user", "content": self.prompt},
-                    ],
+                    messages=self._anthropic_messages(),
                     max_tokens=self.anthropic_thinking_lengths[self.model],
+                    **thinking_extra,
                 ) as stream:
                     for event in stream:
                         if event.type == "content_block_delta":
@@ -284,10 +469,8 @@ class Prompter:
             else:
                 response = client.messages.create(
                     model=self.model,
-                    system=self.system_prompt,
-                    messages=[
-                        {"role": "user", "content": self.prompt},
-                    ],
+                    system=self._anthropic_system_param(),
+                    messages=self._anthropic_messages(),
                     temperature=self.temperature,
                     max_tokens=8192 if "claude-3-5-" in self.model else 4096,
                 )
@@ -339,10 +522,7 @@ class Prompter:
                 extra_kwargs = {}
             response = client.chat.completions.create(
                 model=open_router_model,
-                messages=[
-                    {"role": "system", "content": self.system_prompt},
-                    {"role": "user", "content": self.prompt},
-                ],
+                messages=self._provider_messages(),
                 n=1,
                 temperature=self.temperature,
                 max_tokens=self._completion_token_budget(
@@ -392,10 +572,7 @@ class Prompter:
                 extra_kwargs["reasoning_effort"] = self.reasoning_effort
             response = client.chat.completions.create(
                 model=self.model,
-                messages=[
-                    {"role": "system", "content": self.system_prompt},
-                    {"role": "user", "content": self.prompt},
-                ],
+                messages=self._provider_messages(),
                 n=1,
                 temperature=self.temperature,
                 max_tokens=self._completion_token_budget(
@@ -445,10 +622,7 @@ class Prompter:
         try:
             response = client.chat.completions.create(
                 model=self.model,
-                messages=[
-                    {"role": "system", "content": self.system_prompt},
-                    {"role": "user", "content": self.prompt},
-                ],
+                messages=self._provider_messages(),
                 n=1,
                 temperature=self.temperature,
                 max_tokens=self._completion_token_budget(
@@ -492,26 +666,9 @@ class Prompter:
                 extra_kwargs["max_tokens"] = self._completion_token_budget(
                     context_lengths=Prompter.openai_together_context_lengths,
                 )
-            # Prepare the message
-            messages: list[Any] = []
-            if self.openai_reasoning:
-                messages.append(
-                    cast(
-                        ChatCompletionMessageParam,
-                        {"role": "developer", "content": self.system_prompt},
-                    )
-                )
-            elif self.model == "o1-mini":
-                # No sysprompt
-                pass
-            else:
-                messages.append(
-                    cast(
-                        ChatCompletionMessageParam,
-                        {"role": "system", "content": self.system_prompt},
-                    )
-                )
-            messages.append({"role": "user", "content": self.prompt})
+            extra_kwargs.update(self._openai_cache_kwargs())
+            # Prepare the message (single source of truth shared with the dump)
+            messages: list[Any] = self._provider_messages()
 
             # Query
             completions = client.chat.completions.create(
@@ -561,26 +718,9 @@ class Prompter:
                 extra_kwargs["max_tokens"] = self._completion_token_budget(
                     context_lengths=Prompter.openai_together_context_lengths,
                 )
-            # Prepare the message
-            messages: list[Any] = []
-            if self.openai_reasoning:
-                messages.append(
-                    cast(
-                        ChatCompletionMessageParam,
-                        {"role": "developer", "content": self.system_prompt},
-                    )
-                )
-            elif self.model == "o1-mini":
-                # No sysprompt
-                pass
-            else:
-                messages.append(
-                    cast(
-                        ChatCompletionMessageParam,
-                        {"role": "system", "content": self.system_prompt},
-                    )
-                )
-            messages.append({"role": "user", "content": self.prompt})
+            extra_kwargs.update(self._openai_cache_kwargs())
+            # Prepare the message (single source of truth shared with the dump)
+            messages: list[Any] = self._provider_messages()
 
             # Query
             completions = client.chat.completions.create(
@@ -611,8 +751,95 @@ class Prompter:
             raise e
 
     @no_type_check
+    def _dump_outgoing_prompt(self, logger: logging.Logger) -> None:
+        """
+        Dump the **exact** request payload about to be sent to the provider.
+
+        Built from :meth:`_provider_messages` (the same object the ``prompt_*``
+        method passes as ``messages=``), so the file mirrors the wire payload
+        byte-for-byte in content, role and order. Two artifacts are written:
+
+        * ``<ts>_..._<provider>_<model>.json`` — the raw payload (``model``,
+          out-of-band ``system`` when applicable, and the ``messages`` array).
+        * ``<ts>_..._<provider>_<model>.txt`` — a human-readable rendering.
+
+        Message blocks are labelled with **absolute, append-only indices**
+        (``message 001``, ``002`` …) and carry no per-call varying counts, so
+        consecutive dumps share an identical leading region exactly when the
+        provider-side prefix cache stays valid. Best-effort: a dump failure
+        must never break an actual LLM call.
+        """
+        try:
+            import json
+
+            dump_dir = _prompt_log_dir()
+            dump_dir.mkdir(parents=True, exist_ok=True)
+            now = datetime.now()
+            ts = now.strftime("%Y%m%d-%H%M%S-%f")
+            model_slug = re.sub(r"[^A-Za-z0-9._-]+", "-", str(self.model))
+            stem = f"{ts}_pid{os.getpid()}_{self.provider}_{model_slug}"
+
+            # Mirror the *actual* wire payload per provider so the dump can be
+            # used to verify cache-prefix stability across calls.
+            if self.provider == "anthropic":
+                # Anthropic uses typed message blocks (rolling cache_control)
+                # plus a separate ``system`` param. The thinking variant only
+                # sends ``system`` when conversational; the non-thinking
+                # ``messages.create`` path always sends it.
+                messages = self._anthropic_messages()
+                sends_system = (not self.anthropic_thinking) or self.conversational
+                out_of_band_system = (
+                    self._anthropic_system_param() if sends_system else None
+                )
+            else:
+                messages = self._provider_messages()
+                out_of_band_system = None
+
+            payload = {
+                "provider": self.provider,
+                "model": self.model,
+                "temperature": getattr(self, "temperature", None),
+                "system_out_of_band": out_of_band_system,
+                "messages": messages,
+            }
+            (dump_dir / f"{stem}.json").write_text(
+                json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8"
+            )
+
+            def _render(content: Any) -> str:
+                # Content/system may be a plain string or typed content blocks.
+                if isinstance(content, str):
+                    return content
+                return json.dumps(content, indent=2, ensure_ascii=False)
+
+            lines: list[str] = [
+                f"# timestamp: {now.isoformat()}",
+                f"# provider: {self.provider}",
+                f"# model: {self.model}",
+                f"# temperature: {getattr(self, 'temperature', None)}",
+                f"# conversational: {getattr(self, 'conversational', False)}",
+                f"# messages: {len(messages)}",
+            ]
+            if out_of_band_system is not None:
+                lines += [
+                    "",
+                    "----- system (out-of-band) -----",
+                    _render(out_of_band_system),
+                ]
+            for i, msg in enumerate(messages, start=1):
+                lines.append("")
+                lines.append(f"----- message {i:03d} [{msg.get('role', '')}] -----")
+                lines.append(_render(msg.get("content", "")))
+            (dump_dir / f"{stem}.txt").write_text(
+                "\n".join(lines), encoding="utf-8"
+            )
+            logger.info("Wrote outgoing prompt dump to %s.{json,txt}", dump_dir / stem)
+        except Exception as exc:  # never let logging break a real call
+            logger.warning("Could not write outgoing prompt dump: %s", exc)
+
     def prompt_model(self, logger: logging.Logger) -> list[str]:
         self.last_usage = None
+        self._dump_outgoing_prompt(logger)
         if self.provider == "anthropic":
             responses = self.prompt_anthropic(logger)
         elif self.provider =="openrouter":
