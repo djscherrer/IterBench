@@ -11,6 +11,7 @@ from .models import (
     POSTGRES_USER,
 )
 from .placement import _pod_spec_affinity, _postgres_container_args
+from .postgres_tuning import postgres_tuning_bitnami_env
 
 # Bitnami replication image. Short tags like ``bitnami/postgresql:17`` were removed
 # from docker.io/bitnami (2025 catalog change); use the legacy repo for PG 17.
@@ -115,7 +116,7 @@ def _standalone_postgres_manifests(
 
 
 def _bitnami_primary_env(spec: K8sWorkloadSpec) -> list[dict[str, str]]:
-    return [
+    env = [
         {"name": "POSTGRESQL_REPLICATION_MODE", "value": "master"},
         {"name": "POSTGRESQL_REPLICATION_USER", "value": REPLICATION_USER},
         {"name": "POSTGRESQL_REPLICATION_PASSWORD", "value": REPLICATION_PASSWORD},
@@ -127,13 +128,15 @@ def _bitnami_primary_env(spec: K8sWorkloadSpec) -> list[dict[str, str]]:
             "value": str(spec.database.max_connections),
         },
     ]
+    env.extend(postgres_tuning_bitnami_env(spec.database.tuning))
+    return env
 
 
 def _bitnami_replica_env(spec: K8sWorkloadSpec) -> list[dict[str, str]]:
     master_host = (
         f"{spec.database.service_name}.{spec.namespace}.svc.cluster.local"
     )
-    return [
+    env = [
         {"name": "POSTGRESQL_REPLICATION_MODE", "value": "slave"},
         {"name": "POSTGRESQL_MASTER_HOST", "value": master_host},
         {"name": "POSTGRESQL_MASTER_PORT_NUMBER", "value": str(spec.database.port)},
@@ -152,6 +155,8 @@ def _bitnami_replica_env(spec: K8sWorkloadSpec) -> list[dict[str, str]]:
             "value": str(spec.database.max_connections),
         },
     ]
+    env.extend(postgres_tuning_bitnami_env(spec.database.tuning))
+    return env
 
 
 def _replicated_postgres_manifests(

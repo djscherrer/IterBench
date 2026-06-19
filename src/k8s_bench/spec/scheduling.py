@@ -11,6 +11,7 @@ from ..cluster.capacity import (
     _parse_memory_to_bytes,
 )
 from .models import K8sWorkloadSpec, ResourceSpec
+from .postgres_tuning import validate_postgres_tuning
 
 DEFAULT_APP_POOL_MAX = 20
 _NODE_RESERVE_FRACTION = 0.10
@@ -135,6 +136,7 @@ def normalize_spec_placement(
             replicas=spec.database.replicas,
             resources=spec.database.resources,
             max_connections=spec.database.max_connections,
+            tuning=spec.database.tuning,
             placement_worker=db_worker,
             placement_workers=tuple(dict.fromkeys(db_workers)),
         ),
@@ -269,6 +271,13 @@ def validate_spec_against_cluster(
                 f"backend.web_concurrency, raise max_connections, or shrink the "
                 f"app connection pool."
             )
+        tuning_errors, tuning_warnings = validate_postgres_tuning(
+            spec.database.tuning,
+            memory_limit=spec.database.resources.memory_limit,
+            max_connections=spec.database.max_connections,
+        )
+        errors.extend(tuning_errors)
+        warnings.extend(tuning_warnings)
 
     be_cpu_req = _request_cpu_m(spec.backend.resources)
     be_mem_req = _request_mem_bytes(spec.backend.resources)

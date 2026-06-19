@@ -22,6 +22,11 @@ database:
   port: 5432
   replicas: 1
   max_connections: 100
+  tuning:
+    shared_buffers: 256Mi
+    effective_cache_size: 768Mi
+    work_mem: 8Mi
+    max_parallel_workers_per_gather: 2
   placement:
     worker: node5   # optional pin; or workers: [node3, node4] for allow-list
   resources:

@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from .models import K8sWorkloadSpec
+from .postgres_tuning import postgres_tuning_container_args
 
 
 def _required_node_affinity(node_names: tuple[str, ...]) -> dict[str, Any] | None:
@@ -87,7 +88,9 @@ def _pod_spec_affinity(
 def _postgres_container_args(spec: K8sWorkloadSpec) -> list[str]:
     if not spec.database.enabled:
         return []
-    return [
+    args = [
         "-c",
         f"max_connections={spec.database.max_connections}",
     ]
+    args.extend(postgres_tuning_container_args(spec.database.tuning))
+    return args

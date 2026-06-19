@@ -228,6 +228,11 @@ Use **benchmark feedback** from prior iterations to refine replicas and resource
 **`database`** (Postgres):
 - `replicas`: `1` = single standalone pod; `N>1` = **1 primary + (N−1) streaming read replicas** (async WAL replication; standard K8s pattern). Writes go to the primary via the `postgres` Service (`DB_HOST` env var). When `N>1`, the framework also exposes `DB_READ_HOST` (the `postgres-read` Service, load-balanced across replica pods). The **application code** decides whether to use it. **Bumping replicas only improves goodput if the code uses `DB_READ_HOST` for read-only queries** — otherwise replicas sit idle while the primary remains the bottleneck. If the current code only references `DB_HOST` (single pool), keep `replicas: 1` until a code refinement adds a read pool.
 - `max_connections`: primary connection limit (`max_connections` on primary only)
+- `tuning`: optional Postgres performance settings applied to **every** database pod (primary + replicas). Use Kubernetes memory quantities (`256Mi`, `1Gi`) for memory GUCs.
+  - `shared_buffers`: in-memory page cache (often ~25% of pod memory limit; must not exceed `database.resources.memory_limit`)
+  - `effective_cache_size`: planner hint for OS + PG cache (can be ~50–75% of pod memory)
+  - `work_mem`: per-sort/hash memory per operation (keep modest under high `max_connections`)
+  - `max_parallel_workers_per_gather`: parallel workers per query gather node (0 disables parallel scans for that query)
 - `resources`: per **database pod** (primary and each replica use the same spec)
 - `placement.worker`: pin all DB pods to one node (only if combined requests fit that node)
 - `placement.workers`: allow-list of nodes for DB pods
@@ -263,6 +268,11 @@ database:
   enabled: true
   replicas: <int>                    # 1 = standalone; N>1 = 1 primary + (N-1) read replicas
   max_connections: <int>             # primary only; must fit backend.replicas × web_concurrency × {pool_max}
+  tuning:                            # optional; omit sub-keys to keep Postgres defaults
+    shared_buffers: <quantity>       # e.g. 256Mi, 1Gi
+    effective_cache_size: <quantity>
+    work_mem: <quantity>             # e.g. 4Mi, 16Mi
+    max_parallel_workers_per_gather: <int>
   resources:
     cpu_request: <quantity>
     cpu_limit: <quantity>

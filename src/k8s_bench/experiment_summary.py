@@ -302,6 +302,22 @@ def _diff_workers(name: str, prev: tuple[str, ...], cur: tuple[str, ...]) -> str
     return f"- **{name}**: `{prev_s}` → `{cur_s}`"
 
 
+def _diff_tuning(prev, cur) -> list[str]:
+    lines: list[str] = []
+    for field in (
+        "shared_buffers",
+        "effective_cache_size",
+        "work_mem",
+        "max_parallel_workers_per_gather",
+    ):
+        old = getattr(prev, field)
+        new = getattr(cur, field)
+        line = _diff_field(f"database tuning {field}", old or "", new or "")
+        if line:
+            lines.append(line)
+    return lines
+
+
 def _spec_diff_markdown(prev: K8sWorkloadSpec, cur: K8sWorkloadSpec) -> str:
     changes: list[str] = []
     for line in (
@@ -352,6 +368,7 @@ def _spec_diff_markdown(prev: K8sWorkloadSpec, cur: K8sWorkloadSpec) -> str:
             prev.database.max_connections,
             cur.database.max_connections,
         ),
+        *_diff_tuning(prev.database.tuning, cur.database.tuning),
         _diff_field(
             "database cpu limit",
             prev.database.resources.cpu_limit,

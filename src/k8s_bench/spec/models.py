@@ -6,6 +6,8 @@ from typing import Any
 
 import yaml
 
+from .postgres_tuning import PostgresTuningSpec
+
 POSTGRES_USER = "postgres"
 POSTGRES_PASSWORD = "postgres"
 POSTGRES_DATABASE = "testdb"
@@ -99,6 +101,7 @@ class DatabaseSpec:
     # replicas=1: standalone Deployment. replicas>1: primary + (N-1) read replicas.
     replicas: int = 1
     max_connections: int = 100
+    tuning: PostgresTuningSpec = field(default_factory=PostgresTuningSpec)
     # Exact pin (one node). Takes precedence over placement_workers when set.
     placement_worker: str | None = None
     # Allow-list: scheduler picks one node from this set (single postgres pod).
@@ -129,6 +132,12 @@ class DatabaseSpec:
             if isinstance(raw_workers, (list, tuple)):
                 workers = [str(x).strip() for x in raw_workers if str(x).strip()]
         max_conn = int(data.get("max_connections", cls.max_connections))
+        tuning_raw = data.get("tuning")
+        tuning = (
+            PostgresTuningSpec.from_mapping(tuning_raw)
+            if isinstance(tuning_raw, dict)
+            else PostgresTuningSpec()
+        )
         return cls(
             enabled=bool(data.get("enabled", True)),
             image=str(data.get("image", cls.image)),
@@ -136,6 +145,7 @@ class DatabaseSpec:
             port=int(data.get("port", cls.port)),
             replicas=max(1, int(data.get("replicas", cls.replicas))),
             max_connections=max(1, max_conn),
+            tuning=tuning,
             placement_worker=pin_worker,
             placement_workers=tuple(workers),
             resources=ResourceSpec.from_mapping(data.get("resources")),
@@ -217,6 +227,11 @@ class K8sWorkloadSpec:
                 "port": self.database.port,
                 "replicas": self.database.replicas,
                 "max_connections": self.database.max_connections,
+                **(
+                    {"tuning": self.database.tuning.to_mapping()}
+                    if not self.database.tuning.is_empty()
+                    else {}
+                ),
                 "placement": _database_placement_yaml(self.database),
                 "resources": asdict(self.database.resources),
             },
