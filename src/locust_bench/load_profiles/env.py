@@ -6,6 +6,7 @@ from .models import (
     AdaptiveLoadProfile,
     AdaptiveV2LoadProfile,
     ContinuousLoadProfile,
+    GoodputPlateauLoadProfile,
     LoadProfile,
     SpikeLoadProfile,
     StairsLoadProfile,
@@ -20,6 +21,8 @@ def build_baxbench_locust_env(
 ) -> dict[str, str]:
     if isinstance(load_profile, AdaptiveV2LoadProfile):
         load_mode = "adaptive_v2"
+    elif isinstance(load_profile, GoodputPlateauLoadProfile):
+        load_mode = "goodput_plateau"
     elif isinstance(load_profile, AdaptiveLoadProfile):
         load_mode = "adaptive"
     elif isinstance(load_profile, ContinuousLoadProfile):
@@ -92,8 +95,8 @@ def build_baxbench_locust_env(
             int(load_profile.min_settle_samples)
         )
         env["BAXBENCH_ADAPTIVE_V2_QUANTILE"] = str(float(load_profile.quantile))
-        env["BAXBENCH_ADAPTIVE_V2_STABILITY_CV"] = str(
-            float(load_profile.stability_cv_threshold)
+        env["BAXBENCH_ADAPTIVE_V2_STABILITY_DRIFT_PCT"] = str(
+            float(load_profile.stability_drift_threshold_pct)
         )
         env["BAXBENCH_ADAPTIVE_V2_PLATEAU_STOP_STEPS"] = str(
             int(load_profile.plateau_stop_steps)
@@ -101,6 +104,27 @@ def build_baxbench_locust_env(
         env["BAXBENCH_ADAPTIVE_V2_PLATEAU_PCT"] = str(
             float(load_profile.plateau_goodput_threshold_pct)
         )
+    elif load_mode == "goodput_plateau" and isinstance(load_profile, GoodputPlateauLoadProfile):
+        env["BAXBENCH_GOODPUT_FAILURE_THRESHOLD_PCT"] = str(float(load_profile.failure_threshold_pct))
+        env["BAXBENCH_GOODPUT_COLLAPSE_THRESHOLD_PCT"] = str(float(load_profile.collapse_threshold_pct))
+        env["BAXBENCH_GOODPUT_START_USERS"] = str(int(load_profile.start_users))
+        env["BAXBENCH_GOODPUT_MAX_USERS"] = str(int(load_profile.max_users))
+        env["BAXBENCH_GOODPUT_MIN_STEP_USERS"] = str(int(load_profile.min_step_users))
+        env["BAXBENCH_GOODPUT_MAX_STEP_USERS"] = str(int(load_profile.max_step_users))
+        env["BAXBENCH_GOODPUT_MAX_STEP_GROWTH_FACTOR"] = str(
+            float(load_profile.max_step_growth_factor)
+        )
+        env["BAXBENCH_GOODPUT_SPAWN_RATE"] = str(int(load_profile.spawn_rate))
+        env["BAXBENCH_GOODPUT_WARMUP_STEP_DURATION_S"] = str(int(load_profile.warmup_step_duration_s))
+        env["BAXBENCH_GOODPUT_MIN_STEP_DURATION_S"] = str(int(load_profile.min_step_duration_s))
+        env["BAXBENCH_GOODPUT_MAX_STEP_DURATION_S"] = str(int(load_profile.max_step_duration_s))
+        env["BAXBENCH_GOODPUT_TRIM_S"] = str(int(load_profile.trim_s))
+        env["BAXBENCH_GOODPUT_SAMPLE_EVERY_S"] = str(int(load_profile.sample_every_s))
+        env["BAXBENCH_GOODPUT_MIN_SETTLE_SAMPLES"] = str(int(load_profile.min_settle_samples))
+        env["BAXBENCH_GOODPUT_QUANTILE"] = str(float(load_profile.quantile))
+        env["BAXBENCH_GOODPUT_STABILITY_DRIFT_PCT"] = str(float(load_profile.stability_drift_threshold_pct))
+        env["BAXBENCH_GOODPUT_PLATEAU_STOP_STEPS"] = str(int(load_profile.plateau_stop_steps))
+        env["BAXBENCH_GOODPUT_PLATEAU_PCT"] = str(float(load_profile.plateau_goodput_threshold_pct))
 
     return env
 

@@ -173,10 +173,11 @@ class AdaptiveV2LoadProfile(BaseLoadProfile):
        multiplied by 4x / 2x / 1x / 0.5x depending on how far below SLA p95 sits
        (>=70% / 40% / 15% / <15% margin). Big headroom is exploited aggressively,
        tight headroom is approached carefully.
-    4. **Stability heuristic.** A step is only "ended" once the coefficient of
-       variation across the last ``min_settle_samples`` p95 samples drops below
-       ``stability_cv_threshold``, with a hard ``max_step_duration_s`` cap. This
-       avoids deciding on a step whose latency is still trending.
+    4. **Stability heuristic.** A step is only "ended" once the first→last drift
+       across the last ``min_settle_samples`` windowed p95 readings is at most
+       ``stability_drift_threshold_pct`` (default 5%), with a hard
+       ``max_step_duration_s`` cap. The decision latency is the mean of those
+       samples. This avoids deciding while the trailing P95 is still trending.
     5. **Goodput-plateau stop.** Tracks successful RPS per step. After
        ``plateau_stop_steps`` consecutive steps with relative goodput growth
        below ``plateau_goodput_threshold_pct``, the shape stops — this is the
@@ -202,7 +203,53 @@ class AdaptiveV2LoadProfile(BaseLoadProfile):
     sample_every_s: int
     min_settle_samples: int
     quantile: float
-    stability_cv_threshold: float
+    stability_drift_threshold_pct: float
+
+    plateau_stop_steps: int
+    plateau_goodput_threshold_pct: float
+
+    run_time_s: int
+
+    @property
+    def effective_users(self) -> int:
+        return int(self.max_users)
+
+    @property
+    def effective_spawn_rate(self) -> int:
+        return max(1, int(self.spawn_rate))
+
+    @property
+    def effective_run_time_s(self) -> int:
+        return int(self.run_time_s)
+
+
+@dataclass(frozen=True)
+class GoodputPlateauLoadProfile(BaseLoadProfile):
+    """
+    Goodput plateau finder.
+
+    Control loop runs in ``_baxbench_shape.GoodputPlateauShape`` and ramps users
+    until marginal goodput gains flatten (plateau), backing off on failures or
+    goodput collapse. Latency is sampled for reporting only.
+    """
+
+    failure_threshold_pct: float
+    collapse_threshold_pct: float
+    start_users: int
+    max_users: int
+    min_step_users: int
+    max_step_users: int
+    max_step_growth_factor: float
+    spawn_rate: int
+
+    warmup_step_duration_s: int
+    min_step_duration_s: int
+    max_step_duration_s: int
+    trim_s: int
+    sample_every_s: int
+    min_settle_samples: int
+    quantile: float
+    stability_drift_threshold_pct: float
 
     plateau_stop_steps: int
     plateau_goodput_threshold_pct: float
@@ -229,4 +276,5 @@ LoadProfile: TypeAlias = (
     | SpikeLoadProfile
     | AdaptiveLoadProfile
     | AdaptiveV2LoadProfile
+    | GoodputPlateauLoadProfile
 )
