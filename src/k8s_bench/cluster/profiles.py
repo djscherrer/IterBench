@@ -49,7 +49,7 @@ class K8sClusterProfile:
 
     @property
     def k8s_ssh_hosts(self) -> tuple[str, ...]:
-        """Control-plane + Kubernetes workers (preflight, registry preload, kubeadm)."""
+        """Control-plane + Kubernetes workers (preflight, registry setup, kubeadm)."""
         hosts: list[str] = []
         if self.control_node.strip():
             hosts.append(self.control_node.strip())

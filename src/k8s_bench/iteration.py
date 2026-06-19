@@ -377,9 +377,9 @@ def run_k8s_bench_iteration(
         )
 
     # Fast path: when the probe just deployed this exact iteration we can
-    # reuse the running namespace — no docker push, no ctr preload, no
-    # kubectl apply, no readiness wait. We test this *before* paying the
-    # push/preload cost by computing the registry reference deterministically.
+    # reuse the running namespace — no docker push, no kubectl apply, no
+    # readiness wait. We test this *before* paying the push cost by computing
+    # the registry reference deterministically.
     spec_yaml = find_iteration_spec_path(iteration_path)
     expected_ref = expected_registry_reference(
         image_id, sample_slug=sample_slug, profile_name=profile.name
@@ -403,7 +403,7 @@ def run_k8s_bench_iteration(
 
     if reused is None:
         # Probe did not run, isn't reusable, or no registry — full deploy path:
-        # docker push → ctr preload → cleanup → render → kubectl apply → wait.
+        # docker push → cleanup → render → kubectl apply → wait.
         prepared = prepare_image_for_k8s(
             image_id,
             sample_slug=sample_slug,

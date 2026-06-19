@@ -9,12 +9,7 @@ from dataclasses import dataclass
 from typing import Sequence
 
 from .preflight import _dedupe_hosts, _is_local_host
-from .registry import (
-    preload_registry_image_on_nodes,
-    push_image_to_registry,
-    resolve_k8s_node_hosts,
-    resolve_registry_config,
-)
+from .registry import push_image_to_registry, resolve_registry_config
 
 
 @dataclass(frozen=True)
@@ -93,7 +88,7 @@ def expected_registry_reference(
     Compute the registry reference :func:`prepare_image_for_k8s` would push to.
 
     Pure / side-effect-free: lets callers cheaply check "would a probe-time push
-    have produced *this* tag?" without re-pushing or re-preloading. Returns
+    have produced *this* tag?" without re-pushing. Returns
     ``None`` when no registry is configured (legacy SSH-load path).
     """
     profile = (
@@ -137,8 +132,6 @@ def prepare_image_for_k8s(
             logger=log,
         )
         log.info("Image in registry: %s", reference)
-        node_hosts = tuple(worker_hosts or ()) or resolve_k8s_node_hosts(profile)
-        preload_registry_image_on_nodes(reference, node_hosts, logger=log)
         return PreparedImage(reference=reference)
 
     reference = f"baxbench-local/{repo}:{short}"

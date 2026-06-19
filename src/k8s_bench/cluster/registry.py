@@ -154,9 +154,7 @@ def _configure_containerd_script(registry: RegistryConfig) -> str:
     2. Patch ``/etc/containerd/config.toml`` to set
        ``config_path = "/etc/containerd/certs.d"`` under the CRI registry
        section, so containerd actually *reads* (1). Without this, kubelet
-       pulls bypass certs.d and try HTTPS — which is why we historically had
-       to ``ctr --plain-http pull`` on every node (image preload) before
-       Pods could start.
+       pulls bypass certs.d and try HTTPS against our HTTP registry.
 
     Restart containerd after the patch is applied. Idempotent: a second
     invocation only writes hosts.toml; the config.toml stanza is left alone
@@ -244,54 +242,6 @@ def _configure_containerd_on_host(host: str, registry: RegistryConfig, logger: l
     script = _configure_containerd_script(registry)
     logger.info("Configuring containerd on %s for registry %s", host, registry.endpoint)
     _run_shell_on_host(host, script, logger)
-
-
-def resolve_k8s_node_hosts(profile_name: str | None = None) -> tuple[str, ...]:
-    """Cluster nodes for image preload (profile control + workers)."""
-    if not profile_name:
-        return ()
-    return resolve_cluster_profile(profile_name).k8s_ssh_hosts
-
-
-def preload_registry_image_on_nodes(
-    image_ref: str,
-    node_hosts: Sequence[str],
-    *,
-    logger: logging.Logger,
-) -> None:
-    """
-    Pull image into containerd's k8s.io namespace on each node.
-
-    Belt-and-suspenders step alongside the containerd ``certs.d`` config in
-    :func:`_configure_containerd_script` (which sets ``config_path`` so kubelet
-    honours per-registry ``hosts.toml`` and uses plain HTTP). With ``certs.d``
-    wired in, kubelet *can* pull the image on first pod scheduling, but
-    preloading still smooths over first-pull latency on cold nodes and any
-    transient registry errors. Safe to remove once we trust the registry path
-    end-to-end (see notes in :file:`registry.py`).
-    """
-    hosts = _dedupe_hosts(node_hosts)
-    if not hosts:
-        logger.warning(
-            "No K8s node hosts for image preload (profile has no control_node/worker_nodes). "
-            "Pods may hit ImagePullBackOff on HTTP registry %s",
-            image_ref.split("/", 1)[0],
-        )
-        return
-
-    script = f"""set -euo pipefail
-if command -v sudo >/dev/null 2>&1; then SUDO='sudo -n'; else SUDO=''; fi
-$SUDO ctr -n k8s.io images pull --plain-http {shlex.quote(image_ref)}
-echo 'preloaded {image_ref}'
-"""
-    logger.info(
-        "Preloading image on %d node(s) (ctr --plain-http): %s",
-        len(hosts),
-        image_ref,
-    )
-    for i, host in enumerate(hosts, start=1):
-        logger.info("[%d/%d] Preload on %s", i, len(hosts), host)
-        _run_shell_on_host(host, script, logger)
 
 
 def _docker_push_local(image_ref: str, registry: RegistryConfig, logger: logging.Logger) -> None:
