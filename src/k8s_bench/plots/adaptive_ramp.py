@@ -1,0 +1,619 @@
+from __future__ import annotations
+
+from pathlib import Path
+
+import matplotlib.pyplot as plt
+import pandas as pd
+from matplotlib.lines import Line2D
+from matplotlib.transforms import blended_transform_factory
+
+from ..workspace import PLOTS_DIRNAME
+from .ramp_data import (
+    AdaptiveDecision,
+    AdaptivePlotParams,
+    GoodputTimeline,
+    LatencySample,
+    PeakGoodputMarker,
+    P95Timeline,
+    anchor_users_at_decision,
+    format_decision_tuple,
+    gather_bench_log_text,
+    group_latency_sample_segments,
+    load_adaptive_plot_params,
+    load_stats_timeseries,
+    parse_adaptive_decisions,
+    parse_controller_goodput_timeline,
+    parse_controller_p95_timeline,
+    plottable_decisions,
+    resolve_run_goodput_marker,
+    smooth_series,
+)
+
+ADAPTIVE_RAMP_PLOT_FILENAME = "adaptive_ramp.png"
+# Locust stats_history already aggregates over ~3 s; a 3 s rolling mean
+# smooths residual jitter without washing out ramp steps.
+DEFAULT_SMOOTHING_WINDOW_S = 3
+
+_COLOR_GOODPUT = "#16a34a"
+_COLOR_GOODPUT_LIGHT = "#86efac"
+_COLOR_REQ = "#ea580c"
+_COLOR_FAIL = "#dc2626"
+_COLOR_USERS = "#2563eb"
+_COLOR_P95 = "#9333ea"
+_COLOR_P95_OBSERVE = "#94a3b8"
+_COLOR_DECISION = "#64748b"
+_COLOR_PEAK = "#dc2626"
+
+_DECISION_BBOX = {
+    "boxstyle": "round,pad=0.3",
+    "facecolor": "white",
+    "edgecolor": "#cbd5e1",
+    "alpha": 0.92,
+}
+
+_DECISION_BOX_FONTSIZE = 8.5
+_DECISION_FORMAT_FONTSIZE = 8
+
+
+def plot_adaptive_ramp(
+    bench_dir: Path,
+    *,
+    out_dir: Path | None = None,
+    smoothing_window_s: int = DEFAULT_SMOOTHING_WINDOW_S,
+    show: bool = False,
+) -> Path:
+    """
+    Adaptive ramp plot for one ``05-bench/`` directory.
+
+    Primary Y: virtual users + throughput series (rolling mean).
+    Secondary Y: per-step controller P95 (same metric as decision boxes).
+    Decisions: compact tuple boxes above each decision vertical line.
+    """
+    bench_dir = bench_dir.expanduser().resolve()
+    plot_params = load_adaptive_plot_params(bench_dir)
+    df = load_stats_timeseries(bench_dir)
+    log_text = gather_bench_log_text(bench_dir)
+    decisions = parse_adaptive_decisions(log_text)
+    panel_decisions = plottable_decisions(decisions)
+    p95_timeline = parse_controller_p95_timeline(
+        log_text,
+        decisions,
+        trim_s=plot_params.trim_s,
+        sample_every_s=plot_params.sample_every_s,
+        min_settle_samples=plot_params.min_settle_samples,
+    )
+    goodput_timeline = parse_controller_goodput_timeline(
+        log_text,
+        decisions,
+        trim_s=plot_params.trim_s,
+        min_settle_samples=plot_params.min_settle_samples,
+    )
+    peak = resolve_run_goodput_marker(bench_dir, log_text, decisions)
+
+    w = smoothing_window_s
+    df = df.copy()
+    df["goodput_smooth"] = smooth_series(df["goodput_rps"], w)
+    df["req_smooth"] = smooth_series(df["req_rps"], w)
+    df["fail_smooth"] = smooth_series(df["fail_rps"], w)
+    df["users_smooth"] = smooth_series(df["users"], w)
+
+    plots_dir = out_dir or (bench_dir / PLOTS_DIRNAME)
+    plots_dir.mkdir(parents=True, exist_ok=True)
+    out_path = plots_dir / ADAPTIVE_RAMP_PLOT_FILENAME
+
+    fig, ax = plt.subplots(figsize=(14, 6.5))
+    ax_p95 = ax.twinx()
+
+    ax.plot(
+        df["t_s"],
+        df["users_smooth"],
+        color=_COLOR_USERS,
+        linewidth=2.0,
+        alpha=0.85,
+        label="Virtual users",
+        zorder=4,
+    )
+    ax.plot(
+        df["t_s"],
+        df["goodput_smooth"],
+        color=_COLOR_GOODPUT_LIGHT,
+        linewidth=2.0,
+        label=f"Goodput ({w}s avg)",
+        zorder=3,
+    )
+    ax.plot(
+        df["t_s"],
+        df["req_smooth"],
+        color=_COLOR_REQ,
+        linewidth=1.6,
+        alpha=0.85,
+        label=f"Total req/s ({w}s avg)",
+        zorder=2,
+    )
+    ax.plot(
+        df["t_s"],
+        df["fail_smooth"],
+        color=_COLOR_FAIL,
+        linewidth=1.4,
+        linestyle="--",
+        alpha=0.9,
+        label=f"Failures/s ({w}s avg)",
+        zorder=2,
+    )
+    p95_has_data = bool(p95_timeline.all_samples)
+    if p95_has_data:
+        _plot_p95_timeline(ax_p95, p95_timeline, plot_params=plot_params)
+    if goodput_timeline.has_full_timeline:
+        _plot_goodput_samples(ax, goodput_timeline, plot_params=plot_params)
+
+    ax.set_xlabel("Time (s)")
+    ax.set_ylabel("Virtual users / throughput (req/s)")
+    if p95_has_data:
+        ax_p95.set_ylabel("P95 latency (ms)", color=_COLOR_P95)
+        ax_p95.tick_params(axis="y", labelcolor=_COLOR_P95)
+        p95_ymin, p95_ymax = _p95_axis_limits(
+            p95_timeline,
+            panel_decisions,
+            sla_ms=plot_params.sla_ms,
+        )
+        ax_p95.set_ylim(p95_ymin, p95_ymax)
+        _add_sla_latency_marker(
+            ax_p95,
+            t_end_s=float(df["t_s"].max()),
+            sla_ms=plot_params.sla_ms,
+        )
+
+    y_max = max(
+        df["users_smooth"].max(),
+        df["goodput_smooth"].max(),
+        df["req_smooth"].max(),
+        1.0,
+    )
+    ax.set_ylim(0, y_max * 1.12)
+
+    _add_decision_markers(ax, panel_decisions, y_max=y_max)
+    _add_decision_boxes_above_plot(ax, panel_decisions)
+    if p95_has_data:
+        _add_p95_decision_anchors(ax, panel_decisions)
+    _add_peak_goodput_marker(ax, peak, df)
+
+    ax.set_title(
+        f"Adaptive load ramp — {bench_dir.parent.name}\n"
+        f"(goodput = successful req/s, {w}s rolling average; "
+        f"{_p95_subtitle(plot_params)})"
+    )
+    ax.grid(True, linestyle=":", alpha=0.4)
+
+    handles, labels = ax.get_legend_handles_labels()
+    if p95_has_data:
+        handles_p95, labels_p95 = ax_p95.get_legend_handles_labels()
+        handles += handles_p95
+        labels += labels_p95
+    peak_handle = Line2D(
+        [0],
+        [0],
+        marker="x",
+        color=_COLOR_PEAK,
+        linestyle="None",
+        markersize=8,
+        markeredgewidth=2,
+        label="Sustained max goodput",
+    )
+    legend = ax.legend(
+        handles + [peak_handle],
+        labels + ["Sustained max goodput"],
+        loc="upper left",
+        fontsize=8,
+    )
+    _draw_decision_format_hint(fig, ax, legend)
+
+    fig.subplots_adjust(bottom=0.16)
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=150, bbox_inches="tight")
+    if show:
+        plt.show()
+    plt.close(fig)
+    return out_path
+
+
+def _p95_axis_limits(
+    timeline: P95Timeline,
+    decisions: list[AdaptiveDecision],
+    *,
+    sla_ms: float,
+) -> tuple[float, float]:
+    """Fit the P95 axis to observed controller samples and decision values."""
+    values: list[float] = [s.p95_ms for s in timeline.all_samples]
+    values.extend(
+        d.p95_ms for d in decisions if d.p95_ms is not None and d.p95_ms > 0
+    )
+    if sla_ms > 0:
+        values.append(float(sla_ms))
+    if not values:
+        return 0.0, 450.0
+
+    y_min = min(values)
+    y_max = max(values)
+    span = max(y_max - y_min, y_max * 0.05, 20.0)
+    pad = max(20.0, span * 0.1)
+    return max(0.0, y_min - pad * 0.25), y_max + pad
+
+
+def _draw_decision_format_hint(
+    fig: plt.Figure,
+    ax: plt.Axes,
+    legend: plt.Legend,
+) -> None:
+    """Format key for decision boxes, aligned below the series legend."""
+    fig.canvas.draw()
+    renderer = fig.canvas.get_renderer()
+    bbox = legend.get_window_extent(renderer=renderer).transformed(
+        ax.transAxes.inverted()
+    )
+    ax.text(
+        bbox.x0,
+        bbox.y0 - 0.008,
+        "Decisions\n  (P95, err%)\n  @users\n  Δusers",
+        transform=ax.transAxes,
+        fontsize=_DECISION_FORMAT_FONTSIZE,
+        va="top",
+        ha="left",
+        family="monospace",
+        linespacing=1.2,
+        bbox=_DECISION_BBOX,
+        zorder=5,
+    )
+
+
+def _add_decision_boxes_above_plot(
+    ax: plt.Axes,
+    decisions: list[AdaptiveDecision],
+) -> None:
+    """Compact tuple boxes centered above the plot at each decision time."""
+    if not decisions:
+        return
+
+    trans = blended_transform_factory(ax.transData, ax.transAxes)
+    # Stagger vertically when decision times are close together.
+    last_t: int | None = None
+    level = 0
+    for decision in decisions:
+        if last_t is not None and decision.t_s - last_t < 20:
+            level = (level + 1) % 3
+        else:
+            level = 0
+        last_t = decision.t_s
+
+        line1, line2, line3 = format_decision_tuple(decision)
+        y_axes = 0.97 - level * 0.075
+        ax.text(
+            decision.t_s,
+            y_axes,
+            f"{line1}\n{line2}\n{line3}",
+            transform=trans,
+            ha="center",
+            va="top",
+            fontsize=_DECISION_BOX_FONTSIZE,
+            family="monospace",
+            linespacing=1.15,
+            bbox=_DECISION_BBOX,
+            zorder=5,
+            clip_on=False,
+        )
+
+
+def _add_decision_markers(
+    ax: plt.Axes,
+    decisions: list[AdaptiveDecision],
+    *,
+    y_max: float,
+) -> None:
+    """Vertical time markers at each decision."""
+    marked_times: list[int] = []
+    for decision in decisions:
+        t_s = decision.t_s
+        if t_s in marked_times:
+            continue
+        marked_times.append(t_s)
+
+        ax.axvline(
+            t_s,
+            color=_COLOR_DECISION,
+            linewidth=0.9,
+            linestyle=":",
+            alpha=0.7,
+            zorder=1,
+        )
+        ax.text(
+            t_s,
+            -y_max * 0.06,
+            f"{t_s}s",
+            ha="center",
+            va="top",
+            fontsize=7,
+            color=_COLOR_DECISION,
+            clip_on=False,
+        )
+
+
+def _plot_latency_segments(
+    ax_p95: plt.Axes,
+    samples: list[LatencySample],
+    *,
+    color: str,
+    linewidth: float,
+    alpha: float,
+    zorder: int,
+) -> None:
+    for segment in group_latency_sample_segments(samples):
+        xs = [s.t_s for s in segment]
+        ys = [s.p95_ms for s in segment]
+        ax_p95.plot(
+            xs,
+            ys,
+            color=color,
+            linewidth=linewidth,
+            linestyle="-",
+            alpha=alpha,
+            zorder=zorder,
+        )
+
+
+def _p95_subtitle(params: AdaptivePlotParams) -> str:
+    return (
+        f"P95 = Locust trailing ~10s window, sampled every {params.sample_every_s}s "
+        f"after {params.trim_s}s level trim; purple = last "
+        f"{params.min_settle_samples} decision samples"
+    )
+
+
+def _plot_p95_timeline(
+    ax_p95: plt.Axes,
+    timeline: P95Timeline,
+    *,
+    plot_params: AdaptivePlotParams,
+) -> None:
+    all_samples = list(timeline.all_samples)
+    decision_samples = list(timeline.decision_samples)
+
+    if timeline.has_full_timeline:
+        observe_samples = [
+            s for s in all_samples if s not in set(decision_samples)
+        ]
+        if observe_samples:
+            _plot_latency_segments(
+                ax_p95,
+                observe_samples,
+                color=_COLOR_P95,
+                linewidth=1.2,
+                alpha=0.35,
+                zorder=1,
+            )
+            ax_p95.scatter(
+                [s.t_s for s in observe_samples],
+                [s.p95_ms for s in observe_samples],
+                color=_COLOR_P95,
+                s=12,
+                alpha=0.25,
+                zorder=2,
+                clip_on=False,
+            )
+            ax_p95.plot(
+                [],
+                [],
+                color=_COLOR_P95,
+                marker="o",
+                linestyle="-",
+                linewidth=1.2,
+                markersize=4,
+                label="P95 samples (observe only)",
+            )
+
+    _plot_latency_segments(
+        ax_p95,
+        decision_samples,
+        color=_COLOR_P95,
+        linewidth=1.8,
+        alpha=0.95,
+        zorder=3,
+    )
+    ax_p95.scatter(
+        [s.t_s for s in decision_samples],
+        [s.p95_ms for s in decision_samples],
+        color=_COLOR_P95,
+        s=18,
+        alpha=0.9,
+        zorder=4,
+        clip_on=False,
+    )
+    n = plot_params.min_settle_samples
+    label = (
+        f"P95 samples (decision window, last {n})"
+        if timeline.has_full_timeline
+        else f"P95 samples (decision window, legacy log, last {n})"
+    )
+    ax_p95.plot(
+        [],
+        [],
+        color=_COLOR_P95,
+        marker="o",
+        linestyle="-",
+        linewidth=1.8,
+        markersize=5,
+        label=label,
+    )
+
+
+def _plot_goodput_samples(
+    ax: plt.Axes,
+    timeline: GoodputTimeline,
+    *,
+    plot_params: AdaptivePlotParams,
+) -> None:
+    all_samples = list(timeline.all_samples)
+    decision_samples = list(timeline.decision_samples)
+    if not all_samples:
+        return
+
+    decision_set = set(decision_samples)
+    observe = [s for s in all_samples if s not in decision_set]
+
+    if observe:
+        ax.scatter(
+            [s.t_s for s in observe],
+            [s.goodput_rps for s in observe],
+            color=_COLOR_GOODPUT_LIGHT,
+            s=10,
+            alpha=0.35,
+            zorder=2,
+            clip_on=False,
+        )
+        ax.plot(
+            [],
+            [],
+            color=_COLOR_GOODPUT_LIGHT,
+            marker="o",
+            linestyle="None",
+            markersize=4,
+            label="Goodput samples (observe only)",
+        )
+
+    ax.scatter(
+        [s.t_s for s in decision_samples],
+        [s.goodput_rps for s in decision_samples],
+        color=_COLOR_GOODPUT,
+        s=18,
+        alpha=0.9,
+        zorder=4,
+        clip_on=False,
+    )
+    n = plot_params.min_settle_samples
+    ax.plot(
+        [],
+        [],
+        color=_COLOR_GOODPUT,
+        marker="o",
+        linestyle="None",
+        markersize=5,
+        label=f"Goodput samples (decision window, last {n})",
+    )
+
+def _add_p95_decision_anchors(
+    ax: plt.Axes,
+    decisions: list[AdaptiveDecision],
+) -> None:
+    """
+    P95 + user-level anchors below the plot at each decision time.
+
+    Anchors the violet step line to the controller values from bench logs.
+    """
+    if not decisions:
+        return
+
+    trans = blended_transform_factory(ax.transData, ax.transAxes)
+    last_t: int | None = None
+    level = 0
+    for decision in decisions:
+        if decision.p95_ms is None:
+            continue
+        if last_t is not None and decision.t_s - last_t < 20:
+            level = (level + 1) % 2
+        else:
+            level = 0
+        last_t = decision.t_s
+
+        users = anchor_users_at_decision(decision)
+        line1 = f"{decision.p95_ms:.0f}ms"
+        line2 = f"@{users}u" if users is not None else "—"
+        y_axes = -0.06 - level * 0.055
+        ax.text(
+            decision.t_s,
+            y_axes,
+            f"{line1}\n{line2}",
+            transform=trans,
+            ha="center",
+            va="top",
+            fontsize=7,
+            color=_COLOR_P95,
+            family="monospace",
+            linespacing=1.1,
+            clip_on=False,
+            zorder=5,
+        )
+
+
+def _add_sla_latency_marker(
+    ax_p95: plt.Axes,
+    *,
+    t_end_s: float,
+    sla_ms: float,
+) -> None:
+    """Horizontal SLA reference on the P95 axis."""
+    ax_p95.axhline(
+        sla_ms,
+        color=_COLOR_DECISION,
+        linewidth=0.9,
+        linestyle=":",
+        alpha=0.7,
+        zorder=2,
+    )
+    ax_p95.annotate(
+        f"SLA {sla_ms:.0f}ms",
+        xy=(t_end_s, sla_ms),
+        xytext=(6, 0),
+        textcoords="offset points",
+        ha="left",
+        va="center",
+        fontsize=7,
+        color=_COLOR_DECISION,
+        clip_on=False,
+        zorder=5,
+    )
+
+
+def _add_peak_goodput_marker(
+    ax: plt.Axes,
+    peak: PeakGoodputMarker | None,
+    df: pd.DataFrame,
+) -> None:
+    """
+    Mark the sustained max goodput window on the smoothed goodput curve.
+
+    Uses the rolling-window metric from ``stats_history`` (same as experiment
+    trajectory plots). The cross sits on the smoothed goodput curve; the label
+    shows the sustained window average.
+    """
+    if peak is None:
+        return
+    nearest_idx = (df["t_s"] - peak.t_s).abs().idxmin()
+    y_on_curve = float(df.loc[nearest_idx, "goodput_smooth"])
+    ax.scatter(
+        peak.t_s,
+        y_on_curve,
+        marker="x",
+        s=90,
+        color=_COLOR_PEAK,
+        linewidths=2.5,
+        zorder=6,
+    )
+    ax.annotate(
+        f"sustained {peak.goodput_rps:.0f}/s",
+        (peak.t_s, y_on_curve),
+        textcoords="offset points",
+        xytext=(6, 6),
+        fontsize=7,
+        color=_COLOR_PEAK,
+        fontweight="bold",
+        ha="left",
+        va="bottom",
+    )
+
+
+def regenerate_bench_plots(bench_dir: Path) -> list[Path]:
+    """Regenerate all plots for one ``05-bench/`` directory."""
+    created: list[Path] = []
+    try:
+        created.append(plot_adaptive_ramp(bench_dir))
+    except (FileNotFoundError, ValueError):
+        pass
+    return created

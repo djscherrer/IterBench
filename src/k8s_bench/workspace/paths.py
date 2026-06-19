@@ -6,6 +6,7 @@ from pathlib import Path
 
 K8S_EXPERIMENTS_DIRNAME = "k8s-experiments"
 ITERATIONS_DIRNAME = "iterations"
+PLOTS_DIRNAME = "plots"
 ITERATION_PREFIX = "iteration-"
 DEFAULT_EXPERIMENT_SLUG = "default"
 ITERATION_KIND_SUFFIXES = frozenset({"baseline", "spec", "code"})
@@ -45,6 +46,31 @@ def resolve_k8s_experiment_id() -> str:
 def k8s_workspace_root(sample_dir: Path) -> Path:
     """Root for one experiment: ``sampleN/k8s-experiments/<slug>/``."""
     return sample_dir / K8S_EXPERIMENTS_DIRNAME / resolve_k8s_experiment_id()
+
+
+def experiment_root_from_iteration_path(iteration_path: Path) -> Path:
+    """
+    Experiment root (``.../k8s-experiments/<slug>/``) for an iteration folder.
+
+    Accepts canonical paths under ``iterations/`` as well as deploy-only paths
+    such as ``manual/iteration-NNN/`` — any ancestor that contains
+    ``iterations/`` is treated as the experiment root.
+    """
+    path = iteration_path.expanduser().resolve()
+    if not path.is_dir():
+        path = path.parent
+    current = path
+    while True:
+        if (current / ITERATIONS_DIRNAME).is_dir():
+            return current
+        parent = current.parent
+        if parent == current:
+            break
+        current = parent
+    raise ValueError(
+        f"no experiment root (directory containing {ITERATIONS_DIRNAME}/) "
+        f"found for {iteration_path}"
+    )
 
 
 def iterations_root(sample_dir: Path) -> Path:

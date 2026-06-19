@@ -144,5 +144,14 @@ def run_locust_for_iteration(
             )
         except Exception as e:
             logger.exception("k8s bench failed: %s", e, exc_info=e)
+            return False
 
+    from ..plots import refresh_plots_after_bench
+    from ..workspace import experiment_root_from_iteration_path
+
+    refresh_plots_after_bench(
+        run_dir,
+        experiment_root_from_iteration_path(iteration_path),
+        logger=logger,
+    )
     return True

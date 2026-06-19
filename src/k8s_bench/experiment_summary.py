@@ -16,6 +16,7 @@ from typing import Any
 
 from .feedback import IterationFeedback
 from .workspace import (
+    ITERATIONS_DIRNAME,
     find_iteration_spec_path,
     iteration_spec_path,
     k8s_workspace_root,
@@ -42,6 +43,13 @@ _ADAPTIVE_START_USERS_RE = re.compile(
 )
 _STEP_GOODPUT_RE = re.compile(r"step_goodput=([\d.]+)/s")
 _STEP_CV_RE = re.compile(r"\bcv=([\d.]+)")
+_STEP_DRIFT_RE = re.compile(r"\bdrift=([\d.]+)%")
+_SAMPLES_RE = re.compile(r"samples=\[(?P<samples>[^\]]*)\]")
+_P95_SAMPLE_RE = re.compile(
+    r"adaptive p95 sample t=(\d+)s users=(\d+) p95=([\d.]+)ms"
+)
+# Trailing Locust stats window for per-step goodput min/avg/max in the summary table.
+_SUMMARY_MEASURE_WINDOW_S = 3
 _ADAPTIVE_V2_STOP_RE = re.compile(
     r"adaptive-v2 stop: reason=(?P<reason>\S+) "
     r"final_users=(?P<final_users>\S+) "
@@ -52,7 +60,10 @@ _ADAPTIVE_V2_STOP_RE = re.compile(
 
 
 def experiment_summary_path(sample_dir: Path) -> Path:
-    return k8s_workspace_root(sample_dir) / SUMMARY_FILENAME
+    path = sample_dir.expanduser().resolve()
+    if (path / ITERATIONS_DIRNAME).is_dir():
+        return path / SUMMARY_FILENAME
+    return k8s_workspace_root(path) / SUMMARY_FILENAME
 
 
 def _utc_now_label() -> str:
@@ -283,10 +294,23 @@ def _diff_field(name: str, old: str | int, new: str | int) -> str | None:
     return f"- **{name}**: `{old}` → `{new}`"
 
 
+def _diff_workers(name: str, prev: tuple[str, ...], cur: tuple[str, ...]) -> str | None:
+    if prev == cur:
+        return None
+    prev_s = ", ".join(prev) if prev else "(any)"
+    cur_s = ", ".join(cur) if cur else "(any)"
+    return f"- **{name}**: `{prev_s}` → `{cur_s}`"
+
+
 def _spec_diff_markdown(prev: K8sWorkloadSpec, cur: K8sWorkloadSpec) -> str:
     changes: list[str] = []
     for line in (
         _diff_field("backend replicas", prev.backend.replicas, cur.backend.replicas),
+        _diff_field(
+            "backend web_concurrency",
+            prev.backend.web_concurrency,
+            cur.backend.web_concurrency,
+        ),
         _diff_field(
             "backend cpu limit",
             prev.backend.resources.cpu_limit,
@@ -302,16 +326,61 @@ def _spec_diff_markdown(prev: K8sWorkloadSpec, cur: K8sWorkloadSpec) -> str:
             prev.backend.resources.memory_limit,
             cur.backend.resources.memory_limit,
         ),
+        _diff_field(
+            "backend memory request",
+            prev.backend.resources.memory_request,
+            cur.backend.resources.memory_request,
+        ),
+        _diff_field(
+            "backend spread_replicas",
+            prev.backend.spread_replicas,
+            cur.backend.spread_replicas,
+        ),
+        _diff_workers(
+            "backend placement workers",
+            prev.backend.placement_workers,
+            cur.backend.placement_workers,
+        ),
         _diff_field("database enabled", prev.database.enabled, cur.database.enabled),
+        _diff_field(
+            "database replicas",
+            prev.database.replicas,
+            cur.database.replicas,
+        ),
+        _diff_field(
+            "database max_connections",
+            prev.database.max_connections,
+            cur.database.max_connections,
+        ),
         _diff_field(
             "database cpu limit",
             prev.database.resources.cpu_limit,
             cur.database.resources.cpu_limit,
         ),
         _diff_field(
+            "database cpu request",
+            prev.database.resources.cpu_request,
+            cur.database.resources.cpu_request,
+        ),
+        _diff_field(
             "database memory limit",
             prev.database.resources.memory_limit,
             cur.database.resources.memory_limit,
+        ),
+        _diff_field(
+            "database memory request",
+            prev.database.resources.memory_request,
+            cur.database.resources.memory_request,
+        ),
+        _diff_field(
+            "database placement worker",
+            prev.database.placement_worker or "",
+            cur.database.placement_worker or "",
+        ),
+        _diff_workers(
+            "database placement workers",
+            prev.database.placement_workers,
+            cur.database.placement_workers,
         ),
     ):
         if line:
@@ -379,6 +448,13 @@ def _parse_adaptive_phases(bench_log: str) -> list[dict[str, Any]]:
         p95_decision = re.search(r"p95=(\d+)ms", m.group("action"))
         goodput_m = _STEP_GOODPUT_RE.search(line)
         cv_m = _STEP_CV_RE.search(line)
+        drift_m = _STEP_DRIFT_RE.search(line)
+        samples_m = _SAMPLES_RE.search(line)
+        decision_samples: list[float] = []
+        if samples_m:
+            raw = samples_m.group("samples").strip()
+            if raw:
+                decision_samples = [float(x.strip()) for x in raw.split(",") if x.strip()]
         phases.append(
             {
                 "t_s": t_s,
@@ -391,6 +467,8 @@ def _parse_adaptive_phases(bench_log: str) -> list[dict[str, Any]]:
                 "action": m.group("action").strip(),
                 "step_goodput_rps": float(goodput_m.group(1)) if goodput_m else None,
                 "step_cv": float(cv_m.group(1)) if cv_m else None,
+                "step_drift_pct": float(drift_m.group(1)) if drift_m else None,
+                "decision_samples": decision_samples,
             }
         )
     phases.sort(key=lambda p: p["t_s"])
@@ -414,11 +492,90 @@ def _parse_adaptive_v2_stop(bench_log: str) -> dict[str, Any] | None:
     return last
 
 
+def _parse_p95_sample_series(log_text: str) -> list[tuple[int, float]]:
+    series: list[tuple[int, float]] = []
+    for line in log_text.splitlines():
+        m = _P95_SAMPLE_RE.search(line)
+        if not m:
+            continue
+        series.append((int(m.group(1)), float(m.group(3))))
+    series.sort(key=lambda item: item[0])
+    return series
+
+
+def _stats_min_avg_max(
+    values: list[float],
+) -> tuple[float | None, float | None, float | None]:
+    if not values:
+        return None, None, None
+    return min(values), sum(values) / len(values), max(values)
+
+
+def _format_min_avg_max(
+    low: float | None,
+    mid: float | None,
+    high: float | None,
+    *,
+    precision: int = 1,
+) -> str:
+    if low is None or mid is None or high is None:
+        return "—"
+    fmt = f"{{:.{precision}f}}"
+    return f"{fmt.format(low)} / {fmt.format(mid)} / {fmt.format(high)}"
+
+
+def _load_goodput_timeseries(perf_run_dir: Path | None) -> list[tuple[int, float]] | None:
+    if perf_run_dir is None:
+        return None
+    try:
+        from .plots.ramp_data import load_stats_timeseries
+
+        df = load_stats_timeseries(perf_run_dir)
+    except (FileNotFoundError, ValueError, ImportError):
+        return None
+    return [
+        (int(row["t_s"]), float(row["goodput_rps"]))
+        for _, row in df.iterrows()
+        if row["goodput_rps"] == row["goodput_rps"]
+    ]
+
+
+def _goodput_window_stats(
+    timeseries: list[tuple[int, float]] | None,
+    t_end: int,
+    *,
+    window_s: int = _SUMMARY_MEASURE_WINDOW_S,
+) -> tuple[float | None, float | None, float | None]:
+    if not timeseries:
+        return None, None, None
+    t_start = t_end - window_s
+    values = [gp for t_s, gp in timeseries if t_start < t_s <= t_end]
+    return _stats_min_avg_max(values)
+
+
+def _p95_window_stats(
+    p95_series: list[tuple[int, float]],
+    t_end: int,
+    decision_samples: list[float],
+    *,
+    window_s: int = _SUMMARY_MEASURE_WINDOW_S,
+) -> tuple[float | None, float | None, float | None]:
+    t_start = t_end - window_s
+    window_values = [p95 for t_s, p95 in p95_series if t_start < t_s <= t_end]
+    if window_values:
+        return _stats_min_avg_max(window_values)
+    if decision_samples:
+        return _stats_min_avg_max(decision_samples)
+    return None, None, None
+
+
 def _adaptive_table_markdown(
     phases: list[dict[str, Any]],
     *,
     initial_users: int | None = None,
     v2_stop: dict[str, Any] | None = None,
+    log_text: str = "",
+    perf_run_dir: Path | None = None,
 ) -> str:
     """
     Render the adaptive ramp as a step table.
@@ -428,30 +585,27 @@ def _adaptive_table_markdown(
     - ``level users`` = virtual users actually running during this measurement
       window (= previous step's ``next users``).
     - ``→ next users`` = users the controller selected for the next window.
-    - ``reqs`` / ``fail %`` are **per-step deltas** (not cumulative since t=0).
-    - ``goodput`` and ``cv`` only appear for ``k8s-adaptive-v2`` runs.
+    - Goodput min/avg/max = Locust ``stats_history`` over the trailing
+      ``_SUMMARY_MEASURE_WINDOW_S`` seconds before each decision (successful req/s).
+    - P95 min/avg/max = controller ``adaptive p95 sample`` lines in that same
+      trailing window, or the decision ``samples=[…]`` fallback when absent.
     """
     if not phases:
         return "(no `adaptive phase end` lines in bench.log — not an adaptive profile or run too short)"
 
-    has_goodput = any(p.get("step_goodput_rps") is not None for p in phases)
-    has_cv = any(p.get("step_cv") is not None for p in phases)
+    p95_series = _parse_p95_sample_series(log_text)
+    goodput_timeseries = _load_goodput_timeseries(perf_run_dir)
 
     header_cols = [
         "Step",
         "window end t (s)",
         "level users",
         "→ next users",
-        "p95 decision (ms)",
-        "p95 logged",
-        "reqs",
+        "goodput (succ/s)<br>min / avg / max",
+        "P95 (ms)<br>min / avg / max",
         "fail %",
+        "action",
     ]
-    if has_goodput:
-        header_cols.append("goodput (succ/s)")
-    if has_cv:
-        header_cols.append("cv")
-    header_cols.append("action")
     header = "| " + " | ".join(header_cols) + " |"
     sep_cells = ["---:"] * (len(header_cols) - 1) + ["---"]
     sep = "|" + "|".join(sep_cells) + "|"
@@ -460,6 +614,7 @@ def _adaptive_table_markdown(
     level_users = initial_users
     cumulative_reqs = 0
     cumulative_fail = 0
+    step_goodput_maxima: list[float] = []
     for i, p in enumerate(phases):
         delta_reqs = max(0, p["reqs"] - cumulative_reqs)
         delta_fail = max(0, p["fail"] - cumulative_fail)
@@ -471,28 +626,66 @@ def _adaptive_table_markdown(
             else p["fail_pct"]
         )
         next_users = p["next_users"]
+        t_end = int(p["t_s"])
+        gp_min, gp_avg, gp_max = _goodput_window_stats(goodput_timeseries, t_end)
+        if gp_max is not None:
+            step_goodput_maxima.append(gp_max)
+        elif p.get("step_goodput_rps") is not None:
+            gp_fallback = float(p["step_goodput_rps"])
+            gp_min = gp_avg = gp_max = gp_fallback
+            step_goodput_maxima.append(gp_fallback)
+        p95_min, p95_avg, p95_max = _p95_window_stats(
+            p95_series,
+            t_end,
+            list(p.get("decision_samples") or []),
+        )
         cells = [
             str(i),
-            str(p["t_s"]),
+            str(t_end),
             str(level_users if level_users is not None else "—"),
             str(next_users if next_users is not None else "—"),
-            str(p["p95_decision_ms"] if p["p95_decision_ms"] is not None else "—"),
-            str(p["p95_logged"]),
-            str(delta_reqs),
+            _format_min_avg_max(gp_min, gp_avg, gp_max, precision=0),
+            _format_min_avg_max(p95_min, p95_avg, p95_max, precision=0),
             step_fail_pct,
+            p["action"].replace("|", "\\|")[:80],
         ]
-        if has_goodput:
-            gp = p.get("step_goodput_rps")
-            cells.append(f"{gp:.1f}" if gp is not None else "—")
-        if has_cv:
-            cv = p.get("step_cv")
-            cells.append(f"{cv:.2f}" if cv is not None else "—")
-        cells.append(p["action"].replace("|", "\\|")[:80])
         rows.append("| " + " | ".join(cells) + " |")
         level_users = next_users
 
     last = phases[-1]
     rows.append("")
+    rows.append(
+        f"_Goodput min/avg/max uses Locust ``stats_history`` over the last "
+        f"{_SUMMARY_MEASURE_WINDOW_S}s before each decision; P95 min/avg/max uses "
+        f"controller ``adaptive p95 sample`` lines in that window (or decision "
+        f"``samples=[…]`` when per-second samples are unavailable)._"
+    )
+    if step_goodput_maxima:
+        rows.append(
+            f"**Table peak goodput**: **{max(step_goodput_maxima):.1f}** succ/s "
+            f"(max of goodput-max column)."
+        )
+    try:
+        from .plots.ramp_data import peak_goodput_from_bench_log, sustained_goodput_from_bench
+
+        if perf_run_dir is not None:
+            sustained = sustained_goodput_from_bench(perf_run_dir)
+            if sustained is not None and sustained.goodput_rps > 0:
+                rows.append(
+                    f"**Sustained max goodput ({sustained.window_s}s window)**: "
+                    f"**{sustained.goodput_rps:.1f}** succ/s @ {sustained.users}u "
+                    f"(t={sustained.t_s}s, fail={sustained.fail_pct:.1f}%, "
+                    f"drift={sustained.drift_pct:.1f}%) — primary experiment metric."
+                )
+        run_peak, peak_users = peak_goodput_from_bench_log(log_text)
+        if run_peak > 0:
+            user_note = f" @ {peak_users}u" if peak_users is not None else ""
+            rows.append(
+                f"**Step peak goodput (controller metric)**: **{run_peak:.1f}** "
+                f"succ/s{user_note} — legacy per-step maximum."
+            )
+    except ImportError:
+        pass
     if cumulative_reqs:
         rows.append(
             f"**Ramp outcome**: last decision selected **{last['next_users']}** users "
@@ -740,26 +933,12 @@ def append_spec_generation_block(
     return path
 
 
-def append_perf_run_block(
+def _build_perf_run_block_text(
     *,
-    sample_dir: Path,
-    iteration_id: str,
     perf_run_dir: Path,
     feedback: IterationFeedback | None = None,
-    load_profile: str | None = None,
-) -> Path:
-    """Append Locust / adaptive perf subsection for one iteration."""
-    if os.environ.get("BAXBENCH_K8S_EXPERIMENT_SUMMARY", "true").lower() in (
-        "0",
-        "false",
-        "no",
-    ):
-        return experiment_summary_path(sample_dir)
-
-    path = experiment_summary_path(sample_dir)
-    _ensure_header(path, sample_dir=sample_dir, load_profile=load_profile)
-    iid = normalize_iteration_id(iteration_id)
-
+) -> str:
+    """Markdown body for one iteration's ``### Locust run`` subsection."""
     bench_log_path = perf_run_dir / "bench.log"
     log_text = _gather_perf_log_text(perf_run_dir)
 
@@ -773,17 +952,21 @@ def append_perf_run_block(
     initial_users = _parse_initial_users(log_text)
     v2_stop = _parse_adaptive_v2_stop(log_text)
     adaptive_md = _adaptive_table_markdown(
-        phases, initial_users=initial_users, v2_stop=v2_stop
+        phases,
+        initial_users=initial_users,
+        v2_stop=v2_stop,
+        log_text=log_text,
+        perf_run_dir=perf_run_dir,
     )
     locust_line = _aggregate_locust_line(perf_run_dir)
 
-    locust_table = ""
     fb = feedback
     if fb is None:
         from .workspace import load_feedback
 
         fb = load_feedback(perf_run_dir)
 
+    locust_table = ""
     if fb and fb.locust_summary and "(no Locust stats" not in fb.locust_summary:
         locust_table = f"\n**Per-endpoint Locust** (from feedback)\n\n{fb.locust_summary}\n"
 
@@ -805,7 +988,7 @@ def append_perf_run_block(
     if fb and fb.notes and fb.notes.strip():
         notes_line = f"\n**Notes**\n\n{fb.notes.strip()}\n"
 
-    body = "\n".join(
+    return "\n".join(
         [
             f"### Locust run ({time_range})",
             "",
@@ -827,6 +1010,116 @@ def append_perf_run_block(
             "",
         ]
     )
+
+
+def _replace_locust_run_block(
+    content: str,
+    iteration_id: str,
+    new_block: str,
+) -> tuple[str, bool]:
+    """Replace the ``### Locust run`` subsection under one iteration heading."""
+    iid = normalize_iteration_id(iteration_id)
+    heading_re = re.compile(rf"^## {re.escape(iid)}\s*$", re.M)
+    heading = heading_re.search(content)
+    if not heading:
+        return content, False
+
+    sec_start = heading.end()
+    next_iter = re.search(r"^## iteration-\d+", content[sec_start:], re.M)
+    sec_end = sec_start + next_iter.start() if next_iter else len(content)
+    section = content[sec_start:sec_end]
+
+    block_re = re.compile(r"^### Locust run \([^)]*\)\n.*?\n---\n", re.M | re.S)
+    block = block_re.search(section)
+    if not block:
+        return content, False
+
+    new_section = section[: block.start()] + new_block + section[block.end() :]
+    new_content = content[:sec_start] + new_section + content[sec_end:]
+    return new_content, True
+
+
+def regenerate_experiment_summary_perf_blocks(
+    experiment_root: Path,
+    *,
+    load_profile: str | None = None,
+) -> Path:
+    """
+    Rebuild every ``### Locust run`` subsection from on-disk ``05-bench/`` logs.
+
+    Useful after changing adaptive table formatting without re-running Locust.
+    """
+    from .workspace import (
+        ITERATIONS_DIRNAME,
+        iteration_bench_dir,
+        iteration_folder_is_failed,
+        load_feedback,
+        parse_iteration_index,
+    )
+
+    experiment_path = experiment_root.expanduser().resolve()
+    if (experiment_path / ITERATIONS_DIRNAME).is_dir():
+        root = experiment_path
+    else:
+        from .workspace import k8s_workspace_root
+
+        root = k8s_workspace_root(experiment_path)
+    path = experiment_summary_path(root)
+    if not path.is_file():
+        _ensure_header(path, sample_dir=root, load_profile=load_profile)
+
+    content = path.read_text(encoding="utf-8")
+    iterations_dir = root / ITERATIONS_DIRNAME
+    if not iterations_dir.is_dir():
+        return path
+
+    for child in sorted(iterations_dir.iterdir()):
+        if not child.is_dir() or iteration_folder_is_failed(child.name):
+            continue
+        idx = parse_iteration_index(child.name)
+        if idx is None:
+            continue
+        bench_dir = iteration_bench_dir(child)
+        if not (bench_dir / "bench.log").is_file():
+            continue
+
+        iid = f"iteration-{idx:03d}"
+        block = _build_perf_run_block_text(
+            perf_run_dir=bench_dir,
+            feedback=load_feedback(bench_dir),
+        )
+        updated_content, replaced = _replace_locust_run_block(content, iid, block)
+        if replaced:
+            content = updated_content
+        else:
+            _append_for_iteration(path, iid, block)
+            content = path.read_text(encoding="utf-8")
+
+    path.write_text(content, encoding="utf-8")
+    return path
+
+
+def append_perf_run_block(
+    *,
+    sample_dir: Path,
+    iteration_id: str,
+    perf_run_dir: Path,
+    feedback: IterationFeedback | None = None,
+    load_profile: str | None = None,
+) -> Path:
+    """Append Locust / adaptive perf subsection for one iteration."""
+    if os.environ.get("BAXBENCH_K8S_EXPERIMENT_SUMMARY", "true").lower() in (
+        "0",
+        "false",
+        "no",
+    ):
+        return experiment_summary_path(sample_dir)
+
+    path = experiment_summary_path(sample_dir)
+    _ensure_header(path, sample_dir=sample_dir, load_profile=load_profile)
+    iid = normalize_iteration_id(iteration_id)
+
+    body = _build_perf_run_block_text(perf_run_dir=perf_run_dir, feedback=feedback)
     _append_for_iteration(path, iid, body)
     return path
 

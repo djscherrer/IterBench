@@ -76,6 +76,21 @@ def main(args: Any) -> None:
 
         run_registry_setup_from_args(args)
         return
+    if args.mode == "k8s-plot":
+        from k8s_bench.plots import regenerate_experiment_plots
+
+        if not getattr(args, "k8s_experiment_dir", None):
+            raise SystemExit("--k8s-experiment-dir is required for --mode k8s-plot")
+        experiment_dir = pathlib.Path(args.k8s_experiment_dir).expanduser().resolve()
+        plot_paths = regenerate_experiment_plots(experiment_dir)
+        if not plot_paths:
+            raise SystemExit(
+                f"No plots generated for {experiment_dir} "
+                "(no completed benchmark iterations found)."
+            )
+        for plot_path in plot_paths:
+            print(f"[k8s-plot] Wrote {plot_path}")
+        return
     # ----- Preparation -----#
     # Override port for all environments with the value from args, if not provided defaults to 5001
     envs = [replace(e, port=args.port) for e in all_envs]
@@ -368,6 +383,7 @@ if __name__ == "__main__":
             "k8s-preflight",
             "k8s-setup-cluster",
             "k8s-setup-registry",
+            "k8s-plot",
             "plot",
             "evaluate",
             "preflight",
@@ -668,6 +684,15 @@ if __name__ == "__main__":
             "sampleN/k8s-experiments/<slug>/ (also BAXBENCH_K8S_EXPERIMENT). "
             "Omit for legacy layout directly under sampleN/. "
             "Use a new slug to start a fresh iteration chain without reusing prior skips."
+        ),
+    )
+    parser.add_argument(
+        "--k8s-experiment-dir",
+        type=str,
+        default=None,
+        help=(
+            "Path to a k8s experiment workspace (sampleN/k8s-experiments/<slug>/). "
+            "Required for --mode k8s-plot."
         ),
     )
     parser.add_argument(
