@@ -18,17 +18,17 @@
 set -euo pipefail
 
 # === EDIT THESE (overridable via --flags) ===========================
-MODEL="deepseek/deepseek-v3.2"        # provider/name (slash form)
+MODEL="deepseek/deepseek-v4-pro"        # provider/name (slash form)
 PROVIDER="openrouter"
 CLUSTER="baxbench-emulab"
-LOAD_PROFILE="k8s-adaptive-v2"
-TIMEOUT="600"
-WAIT_TIMEOUT="120"
+LOAD_PROFILE="k8s-goodput-plateau"
+TIMEOUT="300"
+WAIT_TIMEOUT="180"
 PORT="5001"
 LLM_MAX_COST="10"
 # ====================================================================
 
-ITER="results/deepseek-deepseek-v3.2/LexiTally_WordCountDatasets/JavaScript-express/temp0.2-openapi-high_performance/sample3/k8s-experiments/expb/manual_experiments/iteration-018_3db"
+ITER="results/deepseek-deepseek-v4-pro/LexiTally_WordCountDatasets/Python-Flask/temp0.2-openapi-high_performance/sample0/k8s-experiments/12-6-bench-lp-improved2/manual/iteration-010-code-plateau-5"
 KEEP_BENCH="false"
 
 while [ $# -gt 0 ]; do

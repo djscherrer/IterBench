@@ -25,7 +25,7 @@
 set -euo pipefail
 
 # --- 1. Execution Targets ---
-MODELS="deepseek/deepseek-v3.2" # deepseek/deepseek-v3.2  anthropic/claude-opus-4-6
+MODELS="deepseek/deepseek-v4-pro" # deepseek/deepseek-v3.2  anthropic/claude-opus-4-6 openai/gpt-5.4-2026-03-05
 PROVIDER="openrouter"           # openai | anthropic | together_ai | openrouter | swissai | vllm
                                 # required when the model prefix is not auto-detected (e.g. deepseek/…)
 USE_OPENHANDS_MODES="false"
@@ -34,15 +34,15 @@ ONLY_SAMPLES="0"   # e.g. "0"; empty → N_SAMPLES
 N_SAMPLES=""
 
 # --- 2. Project Scope ---
-ENVS="JavaScript-express"
+ENVS="Python-Flask"
 EXCLUDE_ENVS=""
-SCENARIOS="LexiTally_WordCountDatasets TextWeaver_PatternRewriter"
+SCENARIOS="Petstore"
 EXCLUDE_SCENARIOS=""
 TEMPERATURE="0.2"
 SAFETY_PROMPT="high_performance"
 
 # --- 3. Load profile (Locust shape; same registry as distributed bench) ---
-BAXBENCH_LOAD_PROFILE=("k8s-adaptive-v2")
+BAXBENCH_LOAD_PROFILE=("k8s-goodput-plateau")
 
 BENCH_USERS=""
 BENCH_SPAWN_RATE=""
@@ -52,10 +52,10 @@ BENCH_RUN_TIME=""
 BAXBENCH_K8S_CLUSTER="baxbench-emulab"
 KUBECONFIG_PATH=""              # empty = path from cluster profile
 K8S_ITERATION=""                # pin one iteration; empty = use K8S_ITERATIONS
-K8S_EXPERIMENT="exp-AAA"               # e.g. adaptive-may20 → sampleN/k8s-experiments/<slug>/
-K8S_ITERATIONS="10"              # phases: iteration-001 .. iteration-NNN
+K8S_EXPERIMENT="17.6-bench-plateau-200max-4"               # e.g. adaptive-may20 → sampleN/k8s-experiments/<slug>/
+K8S_ITERATIONS="20"              # phases: iteration-001 .. iteration-NNN
 K8S_SPEC_GEN="true"             # false = deploy-only with existing spec.yaml files
-K8S_WAIT_TIMEOUT="120"
+K8S_WAIT_TIMEOUT="600"
 # Locust runs on profile load_master/workers; backend exposed via NodePort
 K8S_AUTO_INIT="false"           # only used with K8S_SPEC_GEN=false
 K8S_REQUIRE_CLUSTER="true"
@@ -78,7 +78,7 @@ BASELINE_SPEC_MAX_ATTEMPTS="5"
 
 # --- LLM cost tracking (estimated; see sampleN/k8s-experiments/<slug>/llm_cost_ledger.json) ---
 BAXBENCH_LLM_MAX_COST="10"            # e.g. "10.00" — stop when estimated experiment LLM spend exceeds this (USD)
-# BAXBENCH_LLM_PRICING_JSON='{"claude-opus-4-6":{"input":15,"output":75}}'
+
 
 # --- 5. Bench configuration ---
 TIMEOUT="600"
@@ -213,9 +213,6 @@ for _model in $MODELS; do
       fi
       if [ -n "$BAXBENCH_LLM_MAX_COST" ]; then
         EXTRA_ENV+=("BAXBENCH_LLM_MAX_COST=$BAXBENCH_LLM_MAX_COST")
-      fi
-      if [ -n "${BAXBENCH_LLM_PRICING_JSON:-}" ]; then
-        EXTRA_ENV+=("BAXBENCH_LLM_PRICING_JSON=$BAXBENCH_LLM_PRICING_JSON")
       fi
       echo ""
       echo "=== K8s iterative bench run #$RUN_I: model='${_model}' openhands='${_openhands}' load_profile='$profile' iterations=$K8S_ITERATIONS ==="

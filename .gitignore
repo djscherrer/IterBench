@@ -355,3 +355,5 @@ results_snapshots/**/*perf*/
 throughput*.csv
 
 prompts/*
+
+results_distributed_bench/*
