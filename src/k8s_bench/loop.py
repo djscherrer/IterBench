@@ -29,6 +29,7 @@ from .iteration import resolve_iterations_to_run
 from .orchestration.execute import execute_iteration
 from .orchestration.preflight import (
     build_run_config,
+    deploy_only_preflight,
     sample_postlude,
     sample_preflight,
 )
@@ -162,19 +163,27 @@ def run_deploy_only_k8s_bench(
     deploy_cfg = replace(deploy_cfg, load_profile=load_profile)
 
     for sample in samples:
-        ctx = sample_preflight(task, results_dir, sample, deploy_cfg)
-        if ctx is None:
-            continue
+        sample_dir = task.get_sample_dir(results_dir, sample)
+        save_dir = task.get_save_dir(results_dir)
 
         try:
             iteration_paths = resolve_iterations_to_run(
-                ctx.sample_dir,
+                sample_dir,
                 iteration_id=k8s_iteration,
                 auto_init=k8s_auto_init,
                 iteration_path=k8s_iteration_path,
             )
         except FileNotFoundError as exc:
-            append_k8s_skip(ctx.save_dir, ctx.sample, f"skipped: {exc}")
+            append_k8s_skip(save_dir, sample, f"skipped: {exc}")
+            continue
+
+        if k8s_iteration_path is not None:
+            ctx = deploy_only_preflight(
+                task, results_dir, sample, iteration_paths[0], deploy_cfg
+            )
+        else:
+            ctx = sample_preflight(task, results_dir, sample, deploy_cfg)
+        if ctx is None:
             continue
 
         for iteration_path in iteration_paths:
