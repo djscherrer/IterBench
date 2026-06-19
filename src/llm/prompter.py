@@ -185,8 +185,14 @@ class Prompter:
             logger.error("Unknown provider: %s", self.provider)
             raise Exception(f"Unknown provider: {self.provider}")
         if self.last_usage is not None:
+            cost_kind = (
+                "Reported"
+                if self.last_usage.cost_source == "openrouter_reported"
+                else "Estimated"
+            )
             logger.info(
-                "Estimated LLM cost: $%.4f (%d in + %d out tokens, model=%s)",
+                "%s LLM cost: $%.4f (%d in + %d out tokens, model=%s)",
+                cost_kind,
                 self.last_usage.estimated_cost_usd,
                 self.last_usage.input_tokens,
                 self.last_usage.output_tokens,

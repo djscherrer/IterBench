@@ -36,6 +36,8 @@ OPENAI_TOGETHER_CONTEXT_LENGTHS: dict[str, int] = {
     "deepseek-ai/DeepSeek-R1-Distill-Llama-70B": 131072,
     "deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B": 131072,
     "deepseek-ai/DeepSeek-R1-Distill-Qwen-14B": 131072,
+    "deepseek-ai/DeepSeek-R1-Distill-Qwen-7B": 131072,
+    "deepseek/deepseek-v4-pro": 1_000_000, 
     "Qwen/QwQ-32B": 32768,
     "qwen/qwq-32b": 128000,
     "meta-llama/Llama-4-Maverick-17B-128E-Instruct-FP8": 524288,

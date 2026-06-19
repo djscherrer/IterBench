@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any
 
 from openai import OpenAI
 
+from ..cache import openrouter_cache_kwargs
 from ..config import OPENAI_TOGETHER_CONTEXT_LENGTHS, OPENROUTER_REMAP
 from ..keys import KeyLocs
 from ._base import log_inference_provider, single_completion
@@ -39,6 +40,7 @@ def prompt_openrouter(prompter: Prompter, logger: logging.Logger) -> list[str]:
         extra_kwargs["extra_body"] = None
     if prompter.model == "x-ai/grok-3-mini-beta":
         extra_kwargs["reasoning_effort"] = "high"
+    extra_kwargs.update(openrouter_cache_kwargs(prompter))
 
     response, content = single_completion(
         prompter,

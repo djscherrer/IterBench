@@ -9,6 +9,7 @@ from .parser import Parser
 from .prompter import Prompter
 from .usage import (
     LlmUsageRecord,
+    ModelPricing,
     TokenUsage,
     append_usage_record,
     enforce_cost_budget,
@@ -17,7 +18,7 @@ from .usage import (
     format_cost_summary_markdown,
     ledger_path,
     load_ledger,
-    load_pricing_table,
+    lookup_pricing,
     normalize_model_name,
     record_prompter_usage,
     resolve_max_cost_usd,
@@ -36,6 +37,7 @@ def __getattr__(name: str):
 __all__ = [
     "KeyLocs",
     "LlmUsageRecord",
+    "ModelPricing",
     "OpenHandsPrompter",
     "Parser",
     "Prompter",
@@ -47,7 +49,7 @@ __all__ = [
     "format_cost_summary_markdown",
     "ledger_path",
     "load_ledger",
-    "load_pricing_table",
+    "lookup_pricing",
     "normalize_model_name",
     "record_prompter_usage",
     "resolve_max_cost_usd",
