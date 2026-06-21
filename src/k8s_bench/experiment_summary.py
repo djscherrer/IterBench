@@ -224,9 +224,19 @@ def _spec_bullets(spec: K8sWorkloadSpec) -> list[str]:
         f"- **Backend** {_format_resources('resources', b.resources)}",
     ]
     if spec.database.enabled:
+        primary = spec.database.effective_primary_resources()
+        replica = spec.database.effective_replica_resources()
         lines.append(
-            f"- **Database** {_format_resources('resources', spec.database.resources)}"
+            f"- **Database primary** {_format_resources('resources', primary)}"
         )
+        if spec.database.replicas > 1:
+            lines.append(
+                f"- **Database replica** {_format_resources('resources', replica)}"
+            )
+        elif spec.database.primary_resources is not None:
+            lines.append(
+                f"- **Database (default)** {_format_resources('resources', spec.database.resources)}"
+            )
         lines.append(f"- **Postgres replicas**: {spec.database.replicas}")
         if spec.database.replicas > 1:
             lines.append(
@@ -308,7 +318,17 @@ def _diff_tuning(prev, cur) -> list[str]:
         "shared_buffers",
         "effective_cache_size",
         "work_mem",
+        "maintenance_work_mem",
         "max_parallel_workers_per_gather",
+        "max_parallel_workers",
+        "max_worker_processes",
+        "random_page_cost",
+        "effective_io_concurrency",
+        "max_wal_size",
+        "checkpoint_timeout_s",
+        "wal_buffers",
+        "jit_enabled",
+        "statement_timeout_ms",
     ):
         old = getattr(prev, field)
         new = getattr(cur, field)
@@ -370,24 +390,40 @@ def _spec_diff_markdown(prev: K8sWorkloadSpec, cur: K8sWorkloadSpec) -> str:
         ),
         *_diff_tuning(prev.database.tuning, cur.database.tuning),
         _diff_field(
-            "database cpu limit",
-            prev.database.resources.cpu_limit,
-            cur.database.resources.cpu_limit,
+            "database primary cpu limit",
+            prev.database.effective_primary_resources().cpu_limit,
+            cur.database.effective_primary_resources().cpu_limit,
         ),
         _diff_field(
-            "database cpu request",
-            prev.database.resources.cpu_request,
-            cur.database.resources.cpu_request,
+            "database primary cpu request",
+            prev.database.effective_primary_resources().cpu_request,
+            cur.database.effective_primary_resources().cpu_request,
         ),
         _diff_field(
-            "database memory limit",
-            prev.database.resources.memory_limit,
-            cur.database.resources.memory_limit,
+            "database primary memory limit",
+            prev.database.effective_primary_resources().memory_limit,
+            cur.database.effective_primary_resources().memory_limit,
         ),
         _diff_field(
-            "database memory request",
-            prev.database.resources.memory_request,
-            cur.database.resources.memory_request,
+            "database primary memory request",
+            prev.database.effective_primary_resources().memory_request,
+            cur.database.effective_primary_resources().memory_request,
+        ),
+        *(
+            [
+                _diff_field(
+                    "database replica cpu limit",
+                    prev.database.effective_replica_resources().cpu_limit,
+                    cur.database.effective_replica_resources().cpu_limit,
+                ),
+                _diff_field(
+                    "database replica cpu request",
+                    prev.database.effective_replica_resources().cpu_request,
+                    cur.database.effective_replica_resources().cpu_request,
+                ),
+            ]
+            if prev.database.replicas > 1 or cur.database.replicas > 1
+            else []
         ),
         _diff_field(
             "database placement worker",

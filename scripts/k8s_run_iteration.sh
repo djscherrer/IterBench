@@ -28,7 +28,7 @@ PORT="5001"
 LLM_MAX_COST="10"
 # ====================================================================
 
-ITER="results/deepseek-deepseek-v4-pro/LexiTally_WordCountDatasets/Python-Flask/temp0.2-openapi-high_performance/sample0/k8s-experiments/12-6-bench-lp-improved2/manual/iteration-010-code-plateau-5"
+ITER="results/deepseek-deepseek-v4-pro/LexiTally_WordCountDatasets/Python-Flask/temp0.2-openapi-high_performance/sample0/k8s-experiments/17-6-bench-plateau/manual/iteration-016-code-dbtune-specs-add"
 KEEP_BENCH="false"
 
 while [ $# -gt 0 ]; do
