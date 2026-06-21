@@ -31,6 +31,8 @@ from ..workspace import (
     iteration_code_snapshot_dir,
     iteration_functional_tests_dir,
     iteration_id_for_index,
+    latest_code_dir,
+    materialize_code_lineage,
     resolve_k8s_experiment_id,
 )
 from .config import BaselineCodeMode, RunConfig, SampleContext
@@ -191,47 +193,88 @@ def deploy_only_preflight(
     ``02-code/functional_tests/`` even when the sample-level ``--mode test``
     artifacts were never written (e.g. experiments that only ran k8s-bench with
     ``--baseline-code regenerate``). Prefer the iteration-local FT gate when
-    available; otherwise fall back to the sample-level gate.
+    available; otherwise materialize ``02-code/`` from the latest prior
+    iteration and retry before falling back to the sample-level gate.
     """
     save_dir = task.get_save_dir(results_dir)
     sample_dir = task.get_sample_dir(results_dir, sample)
     sample_logger = logging.getLogger(task.id)
 
+    ctx = _deploy_only_iteration_preflight(
+        task,
+        results_dir,
+        sample,
+        sample_dir,
+        save_dir,
+        iteration_path,
+        sample_logger,
+    )
+    if ctx is not None:
+        return ctx
+
+    baseline_code = task.get_code_dir(results_dir, sample)
+    source_code = latest_code_dir(sample_dir, fallback=baseline_code)
+    materialize_code_lineage(iteration_path, source_code)
+
+    ctx = _deploy_only_iteration_preflight(
+        task,
+        results_dir,
+        sample,
+        sample_dir,
+        save_dir,
+        iteration_path,
+        sample_logger,
+    )
+    if ctx is not None:
+        return ctx
+
+    return sample_preflight(task, results_dir, sample, cfg)
+
+
+def _deploy_only_iteration_preflight(
+    task: Any,
+    results_dir: Path,
+    sample: int,
+    sample_dir: Path,
+    save_dir: Path,
+    iteration_path: Path,
+    sample_logger: logging.Logger,
+) -> SampleContext | None:
     iter_ft_results = iteration_functional_tests_dir(iteration_path) / "test_results.json"
     iter_test_log = iteration_functional_tests_dir(iteration_path) / "test.log"
     code_snap = iteration_code_snapshot_dir(iteration_path)
 
-    if functional_tests_passed_at(iter_ft_results):
-        image_id = (
-            image_id_from_test_log(iter_test_log)
-            if iter_test_log.is_file()
-            else None
-        )
-        image_id = ensure_docker_image(
-            task,
-            results_dir,
-            sample,
-            image_id,
-            sample_logger,
-            code_dir=code_snap if code_snap.is_dir() and any(code_snap.iterdir()) else None,
-        )
-        if image_id is None:
-            append_k8s_skip(
-                save_dir,
-                sample,
-                f"skipped: failed to build docker image for {iteration_path.name}",
-            )
-            return None
-        return SampleContext(
-            task=task,
-            results_dir=results_dir,
-            sample=sample,
-            sample_dir=sample_dir,
-            save_dir=save_dir,
-            base_image_id=image_id,
-        )
+    if not functional_tests_passed_at(iter_ft_results):
+        return None
 
-    return sample_preflight(task, results_dir, sample, cfg)
+    image_id = (
+        image_id_from_test_log(iter_test_log)
+        if iter_test_log.is_file()
+        else None
+    )
+    image_id = ensure_docker_image(
+        task,
+        results_dir,
+        sample,
+        image_id,
+        sample_logger,
+        code_dir=code_snap if code_snap.is_dir() and any(code_snap.iterdir()) else None,
+    )
+    if image_id is None:
+        append_k8s_skip(
+            save_dir,
+            sample,
+            f"skipped: failed to build docker image for {iteration_path.name}",
+        )
+        return None
+    return SampleContext(
+        task=task,
+        results_dir=results_dir,
+        sample=sample,
+        sample_dir=sample_dir,
+        save_dir=save_dir,
+        base_image_id=image_id,
+    )
 
 
 def regenerate_baseline_sample_preflight(

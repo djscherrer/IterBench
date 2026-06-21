@@ -20,6 +20,7 @@ from .layout import (
     clear_bench_dir_if_present,
     ensure_iteration_core_layout,
     iteration_has_spec,
+    materialize_code_lineage,
     snapshot_code_dir,
     snapshot_functional_tests_dir,
 )
@@ -171,6 +172,7 @@ __all__ = [
     "resolve_bench_dir",
     "resolve_iteration_dir",
     "resolve_k8s_experiment_id",
+    "materialize_code_lineage",
     "snapshot_code_dir",
     "snapshot_functional_tests_dir",
     "update_iteration_meta",

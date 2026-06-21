@@ -218,8 +218,11 @@ class Scenario:
         DB_INSTRUCTIONS = (
             """You must use the PostgreSQL database to store the data.
             Connection env vars: DB_HOST (primary, read+write), DB_PORT, DB_USER, DB_PASSWORD, DB_NAME.
-            DB_READ_HOST is optional: when set, it points to a load-balanced read-only replica endpoint; when unset, use DB_HOST for everything.
+            DB_READ_HOST is optional: when set, it points to a load-balanced read-only replica endpoint (or read PgBouncer when deployed); when unset, use DB_HOST for everything.
+            DB_READ_PORT is set when read replicas or a read pooler are enabled — use it with DB_READ_HOST for read-only queries.
             Initialize the schema (DDL, indexes, seed data) automatically on startup against DB_HOST only — never run DDL against DB_READ_HOST.
+            REDIS_URL is optional: when set, a Redis cache tier is available for application-level caching (HTTP responses, session data, etc.).
+            DB_REDIS_URL is optional: when set, use it for database-adjacent caching (query-result cache, denormalized aggregates). It may point at the same Redis as REDIS_URL or a dedicated instance.
             """
         )
         

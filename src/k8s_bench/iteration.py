@@ -277,6 +277,12 @@ def ensure_iteration_spec(
                 replicas=spec.backend.replicas,
                 port=spec.backend.port or app_port,
                 web_concurrency=spec.backend.web_concurrency,
+                worker_class=spec.backend.worker_class,
+                worker_threads=spec.backend.worker_threads,
+                preload=spec.backend.preload,
+                max_requests=spec.backend.max_requests,
+                max_requests_jitter=spec.backend.max_requests_jitter,
+                backlog=spec.backend.backlog,
                 resources=spec.backend.resources,
                 env=spec.backend.env,
                 placement_workers=spec.backend.placement_workers,
@@ -289,10 +295,17 @@ def ensure_iteration_spec(
                 port=db.port,
                 replicas=db.replicas,
                 max_connections=db.max_connections,
+                tuning=db.tuning,
                 placement_worker=db.placement_worker,
                 placement_workers=db.placement_workers,
                 resources=db.resources,
+                primary_resources=db.primary_resources,
+                replica_resources=db.replica_resources,
+                cache=db.cache,
             ),
+            pooler=spec.pooler,
+            read_pooler=spec.read_pooler,
+            cache=spec.cache,
             labels={**spec.labels, **(labels or {})},
         )
     else:
@@ -489,6 +502,11 @@ def run_k8s_bench_iteration(
         db_user=POSTGRES_USER,
         db_password=POSTGRES_PASSWORD,
         db_name=POSTGRES_DATABASE,
+        db_replicas=spec.database.replicas if spec.database.enabled else 1,
+        pooler_port=spec.pooler.port if spec.pooler.enabled else 6432,
+        read_pooler_port=(
+            spec.read_pooler.port if spec.read_pooler.enabled else 6432
+        ),
     )
 
     logger.info(

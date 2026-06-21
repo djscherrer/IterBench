@@ -6,8 +6,10 @@ from typing import Any
 import yaml
 
 from .models import K8sWorkloadSpec
+from .pgbouncer_render import build_pgbouncer_manifests
 from .placement import _pod_spec_affinity
 from .postgres_render import build_postgres_manifests
+from .redis_render import build_redis_manifests
 from ..workspace.paths import iteration_manifests_dir, iteration_spec_path
 
 
@@ -55,10 +57,20 @@ def _backend_container(spec: K8sWorkloadSpec, *, port: int, env_list: list[dict[
     }
     env_id = (spec.labels.get("baxbench.dev/env") or "").lower()
     if "flask" in env_id or env_id.startswith("python"):
+        preload = "--preload " if spec.backend.preload else ""
         container["command"] = [
             "sh",
             "-c",
-            "exec gunicorn --preload --workers=${WEB_CONCURRENCY:-2} "
+            "exec gunicorn "
+            f"{preload}"
+            "--workers=${WEB_CONCURRENCY:-2} "
+            "--worker-class=${GUNICORN_WORKER_CLASS:-sync} "
+            "${GUNICORN_THREADS:+--threads=$GUNICORN_THREADS} "
+            "${GUNICORN_TIMEOUT:+--timeout=$GUNICORN_TIMEOUT} "
+            "${GUNICORN_KEEPALIVE:+--keep-alive=$GUNICORN_KEEPALIVE} "
+            "${GUNICORN_MAX_REQUESTS:+--max-requests=$GUNICORN_MAX_REQUESTS} "
+            "${GUNICORN_MAX_REQUESTS_JITTER:+--max-requests-jitter=$GUNICORN_MAX_REQUESTS_JITTER} "
+            "${GUNICORN_BACKLOG:+--backlog=$GUNICORN_BACKLOG} "
             "--bind 0.0.0.0:${PORT:-5001} app:app",
         ]
     elif "express" in env_id or "javascript" in env_id or "node" in env_id:
@@ -129,6 +141,8 @@ def build_manifest_documents(spec: K8sWorkloadSpec) -> list[dict[str, Any]]:
     docs: list[dict[str, Any]] = [_namespace_manifest(spec)]
     if spec.database.enabled:
         docs.extend(_postgres_manifests(spec))
+        docs.extend(build_pgbouncer_manifests(spec, common_labels=_common_labels(spec)))
+    docs.extend(build_redis_manifests(spec, common_labels=_common_labels(spec)))
     docs.extend(_backend_manifests(spec))
     return docs
 

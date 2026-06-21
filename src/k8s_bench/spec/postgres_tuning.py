@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from typing import Any
 
 from ..cluster.capacity import _parse_memory_to_bytes
@@ -21,21 +21,69 @@ class PostgresTuningSpec:
     shared_buffers: str | None = None
     effective_cache_size: str | None = None
     work_mem: str | None = None
+    maintenance_work_mem: str | None = None
     max_parallel_workers_per_gather: int | None = None
+    max_parallel_workers: int | None = None
+    max_worker_processes: int | None = None
+    random_page_cost: float | None = None
+    effective_io_concurrency: int | None = None
+    max_wal_size: str | None = None
+    checkpoint_timeout_s: int | None = None
+    wal_buffers: str | None = None
+    jit_enabled: bool | None = None
+    statement_timeout_ms: int | None = None
 
     @classmethod
     def from_mapping(cls, data: dict[str, Any] | None) -> PostgresTuningSpec:
         if not data:
             return cls()
-        parallel_raw = data.get("max_parallel_workers_per_gather")
-        parallel: int | None = None
-        if parallel_raw is not None and str(parallel_raw).strip() != "":
-            parallel = max(0, int(parallel_raw))
+
+        def _optional_int(key: str) -> int | None:
+            raw = data.get(key)
+            if raw is None or str(raw).strip() == "":
+                return None
+            return max(0, int(raw))
+
+        def _optional_float(key: str) -> float | None:
+            raw = data.get(key)
+            if raw is None or str(raw).strip() == "":
+                return None
+            return float(raw)
+
+        def _optional_bool(key: str) -> bool | None:
+            raw = data.get(key)
+            if raw is None or str(raw).strip() == "":
+                return None
+            if isinstance(raw, bool):
+                return raw
+            text = str(raw).strip().lower()
+            if text in {"true", "1", "yes", "on"}:
+                return True
+            if text in {"false", "0", "no", "off"}:
+                return False
+            return None
+
         return cls(
             shared_buffers=_optional_quantity(data.get("shared_buffers")),
             effective_cache_size=_optional_quantity(data.get("effective_cache_size")),
             work_mem=_optional_quantity(data.get("work_mem")),
-            max_parallel_workers_per_gather=parallel,
+            maintenance_work_mem=_optional_quantity(data.get("maintenance_work_mem")),
+            max_parallel_workers_per_gather=_optional_int(
+                "max_parallel_workers_per_gather"
+            ),
+            max_parallel_workers=_optional_int("max_parallel_workers"),
+            max_worker_processes=_optional_int("max_worker_processes"),
+            random_page_cost=_optional_float("random_page_cost"),
+            effective_io_concurrency=_optional_int("effective_io_concurrency"),
+            max_wal_size=_optional_quantity(data.get("max_wal_size")),
+            checkpoint_timeout_s=_optional_int("checkpoint_timeout")
+            or _optional_int("checkpoint_timeout_s"),
+            wal_buffers=_optional_quantity(data.get("wal_buffers")),
+            jit_enabled=_optional_bool("jit_enabled")
+            if "jit_enabled" in data
+            else _optional_bool("jit"),
+            statement_timeout_ms=_optional_int("statement_timeout_ms")
+            or _optional_int("statement_timeout"),
         )
 
     def is_empty(self) -> bool:
@@ -43,7 +91,17 @@ class PostgresTuningSpec:
             self.shared_buffers is None
             and self.effective_cache_size is None
             and self.work_mem is None
+            and self.maintenance_work_mem is None
             and self.max_parallel_workers_per_gather is None
+            and self.max_parallel_workers is None
+            and self.max_worker_processes is None
+            and self.random_page_cost is None
+            and self.effective_io_concurrency is None
+            and self.max_wal_size is None
+            and self.checkpoint_timeout_s is None
+            and self.wal_buffers is None
+            and self.jit_enabled is None
+            and self.statement_timeout_ms is None
         )
 
     def to_mapping(self) -> dict[str, Any]:
@@ -54,8 +112,28 @@ class PostgresTuningSpec:
             out["effective_cache_size"] = self.effective_cache_size
         if self.work_mem is not None:
             out["work_mem"] = self.work_mem
+        if self.maintenance_work_mem is not None:
+            out["maintenance_work_mem"] = self.maintenance_work_mem
         if self.max_parallel_workers_per_gather is not None:
             out["max_parallel_workers_per_gather"] = self.max_parallel_workers_per_gather
+        if self.max_parallel_workers is not None:
+            out["max_parallel_workers"] = self.max_parallel_workers
+        if self.max_worker_processes is not None:
+            out["max_worker_processes"] = self.max_worker_processes
+        if self.random_page_cost is not None:
+            out["random_page_cost"] = self.random_page_cost
+        if self.effective_io_concurrency is not None:
+            out["effective_io_concurrency"] = self.effective_io_concurrency
+        if self.max_wal_size is not None:
+            out["max_wal_size"] = self.max_wal_size
+        if self.checkpoint_timeout_s is not None:
+            out["checkpoint_timeout"] = self.checkpoint_timeout_s
+        if self.wal_buffers is not None:
+            out["wal_buffers"] = self.wal_buffers
+        if self.jit_enabled is not None:
+            out["jit_enabled"] = self.jit_enabled
+        if self.statement_timeout_ms is not None:
+            out["statement_timeout_ms"] = self.statement_timeout_ms
         return out
 
 
@@ -121,12 +199,54 @@ def postgres_tuning_guc_pairs(tuning: PostgresTuningSpec) -> list[tuple[str, str
         )
     if tuning.work_mem is not None:
         pairs.append(("work_mem", quantity_to_postgres_memory(tuning.work_mem)))
+    if tuning.maintenance_work_mem is not None:
+        pairs.append(
+            (
+                "maintenance_work_mem",
+                quantity_to_postgres_memory(tuning.maintenance_work_mem),
+            )
+        )
     if tuning.max_parallel_workers_per_gather is not None:
         pairs.append(
             (
                 "max_parallel_workers_per_gather",
                 str(tuning.max_parallel_workers_per_gather),
             )
+        )
+    if tuning.max_parallel_workers is not None:
+        pairs.append(
+            ("max_parallel_workers", str(tuning.max_parallel_workers))
+        )
+    if tuning.max_worker_processes is not None:
+        pairs.append(
+            ("max_worker_processes", str(tuning.max_worker_processes))
+        )
+    if tuning.random_page_cost is not None:
+        pairs.append(("random_page_cost", str(tuning.random_page_cost)))
+    if tuning.effective_io_concurrency is not None:
+        pairs.append(
+            (
+                "effective_io_concurrency",
+                str(tuning.effective_io_concurrency),
+            )
+        )
+    if tuning.max_wal_size is not None:
+        pairs.append(
+            ("max_wal_size", quantity_to_postgres_memory(tuning.max_wal_size))
+        )
+    if tuning.checkpoint_timeout_s is not None:
+        pairs.append(
+            ("checkpoint_timeout", f"{tuning.checkpoint_timeout_s}s")
+        )
+    if tuning.wal_buffers is not None:
+        pairs.append(
+            ("wal_buffers", quantity_to_postgres_memory(tuning.wal_buffers))
+        )
+    if tuning.jit_enabled is not None:
+        pairs.append(("jit", "on" if tuning.jit_enabled else "off"))
+    if tuning.statement_timeout_ms is not None:
+        pairs.append(
+            ("statement_timeout", str(tuning.statement_timeout_ms))
         )
     return pairs
 
@@ -159,7 +279,14 @@ def validate_postgres_tuning(
     warnings: list[str] = []
     mem_limit_bytes = _parse_memory_to_bytes(memory_limit)
 
-    for field_name in ("shared_buffers", "effective_cache_size", "work_mem"):
+    for field_name in (
+        "shared_buffers",
+        "effective_cache_size",
+        "work_mem",
+        "maintenance_work_mem",
+        "max_wal_size",
+        "wal_buffers",
+    ):
         raw = getattr(tuning, field_name)
         if raw is None:
             continue
@@ -177,13 +304,13 @@ def validate_postgres_tuning(
         else:
             if shared_bytes > mem_limit_bytes:
                 errors.append(
-                    "database.tuning.shared_buffers exceeds database.resources."
+                    "database.tuning.shared_buffers exceeds primary "
                     "memory_limit — Postgres cannot allocate more shared_buffers "
                     "than the pod memory limit."
                 )
             elif shared_bytes > mem_limit_bytes * 0.4:
                 warnings.append(
-                    "database.tuning.shared_buffers is >40% of database memory "
+                    "database.tuning.shared_buffers is >40% of primary memory "
                     "limit — leave headroom for connections and OS cache."
                 )
 
@@ -196,7 +323,6 @@ def validate_postgres_tuning(
             work_bytes = _parse_memory_to_bytes(tuning.work_mem)
         except ValueError:
             work_bytes = 0
-        # Worst-case rough bound: many concurrent sorts/hash joins.
         parallel = max(1, tuning.max_parallel_workers_per_gather)
         worst_case = work_bytes * max_connections * parallel
         if worst_case > mem_limit_bytes * 4:
@@ -207,10 +333,43 @@ def validate_postgres_tuning(
                 "many concurrent queries can exhaust pod memory."
             )
 
-    if tuning.max_parallel_workers_per_gather is not None:
-        if tuning.max_parallel_workers_per_gather < 0:
-            errors.append(
-                "database.tuning.max_parallel_workers_per_gather must be >= 0"
-            )
+    for field_name in (
+        "max_parallel_workers_per_gather",
+        "max_parallel_workers",
+        "max_worker_processes",
+        "effective_io_concurrency",
+    ):
+        value = getattr(tuning, field_name)
+        if value is not None and value < 0:
+            errors.append(f"database.tuning.{field_name} must be >= 0")
+
+    if tuning.random_page_cost is not None and tuning.random_page_cost <= 0:
+        errors.append("database.tuning.random_page_cost must be > 0")
+
+    if tuning.checkpoint_timeout_s is not None and tuning.checkpoint_timeout_s <= 0:
+        errors.append("database.tuning.checkpoint_timeout must be > 0")
+
+    if tuning.statement_timeout_ms is not None and tuning.statement_timeout_ms < 0:
+        errors.append("database.tuning.statement_timeout_ms must be >= 0")
+
+    if (
+        tuning.max_parallel_workers is not None
+        and tuning.max_parallel_workers_per_gather is not None
+        and tuning.max_parallel_workers_per_gather > tuning.max_parallel_workers
+    ):
+        errors.append(
+            "database.tuning.max_parallel_workers_per_gather cannot exceed "
+            "database.tuning.max_parallel_workers"
+        )
+
+    if (
+        tuning.max_worker_processes is not None
+        and tuning.max_parallel_workers is not None
+        and tuning.max_parallel_workers > tuning.max_worker_processes
+    ):
+        errors.append(
+            "database.tuning.max_parallel_workers cannot exceed "
+            "database.tuning.max_worker_processes"
+        )
 
     return errors, warnings

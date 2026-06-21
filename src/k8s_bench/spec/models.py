@@ -7,6 +7,8 @@ from typing import Any
 import yaml
 
 from .postgres_tuning import PostgresTuningSpec
+from .pooler import DEFAULT_READ_POOLER_SERVICE, PoolerSpec
+from .cache import CacheSpec, DatabaseCacheSpec
 
 POSTGRES_USER = "postgres"
 POSTGRES_PASSWORD = "postgres"
@@ -16,6 +18,7 @@ POSTGRES_DATABASE = "testdb"
 # set ``backend.web_concurrency``. Propagated as the ``WEB_CONCURRENCY`` env var
 # (gunicorn ``--workers`` for Python, PM2 ``-i`` for JavaScript).
 DEFAULT_WEB_CONCURRENCY = 2
+ALLOWED_GUNICORN_WORKER_CLASSES = frozenset({"sync", "gthread", "gevent"})
 
 
 @dataclass(frozen=True)
@@ -58,7 +61,12 @@ class BackendSpec:
     # App worker processes per pod. Propagated as WEB_CONCURRENCY
     # (gunicorn --workers for Python, PM2 -i for JavaScript).
     web_concurrency: int = DEFAULT_WEB_CONCURRENCY
-    # Env vars passed to the app container (DB_* added automatically when DB enabled).
+    worker_class: str = "sync"
+    worker_threads: int | None = None
+    preload: bool = True
+    max_requests: int | None = None
+    max_requests_jitter: int | None = None
+    backlog: int | None = None
     env: dict[str, str] = field(default_factory=dict)
     # Kubernetes node hostnames (from cluster capacity) allowed for backend pods.
     placement_workers: tuple[str, ...] = ()
@@ -67,6 +75,8 @@ class BackendSpec:
 
     @classmethod
     def from_mapping(cls, data: dict[str, Any]) -> BackendSpec:
+        from .backend_env import parse_backend_env
+
         placement_raw = data.get("placement") or {}
         workers: list[str] = []
         spread = True
@@ -77,6 +87,21 @@ class BackendSpec:
             if isinstance(raw_workers, (list, tuple)):
                 workers = [str(w) for w in raw_workers if str(w).strip()]
             spread = bool(placement_raw.get("spread_replicas", True))
+        worker_class = str(data.get("worker_class", "sync")).strip().lower()
+        if worker_class not in ALLOWED_GUNICORN_WORKER_CLASSES:
+            worker_class = "sync"
+        threads_raw = data.get("worker_threads")
+        worker_threads: int | None = None
+        if threads_raw is not None and str(threads_raw).strip() != "":
+            worker_threads = max(1, int(threads_raw))
+
+        def _optional_nonneg_int(key: str) -> int | None:
+            raw = data.get(key)
+            if raw is None or str(raw).strip() == "":
+                return None
+            return max(0, int(raw))
+
+        env, _env_errors = parse_backend_env(data.get("env"))
         return cls(
             image=str(data["image"]),
             replicas=int(data.get("replicas", 1)),
@@ -86,7 +111,13 @@ class BackendSpec:
                 1,
                 int(data.get("web_concurrency", DEFAULT_WEB_CONCURRENCY)),
             ),
-            env={str(k): str(v) for k, v in (data.get("env") or {}).items()},
+            worker_class=worker_class,
+            worker_threads=worker_threads,
+            preload=bool(data.get("preload", True)),
+            max_requests=_optional_nonneg_int("max_requests"),
+            max_requests_jitter=_optional_nonneg_int("max_requests_jitter"),
+            backlog=_optional_nonneg_int("backlog"),
+            env=env,
             placement_workers=tuple(workers),
             spread_replicas=spread,
         )
@@ -106,6 +137,7 @@ class DatabaseSpec:
     placement_worker: str | None = None
     # Allow-list: scheduler picks one node from this set (single postgres pod).
     placement_workers: tuple[str, ...] = ()
+    # Default resources for all DB pods when primary/replica overrides are unset.
     resources: ResourceSpec = field(
         default_factory=lambda: ResourceSpec(
             cpu_request="500m",
@@ -114,6 +146,16 @@ class DatabaseSpec:
             memory_limit="2Gi",
         )
     )
+    # Optional per-tier overrides (primary write path vs read replicas).
+    primary_resources: ResourceSpec | None = None
+    replica_resources: ResourceSpec | None = None
+    cache: DatabaseCacheSpec = field(default_factory=DatabaseCacheSpec)
+
+    def effective_primary_resources(self) -> ResourceSpec:
+        return self.primary_resources or self.resources
+
+    def effective_replica_resources(self) -> ResourceSpec:
+        return self.replica_resources or self.resources
 
     @classmethod
     def from_mapping(cls, data: dict[str, Any] | None) -> DatabaseSpec:
@@ -138,6 +180,20 @@ class DatabaseSpec:
             if isinstance(tuning_raw, dict)
             else PostgresTuningSpec()
         )
+        primary_raw = data.get("primary")
+        replica_raw = data.get("replica")
+        primary_resources: ResourceSpec | None = None
+        replica_resources: ResourceSpec | None = None
+        if isinstance(primary_raw, dict) and primary_raw.get("resources"):
+            primary_resources = ResourceSpec.from_mapping(primary_raw.get("resources"))
+        if isinstance(replica_raw, dict) and replica_raw.get("resources"):
+            replica_resources = ResourceSpec.from_mapping(replica_raw.get("resources"))
+        cache_raw = data.get("cache")
+        db_cache = (
+            DatabaseCacheSpec.from_mapping(cache_raw)
+            if isinstance(cache_raw, dict)
+            else DatabaseCacheSpec()
+        )
         return cls(
             enabled=bool(data.get("enabled", True)),
             image=str(data.get("image", cls.image)),
@@ -149,6 +205,9 @@ class DatabaseSpec:
             placement_worker=pin_worker,
             placement_workers=tuple(workers),
             resources=ResourceSpec.from_mapping(data.get("resources")),
+            primary_resources=primary_resources,
+            replica_resources=replica_resources,
+            cache=db_cache,
         )
 
 
@@ -170,6 +229,13 @@ class K8sWorkloadSpec:
     namespace: str
     backend: BackendSpec
     database: DatabaseSpec = field(default_factory=DatabaseSpec)
+    pooler: PoolerSpec = field(default_factory=PoolerSpec)
+    read_pooler: PoolerSpec = field(
+        default_factory=lambda: PoolerSpec(
+            enabled=False, service_name=DEFAULT_READ_POOLER_SERVICE
+        )
+    )
+    cache: CacheSpec = field(default_factory=CacheSpec)
     labels: dict[str, str] = field(default_factory=dict)
 
     @classmethod
@@ -190,6 +256,26 @@ class K8sWorkloadSpec:
             raise ValueError("spec.backend.image is required")
         db_raw = raw.get("database")
         db = DatabaseSpec.from_mapping(db_raw if isinstance(db_raw, dict) else None)
+        pooler_raw = raw.get("pooler")
+        pooler = (
+            PoolerSpec.from_mapping(pooler_raw)
+            if isinstance(pooler_raw, dict)
+            else PoolerSpec()
+        )
+        read_pooler_raw = raw.get("read_pooler")
+        read_pooler = (
+            PoolerSpec.from_mapping(
+                read_pooler_raw, default_service_name=DEFAULT_READ_POOLER_SERVICE
+            )
+            if isinstance(read_pooler_raw, dict)
+            else PoolerSpec(enabled=False, service_name=DEFAULT_READ_POOLER_SERVICE)
+        )
+        cache_raw = raw.get("cache")
+        cache = (
+            CacheSpec.from_mapping(cache_raw)
+            if isinstance(cache_raw, dict)
+            else CacheSpec()
+        )
         labels = raw.get("labels") or meta.get("labels") or {}
         if not isinstance(labels, dict):
             labels = {}
@@ -198,6 +284,9 @@ class K8sWorkloadSpec:
             namespace=ns,
             backend=BackendSpec.from_mapping(backend_raw),
             database=db,
+            pooler=pooler,
+            read_pooler=read_pooler,
+            cache=cache,
             labels={str(k): str(v) for k, v in labels.items()},
         )
 
@@ -213,13 +302,58 @@ class K8sWorkloadSpec:
                 "replicas": self.backend.replicas,
                 "port": self.backend.port,
                 "web_concurrency": self.backend.web_concurrency,
+                **(
+                    {"worker_class": self.backend.worker_class}
+                    if self.backend.worker_class != "sync"
+                    else {}
+                ),
+                **(
+                    {"worker_threads": self.backend.worker_threads}
+                    if self.backend.worker_threads is not None
+                    else {}
+                ),
+                **(
+                    {"preload": False}
+                    if not self.backend.preload
+                    else {}
+                ),
+                **(
+                    {"max_requests": self.backend.max_requests}
+                    if self.backend.max_requests is not None
+                    else {}
+                ),
+                **(
+                    {"max_requests_jitter": self.backend.max_requests_jitter}
+                    if self.backend.max_requests_jitter is not None
+                    else {}
+                ),
+                **(
+                    {"backlog": self.backend.backlog}
+                    if self.backend.backlog is not None
+                    else {}
+                ),
                 "resources": asdict(self.backend.resources),
-                "env": dict(self.backend.env),
+                **({"env": dict(self.backend.env)} if self.backend.env else {}),
                 "placement": {
                     "workers": list(self.backend.placement_workers),
                     "spread_replicas": self.backend.spread_replicas,
                 },
             },
+            **(
+                {"pooler": self.pooler.to_mapping()}
+                if not self.pooler.is_empty()
+                else {}
+            ),
+            **(
+                {"read_pooler": self.read_pooler.to_mapping()}
+                if not self.read_pooler.is_empty()
+                else {}
+            ),
+            **(
+                {"cache": self.cache.to_mapping()}
+                if not self.cache.is_empty()
+                else {}
+            ),
             "database": {
                 "enabled": self.database.enabled,
                 "image": self.database.image,
@@ -234,6 +368,21 @@ class K8sWorkloadSpec:
                 ),
                 "placement": _database_placement_yaml(self.database),
                 "resources": asdict(self.database.resources),
+                **(
+                    {"primary": {"resources": asdict(self.database.primary_resources)}}
+                    if self.database.primary_resources is not None
+                    else {}
+                ),
+                **(
+                    {"replica": {"resources": asdict(self.database.replica_resources)}}
+                    if self.database.replica_resources is not None
+                    else {}
+                ),
+                **(
+                    {"cache": self.database.cache.to_mapping()}
+                    if not self.database.cache.is_empty()
+                    else {}
+                ),
             },
         }
 
@@ -248,20 +397,55 @@ class K8sWorkloadSpec:
         env = dict(self.backend.env)
         env.setdefault("PORT", str(self.backend.port))
         env.setdefault("WEB_CONCURRENCY", str(self.backend.web_concurrency))
+        env.setdefault("GUNICORN_WORKER_CLASS", self.backend.worker_class)
+        if self.backend.worker_threads is not None:
+            env.setdefault("GUNICORN_THREADS", str(self.backend.worker_threads))
+        if self.backend.max_requests is not None:
+            env.setdefault("GUNICORN_MAX_REQUESTS", str(self.backend.max_requests))
+        if self.backend.max_requests_jitter is not None:
+            env.setdefault(
+                "GUNICORN_MAX_REQUESTS_JITTER",
+                str(self.backend.max_requests_jitter),
+            )
+        if self.backend.backlog is not None:
+            env.setdefault("GUNICORN_BACKLOG", str(self.backend.backlog))
+        if self.cache.enabled:
+            env.setdefault("REDIS_URL", self.cache.redis_url(self.namespace))
+        if self.database.cache.enabled:
+            if self.database.cache.use_shared and self.cache.enabled:
+                env.setdefault("DB_REDIS_URL", self.cache.redis_url(self.namespace))
+            elif not self.database.cache.use_shared:
+                env.setdefault(
+                    "DB_REDIS_URL",
+                    self.database.cache.redis_url(self.namespace),
+                )
         if self.database.enabled:
-            host = f"{self.database.service_name}.{self.namespace}.svc.cluster.local"
+            if self.pooler.enabled:
+                host = f"{self.pooler.service_name}.{self.namespace}.svc.cluster.local"
+                db_port = str(self.pooler.port)
+            else:
+                host = (
+                    f"{self.database.service_name}.{self.namespace}.svc.cluster.local"
+                )
+                db_port = str(self.database.port)
             env.setdefault("DB_HOST", host)
-            env.setdefault("DB_PORT", str(self.database.port))
+            env.setdefault("DB_PORT", db_port)
             env.setdefault("DB_USER", POSTGRES_USER)
             env.setdefault("DB_PASSWORD", POSTGRES_PASSWORD)
             env.setdefault("DB_NAME", POSTGRES_DATABASE)
-            # When replicas exist, expose the read-only Service so the app can
-            # route SELECTs to replicas (apps that ignore this var keep using
-            # DB_HOST and behave exactly as before — opt-in via code refinement).
             if self.database.replicas > 1:
-                read_host = (
-                    f"{self.database.service_name}-read."
-                    f"{self.namespace}.svc.cluster.local"
-                )
-                env.setdefault("DB_READ_HOST", read_host)
+                if self.read_pooler.enabled:
+                    read_host = (
+                        f"{self.read_pooler.service_name}."
+                        f"{self.namespace}.svc.cluster.local"
+                    )
+                    env.setdefault("DB_READ_HOST", read_host)
+                    env.setdefault("DB_READ_PORT", str(self.read_pooler.port))
+                else:
+                    read_host = (
+                        f"{self.database.service_name}-read."
+                        f"{self.namespace}.svc.cluster.local"
+                    )
+                    env.setdefault("DB_READ_HOST", read_host)
+                    env.setdefault("DB_READ_PORT", str(self.database.port))
         return env

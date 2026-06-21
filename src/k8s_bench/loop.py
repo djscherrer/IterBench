@@ -209,8 +209,6 @@ def run_deploy_only_k8s_bench(
             code_snap = iteration_code_snapshot_dir(iteration_path)
             if code_snap.is_dir() and any(code_snap.iterdir()):
                 source_code_dir = code_snap
-            elif k8s_iteration_path is not None:
-                source_code_dir = baseline_code
             else:
                 source_code_dir = latest_code_dir(
                     ctx.sample_dir,

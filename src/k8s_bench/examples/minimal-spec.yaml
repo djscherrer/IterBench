@@ -10,27 +10,58 @@ backend:
   image: your-registry/your-app:tag
   replicas: 2
   port: 8080
+  web_concurrency: 4
+  worker_class: gthread
+  worker_threads: 8
+  env:
+    DB_POOL_SIZE: "10"
+    GUNICORN_TIMEOUT: "120"
   resources:
     cpu_request: "250m"
     cpu_limit: "1"
     memory_request: "256Mi"
     memory_limit: "512Mi"
+pooler:
+  enabled: true
+  mode: transaction
+  replicas: 2
+  max_client_conn: 500
+  default_pool_size: 40
+  min_pool_size: 10
+  reserve_pool_size: 5
 database:
   enabled: true
   image: postgres:17-alpine
   service_name: postgres
   port: 5432
-  replicas: 1
+  replicas: 3
   max_connections: 100
   tuning:
     shared_buffers: 256Mi
     effective_cache_size: 768Mi
     work_mem: 8Mi
+    maintenance_work_mem: 128Mi
     max_parallel_workers_per_gather: 2
-  placement:
-    worker: node5   # optional pin; or workers: [node3, node4] for allow-list
+    max_parallel_workers: 4
+    max_worker_processes: 8
+    random_page_cost: 1.1
+    effective_io_concurrency: 200
   resources:
     cpu_request: "500m"
     cpu_limit: "2"
     memory_request: "512Mi"
     memory_limit: "2Gi"
+  primary:
+    resources:
+      cpu_request: "2000m"
+      cpu_limit: "4"
+      memory_request: "2Gi"
+      memory_limit: "4Gi"
+  replica:
+    resources:
+      cpu_request: "500m"
+      cpu_limit: "2"
+      memory_request: "512Mi"
+      memory_limit: "2Gi"
+  placement:
+    worker: node5   # optional pin; or workers: [node3, node4] for allow-list

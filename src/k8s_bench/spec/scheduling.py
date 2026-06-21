@@ -12,6 +12,9 @@ from ..cluster.capacity import (
 )
 from .models import K8sWorkloadSpec, ResourceSpec
 from .postgres_tuning import validate_postgres_tuning
+from .pooler import validate_pooler
+from .cache import validate_cache, validate_database_cache
+from .backend_env import parse_backend_env
 
 DEFAULT_APP_POOL_MAX = 20
 _NODE_RESERVE_FRACTION = 0.10
@@ -124,6 +127,12 @@ def normalize_spec_placement(
             port=spec.backend.port,
             resources=spec.backend.resources,
             web_concurrency=spec.backend.web_concurrency,
+            worker_class=spec.backend.worker_class,
+            worker_threads=spec.backend.worker_threads,
+            preload=spec.backend.preload,
+            max_requests=spec.backend.max_requests,
+            max_requests_jitter=spec.backend.max_requests_jitter,
+            backlog=spec.backend.backlog,
             env=spec.backend.env,
             placement_workers=tuple(dict.fromkeys(backend_workers)),
             spread_replicas=spec.backend.spread_replicas,
@@ -135,11 +144,17 @@ def normalize_spec_placement(
             port=spec.database.port,
             replicas=spec.database.replicas,
             resources=spec.database.resources,
+            primary_resources=spec.database.primary_resources,
+            replica_resources=spec.database.replica_resources,
             max_connections=spec.database.max_connections,
             tuning=spec.database.tuning,
             placement_worker=db_worker,
             placement_workers=tuple(dict.fromkeys(db_workers)),
+            cache=spec.database.cache,
         ),
+        pooler=spec.pooler,
+        read_pooler=spec.read_pooler,
+        cache=spec.cache,
         labels=spec.labels,
     )
     return updated, []
@@ -194,12 +209,86 @@ def _postgres_candidate_workers(
 
 
 def infer_pool_max_from_hints(app_hints: str) -> int:
+    """Best-effort pool size from generated app source (for connection budgeting)."""
     import re
+
+    if not app_hints or app_hints.startswith("("):
+        return DEFAULT_APP_POOL_MAX
+
+    # os.environ.get("PG_POOL_MAX", "10") / getenv variants
+    for pattern in (
+        r'(?:environ\.get|getenv)\s*\(\s*["\'](?:PG_POOL_MAX|DB_POOL_SIZE)["\']\s*,\s*["\'](\d+)["\']',
+        r'(?:PG_POOL_MAX|DB_POOL_SIZE)\s*=\s*int\s*\(\s*(?:os\.)?(?:environ\.)?get(?:env)?\s*\(\s*["\'](?:PG_POOL_MAX|DB_POOL_SIZE)["\']\s*,\s*["\'](\d+)["\']',
+    ):
+        m = re.search(pattern, app_hints)
+        if m:
+            return max(1, int(m.group(1)))
+
+    # ThreadedConnectionPool(minconn, maxconn, ...) with a numeric maxconn
+    m = re.search(r"ThreadedConnectionPool\s*\(\s*\d+\s*,\s*(\d+)", app_hints)
+    if m:
+        return max(1, int(m.group(1)))
+
+    # ThreadedConnectionPool(..., PG_POOL_MAX, ...) — use PG_POOL_MAX default above
+    if re.search(r"ThreadedConnectionPool\s*\([^)]*(?:PG_POOL_MAX|DB_POOL_SIZE)", app_hints):
+        m = re.search(
+            r"(?:PG_POOL_MAX|DB_POOL_SIZE)\s*=\s*int\s*\(\s*(?:os\.)?(?:environ\.)?get(?:env)?\s*\(\s*[\"'](?:PG_POOL_MAX|DB_POOL_SIZE)[\"']\s*,\s*[\"'](\d+)[\"']",
+            app_hints,
+        )
+        if m:
+            return max(1, int(m.group(1)))
+
+    # SQLAlchemy-style pool_size=N or pool_size = int(..., "N")
+    m = re.search(r"pool_size\s*=\s*(?:int\s*\([^)]*)?[\"']?(\d+)[\"']?", app_hints)
+    if m:
+        return max(1, int(m.group(1)))
 
     m = re.search(r"max:\s*(\d+)", app_hints)
     if m:
         return max(1, int(m.group(1)))
     return DEFAULT_APP_POOL_MAX
+
+
+def effective_pool_max(spec: K8sWorkloadSpec, app_hints: str) -> int:
+    for key in ("DB_POOL_SIZE", "PG_POOL_MAX"):
+        raw = spec.backend.env.get(key)
+        if raw is not None:
+            try:
+                return max(1, int(raw))
+            except ValueError:
+                pass
+    return infer_pool_max_from_hints(app_hints)
+
+
+def validate_backend_concurrency(spec: K8sWorkloadSpec) -> tuple[list[str], list[str]]:
+    from .models import ALLOWED_GUNICORN_WORKER_CLASSES
+
+    errors: list[str] = []
+    warnings: list[str] = []
+    wc = spec.backend.worker_class
+    if wc not in ALLOWED_GUNICORN_WORKER_CLASSES:
+        errors.append(
+            f"backend.worker_class must be one of: "
+            f"{', '.join(sorted(ALLOWED_GUNICORN_WORKER_CLASSES))}"
+        )
+    if spec.backend.worker_threads is not None and wc != "gthread":
+        errors.append("backend.worker_threads requires backend.worker_class=gthread")
+    if (
+        spec.backend.max_requests is not None
+        and spec.backend.max_requests_jitter is not None
+        and spec.backend.max_requests_jitter > spec.backend.max_requests
+    ):
+        errors.append(
+            "backend.max_requests_jitter cannot exceed backend.max_requests"
+        )
+    if wc == "gevent":
+        warnings.append(
+            "backend.worker_class=gevent requires gevent in the app image; "
+            "use gthread unless the codebase already depends on gevent."
+        )
+    _, env_errors = parse_backend_env(spec.backend.env)
+    errors.extend(env_errors)
+    return errors, warnings
 
 
 def validate_spec_against_cluster(
@@ -229,11 +318,14 @@ def validate_spec_against_cluster(
             if pinned:
                 node = pinned[0]
                 cpu_b, mem_b = _node_schedulable_budget(node)
-                need_cpu = spec.database.replicas * _request_cpu_m(
-                    spec.database.resources
+                primary_res = spec.database.effective_primary_resources()
+                replica_res = spec.database.effective_replica_resources()
+                read_count = max(0, spec.database.replicas - 1)
+                need_cpu = _request_cpu_m(primary_res) + read_count * _request_cpu_m(
+                    replica_res
                 )
-                need_mem = spec.database.replicas * _request_mem_bytes(
-                    spec.database.resources
+                need_mem = _request_mem_bytes(primary_res) + read_count * _request_mem_bytes(
+                    replica_res
                 )
                 if need_cpu > cpu_b or need_mem > mem_b:
                     errors.append(
@@ -255,34 +347,95 @@ def validate_spec_against_cluster(
             f"{capacity.worker_count} workers — some nodes will run multiple backends"
         )
 
-    pool_max = infer_pool_max_from_hints(app_hints)
+    pool_max = effective_pool_max(spec, app_hints)
     workers_per_pod = spec.backend.web_concurrency
-    # Each worker process keeps its own connection pool, so a single replica can
-    # open up to web_concurrency × pool_max connections.
     conn_per_replica = workers_per_pod * pool_max
+    client_connections = spec.backend.replicas * conn_per_replica
+
+    be_errors, be_warnings = validate_backend_concurrency(spec)
+    errors.extend(be_errors)
+    warnings.extend(be_warnings)
+
     if spec.database.enabled:
-        needed = spec.backend.replicas * conn_per_replica
-        if needed > spec.database.max_connections:
-            errors.append(
-                f"Connection budget exceeded: {spec.backend.replicas} replicas × "
-                f"{workers_per_pod} workers/pod × pool≤{pool_max} = {needed} "
-                f"connections, but database.max_connections="
-                f"{spec.database.max_connections}. Lower replicas, lower "
-                f"backend.web_concurrency, raise max_connections, or shrink the "
-                f"app connection pool."
+        if spec.pooler.enabled:
+            pooler_errors, pooler_warnings = validate_pooler(
+                spec.pooler,
+                max_connections=spec.database.max_connections,
+                client_connections_needed=client_connections,
             )
+            errors.extend(pooler_errors)
+            warnings.extend(pooler_warnings)
+        if spec.read_pooler.enabled:
+            if spec.database.replicas <= 1:
+                errors.append(
+                    "read_pooler.enabled requires database.replicas > 1 "
+                    "(read pooler fronts the postgres-read Service)"
+                )
+            else:
+                rp_errors, rp_warnings = validate_pooler(
+                    spec.read_pooler,
+                    max_connections=spec.database.max_connections,
+                    client_connections_needed=client_connections,
+                )
+                errors.extend(
+                    f.replace("pooler.", "read_pooler.", 1) for f in rp_errors
+                )
+                warnings.extend(
+                    w.replace("pooler.", "read_pooler.", 1) for w in rp_warnings
+                )
+        else:
+            needed = client_connections
+            if needed > spec.database.max_connections:
+                errors.append(
+                    f"Connection budget exceeded: {spec.backend.replicas} replicas × "
+                    f"{workers_per_pod} workers/pod × pool≤{pool_max} = {needed} "
+                    f"connections, but database.max_connections="
+                    f"{spec.database.max_connections}. Lower replicas, lower "
+                    f"backend.web_concurrency, enable pooler, raise max_connections, "
+                    f"or set backend.env.DB_POOL_SIZE smaller."
+                )
         tuning_errors, tuning_warnings = validate_postgres_tuning(
             spec.database.tuning,
-            memory_limit=spec.database.resources.memory_limit,
+            memory_limit=spec.database.effective_primary_resources().memory_limit,
             max_connections=spec.database.max_connections,
         )
         errors.extend(tuning_errors)
         warnings.extend(tuning_warnings)
 
+    cache_errors, cache_warnings = validate_cache(spec.cache)
+    errors.extend(cache_errors)
+    warnings.extend(cache_warnings)
+    db_cache_errors, db_cache_warnings = validate_database_cache(
+        spec.database.cache,
+        backend_cache=spec.cache,
+    )
+    errors.extend(db_cache_errors)
+    warnings.extend(db_cache_warnings)
+
     be_cpu_req = _request_cpu_m(spec.backend.resources)
     be_mem_req = _request_mem_bytes(spec.backend.resources)
-    db_cpu_req = _request_cpu_m(spec.database.resources)
-    db_mem_req = _request_mem_bytes(spec.database.resources)
+    primary_res = spec.database.effective_primary_resources()
+    replica_res = spec.database.effective_replica_resources()
+    primary_cpu_req = _request_cpu_m(primary_res)
+    primary_mem_req = _request_mem_bytes(primary_res)
+    replica_cpu_req = _request_cpu_m(replica_res)
+    replica_mem_req = _request_mem_bytes(replica_res)
+    pooler_cpu_req = _request_cpu_m(spec.pooler.resources)
+    pooler_mem_req = _request_mem_bytes(spec.pooler.resources)
+    read_pooler_cpu_req = _request_cpu_m(spec.read_pooler.resources)
+    read_pooler_mem_req = _request_mem_bytes(spec.read_pooler.resources)
+    cache_cpu_req = _request_cpu_m(spec.cache.resources) if spec.cache.enabled else 0
+    cache_mem_req = (
+        _request_mem_bytes(spec.cache.resources) if spec.cache.enabled else 0
+    )
+    db_cache_cpu_req = 0
+    db_cache_mem_req = 0
+    if (
+        spec.database.cache.enabled
+        and not spec.database.cache.use_shared
+    ):
+        db_cache_cpu_req = _request_cpu_m(spec.database.cache.resources)
+        db_cache_mem_req = _request_mem_bytes(spec.database.cache.resources)
 
     if spec.database.enabled:
         pg_nodes = _postgres_candidate_workers(spec, capacity)
@@ -291,15 +444,87 @@ def validate_spec_against_cluster(
                 errors.append(
                     "database placement lists no schedulable worker nodes"
                 )
-        elif not any(_pod_fits_node(db_cpu_req, db_mem_req, n) for n in pg_nodes):
-            smallest = min(pg_nodes, key=lambda n: n.allocatable_cpu_millicores)
+        else:
+            if not any(
+                _pod_fits_node(primary_cpu_req, primary_mem_req, n) for n in pg_nodes
+            ):
+                smallest = min(pg_nodes, key=lambda n: n.allocatable_cpu_millicores)
+                cpu_b, mem_b = _node_schedulable_budget(smallest)
+                errors.append(
+                    "Postgres **primary** requests do not fit on any allowed worker "
+                    f"(needs {primary_cpu_req}m CPU + {primary_mem_req} bytes mem; "
+                    f"example worker {smallest.name} budget ~{cpu_b}m CPU / "
+                    f"~{mem_b // (2**20)}Mi mem after {_NODE_RESERVE_FRACTION:.0%} "
+                    "reserve). Shrink database.primary.resources or database.resources."
+                )
+            if spec.database.replicas > 1 and not any(
+                _pod_fits_node(replica_cpu_req, replica_mem_req, n) for n in pg_nodes
+            ):
+                smallest = min(pg_nodes, key=lambda n: n.allocatable_cpu_millicores)
+                cpu_b, mem_b = _node_schedulable_budget(smallest)
+                errors.append(
+                    "Postgres **replica** requests do not fit on any allowed worker "
+                    f"(needs {replica_cpu_req}m CPU + {replica_mem_req} bytes mem; "
+                    f"example worker {smallest.name} budget ~{cpu_b}m CPU / "
+                    f"~{mem_b // (2**20)}Mi mem after {_NODE_RESERVE_FRACTION:.0%} "
+                    "reserve). Shrink database.replica.resources or database.resources."
+                )
+
+    if spec.database.enabled and spec.pooler.enabled:
+        pooler_nodes = _candidate_workers(spec, capacity)
+        if pooler_nodes and not any(
+            _pod_fits_node(pooler_cpu_req, pooler_mem_req, n) for n in pooler_nodes
+        ):
+            smallest = min(pooler_nodes, key=lambda n: n.allocatable_cpu_millicores)
             cpu_b, mem_b = _node_schedulable_budget(smallest)
             errors.append(
-                "Postgres **requests** do not fit on any allowed worker alone "
-                f"(needs {db_cpu_req}m CPU + {db_mem_req} bytes mem requests; "
+                "PgBouncer pod **requests** do not fit on any allowed worker "
+                f"(needs {pooler_cpu_req}m CPU + {pooler_mem_req} bytes mem; "
                 f"example worker {smallest.name} budget ~{cpu_b}m CPU / "
-                f"~{mem_b // (2**20)}Mi mem after {_NODE_RESERVE_FRACTION:.0%} reserve). "
-                "A single pod cannot span machines — shrink database.resources requests."
+                f"~{mem_b // (2**20)}Mi mem). Reduce pooler.resources requests."
+            )
+
+    if spec.database.enabled and spec.read_pooler.enabled:
+        rp_nodes = _candidate_workers(spec, capacity)
+        if rp_nodes and not any(
+            _pod_fits_node(read_pooler_cpu_req, read_pooler_mem_req, n)
+            for n in rp_nodes
+        ):
+            smallest = min(rp_nodes, key=lambda n: n.allocatable_cpu_millicores)
+            cpu_b, mem_b = _node_schedulable_budget(smallest)
+            errors.append(
+                "Read PgBouncer pod **requests** do not fit on any allowed worker "
+                f"(needs {read_pooler_cpu_req}m CPU + {read_pooler_mem_req} bytes mem; "
+                f"example worker {smallest.name} budget ~{cpu_b}m CPU / "
+                f"~{mem_b // (2**20)}Mi mem). Reduce read_pooler.resources requests."
+            )
+
+    if spec.cache.enabled:
+        cache_nodes = _candidate_workers(spec, capacity)
+        if cache_nodes and not any(
+            _pod_fits_node(cache_cpu_req, cache_mem_req, n) for n in cache_nodes
+        ):
+            smallest = min(cache_nodes, key=lambda n: n.allocatable_cpu_millicores)
+            cpu_b, mem_b = _node_schedulable_budget(smallest)
+            errors.append(
+                "Redis cache pod **requests** do not fit on any allowed worker "
+                f"(needs {cache_cpu_req}m CPU + {cache_mem_req} bytes mem). "
+                "Reduce cache.resources requests."
+            )
+
+    if db_cache_cpu_req > 0:
+        db_cache_nodes = _candidate_workers(spec, capacity)
+        if db_cache_nodes and not any(
+            _pod_fits_node(db_cache_cpu_req, db_cache_mem_req, n)
+            for n in db_cache_nodes
+        ):
+            smallest = min(
+                db_cache_nodes, key=lambda n: n.allocatable_cpu_millicores
+            )
+            cpu_b, mem_b = _node_schedulable_budget(smallest)
+            errors.append(
+                "Dedicated database Redis pod **requests** do not fit on any "
+                "allowed worker. Reduce database.cache.resources requests."
             )
 
     backend_nodes = _candidate_workers(spec, capacity)
@@ -315,11 +540,40 @@ def validate_spec_against_cluster(
             f"~{mem_b // (2**20)}Mi mem). Reduce backend.resources requests."
         )
 
+    read_count = max(0, spec.database.replicas - 1) if spec.database.enabled else 0
     total_cpu_req = spec.backend.replicas * be_cpu_req + (
-        db_cpu_req * spec.database.replicas if spec.database.enabled else 0
+        primary_cpu_req + read_count * replica_cpu_req if spec.database.enabled else 0
+    ) + (
+        pooler_cpu_req * spec.pooler.replicas
+        if spec.database.enabled and spec.pooler.enabled
+        else 0
+    ) + (
+        read_pooler_cpu_req * spec.read_pooler.replicas
+        if spec.database.enabled and spec.read_pooler.enabled
+        else 0
+    ) + (
+        cache_cpu_req * spec.cache.replicas if spec.cache.enabled else 0
+    ) + (
+        db_cache_cpu_req * spec.database.cache.replicas
+        if db_cache_cpu_req > 0
+        else 0
     )
     total_mem_req = spec.backend.replicas * be_mem_req + (
-        db_mem_req * spec.database.replicas if spec.database.enabled else 0
+        primary_mem_req + read_count * replica_mem_req if spec.database.enabled else 0
+    ) + (
+        pooler_mem_req * spec.pooler.replicas
+        if spec.database.enabled and spec.pooler.enabled
+        else 0
+    ) + (
+        read_pooler_mem_req * spec.read_pooler.replicas
+        if spec.database.enabled and spec.read_pooler.enabled
+        else 0
+    ) + (
+        cache_mem_req * spec.cache.replicas if spec.cache.enabled else 0
+    ) + (
+        db_cache_mem_req * spec.database.cache.replicas
+        if db_cache_mem_req > 0
+        else 0
     )
     if total_cpu_req > capacity.budget_cpu_millicores:
         errors.append(
@@ -335,9 +589,9 @@ def validate_spec_against_cluster(
     backend_cpu_lim = spec.backend.replicas * _parse_cpu_to_millicores(
         spec.backend.resources.cpu_limit
     )
-    db_cpu_lim = _parse_cpu_to_millicores(spec.database.resources.cpu_limit) * (
-        spec.database.replicas if spec.database.enabled else 0
-    )
+    db_cpu_lim = _parse_cpu_to_millicores(primary_res.cpu_limit) + read_count * _parse_cpu_to_millicores(
+        replica_res.cpu_limit
+    ) if spec.database.enabled else 0
     if backend_cpu_lim + db_cpu_lim > capacity.budget_cpu_millicores:
         warnings.append(
             f"CPU limits (~{backend_cpu_lim + db_cpu_lim}m) exceed budget "

@@ -250,6 +250,16 @@ def deploy_iteration(
     statefulset_wait_timeout_s = wait_timeout_s
     if spec.database.enabled:
         waits.insert(0, "deployment/postgres")
+        if spec.pooler.enabled:
+            # Backends connect via the pooler; wait for it after postgres.
+            waits.insert(1, f"deployment/{spec.pooler.service_name}")
+        if spec.read_pooler.enabled and spec.database.replicas > 1:
+            waits.append(f"deployment/{spec.read_pooler.service_name}")
+        if spec.cache.enabled:
+            waits.append(f"deployment/{spec.cache.service_name}")
+        db_cache = spec.database.cache
+        if db_cache.enabled and not db_cache.use_shared:
+            waits.append(f"deployment/{db_cache.service_name}")
         if spec.database.replicas > 1:
             statefulset_waits.append(
                 f"statefulset/{spec.database.service_name}-replica"

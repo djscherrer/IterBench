@@ -23,6 +23,7 @@ from ..workspace import (
     iteration_bench_dir,
     iteration_log_path,
     iteration_spec_log_path,
+    materialize_code_lineage,
     resolve_iteration_dir,
 )
 from .config import (
@@ -48,6 +49,16 @@ def execute_iteration(
     _write_iteration_header(iteration_path, plan, cfg)
 
     image_id = ctx.base_image_id
+
+    if plan.refinement_action == "deployment":
+        image_id = (
+            materialize_code_lineage(
+                iteration_path,
+                plan.source_code_dir,
+                fallback_image_id=ctx.base_image_id,
+            )
+            or ctx.base_image_id
+        )
 
     if (
         plan.refinement_action == "code"

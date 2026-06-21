@@ -71,7 +71,7 @@ def _standalone_postgres_manifests(
             {"name": "POSTGRES_PASSWORD", "value": POSTGRES_PASSWORD},
             {"name": "POSTGRES_DB", "value": POSTGRES_DATABASE},
         ],
-        "resources": spec.database.resources.to_k8s_resources(),
+        "resources": spec.database.effective_primary_resources().to_k8s_resources(),
         "readinessProbe": _postgres_readiness_probe(bitnami=False),
     }
     if pg_args:
@@ -191,7 +191,7 @@ def _replicated_postgres_manifests(
         "image": BITNAMI_POSTGRES_IMAGE,
         "ports": [{"containerPort": spec.database.port}],
         "env": _bitnami_primary_env(spec),
-        "resources": spec.database.resources.to_k8s_resources(),
+        "resources": spec.database.effective_primary_resources().to_k8s_resources(),
         "readinessProbe": _postgres_readiness_probe(bitnami=True),
     }
     docs: list[dict[str, Any]] = [
@@ -252,7 +252,7 @@ def _replicated_postgres_manifests(
         "image": BITNAMI_POSTGRES_IMAGE,
         "ports": [{"containerPort": spec.database.port}],
         "env": _bitnami_replica_env(spec),
-        "resources": spec.database.resources.to_k8s_resources(),
+        "resources": spec.database.effective_replica_resources().to_k8s_resources(),
         "readinessProbe": _postgres_readiness_probe(bitnami=True, replica=True),
     }
     docs.extend(
