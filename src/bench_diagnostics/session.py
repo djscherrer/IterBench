@@ -23,6 +23,8 @@ from .distributed.hosts import WorkloadHostMetricsCollector, WorkloadHostSpec
 from .hosts import LoadHostMetricsCollector
 from .kubernetes.cluster import ClusterDiagnostics
 from .kubernetes.database import PostgresMetricsCollector
+from .kubernetes.pooler import PgBouncerMetricsCollector
+from .kubernetes.replication import ReplicationMetricsCollector
 from .kubernetes.pods import PodLogStream, PodLogsCollector
 
 
@@ -160,6 +162,31 @@ def diagnostics_session(
                         logger=logger,
                     )
                 )
+                if k8s.db_replicas > 1:
+                    collectors.append(
+                        ReplicationMetricsCollector(
+                            run_dir,
+                            namespace=k8s.namespace,
+                            label_selector=f"app={k8s.db_service_name}",
+                            user=k8s.db_user,
+                            password=k8s.db_password,
+                            database=k8s.db_name,
+                            interval_s=db_interval_s,
+                            logger=logger,
+                        )
+                    )
+                collectors.append(
+                    PgBouncerMetricsCollector(
+                        run_dir,
+                        namespace=k8s.namespace,
+                        user=k8s.db_user,
+                        password=k8s.db_password,
+                        pooler_port=k8s.pooler_port,
+                        read_pooler_port=k8s.read_pooler_port,
+                        interval_s=db_interval_s,
+                        logger=logger,
+                    )
+                )
 
     elif mode == DiagnosticsMode.DISTRIBUTED:
         if distributed is None:
@@ -194,6 +221,9 @@ def diagnostics_session_for_k8s(
     db_password: str = "postgres",
     db_name: str = "testdb",
     backend_label_selector: str = "app=backend",
+    db_replicas: int = 1,
+    pooler_port: int = 6432,
+    read_pooler_port: int = 6432,
 ) -> DiagnosticsSession:
     """Convenience wrapper for k8s-bench."""
     return diagnostics_session(
@@ -211,6 +241,9 @@ def diagnostics_session_for_k8s(
             db_name=db_name,
             backend_label_selector=backend_label_selector,
             pod_and_db_diagnostics=pod_and_db_diagnostics,
+            db_replicas=db_replicas,
+            pooler_port=pooler_port,
+            read_pooler_port=read_pooler_port,
         ),
     )
 

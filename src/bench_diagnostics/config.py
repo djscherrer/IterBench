@@ -25,6 +25,9 @@ class KubernetesDiagnosticsConfig:
     db_name: str = "testdb"
     backend_label_selector: str = "app=backend"
     pod_and_db_diagnostics: bool = True
+    db_replicas: int = 1
+    pooler_port: int = 6432
+    read_pooler_port: int = 6432
 
 
 @dataclass(frozen=True)

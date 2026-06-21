@@ -23,7 +23,10 @@ Layout::
     │   │   └── postgres.log
     │   └── database/
     │       ├── pg_stat_activity.csv
-    │       └── pg_stat_database.csv
+    │       ├── pg_stat_database.csv
+    │       └── pg_stat_replication.csv
+    │   └── pooler/
+    │       └── pgbouncer_pools.csv
     └── distributed/                     # DiagnosticsMode.DISTRIBUTED only
         ├── hosts/
         │   └── <host_slug>/
@@ -83,6 +86,13 @@ def kubernetes_pods_dir(run_dir: Path) -> Path:
 def kubernetes_database_dir(run_dir: Path) -> Path:
     """``<run_dir>/diagnostics/kubernetes/database/``."""
     d = kubernetes_dir(run_dir) / "database"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def kubernetes_pooler_dir(run_dir: Path) -> Path:
+    """``<run_dir>/diagnostics/kubernetes/pooler/``."""
+    d = kubernetes_dir(run_dir) / "pooler"
     d.mkdir(parents=True, exist_ok=True)
     return d
 

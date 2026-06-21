@@ -1,9 +1,4 @@
-"""
-Condense on-disk diagnostics into LLM-friendly summaries.
-
-Use :func:`summarize_run_dir` after a bench run, or
-:class:`DiagnosticsSummary` directly.
-"""
+"""Condense on-disk diagnostics into LLM-friendly summaries."""
 
 from __future__ import annotations
 
@@ -16,6 +11,8 @@ from .events import EventSummary, summarize_cluster_events
 from .load_run import load_profile_from_config, summarize_load_run
 from .pod_errors import PodErrorSummary, summarize_pod_errors
 from .pod_health import PodHealthSummary, summarize_pod_health
+from .pooler import PoolerSummary, summarize_pooler_metrics
+from .replication import ReplicationSummary, summarize_replication_metrics
 from .utilization import summarize_k8s_utilization
 
 
@@ -25,6 +22,8 @@ class DiagnosticsSummary:
 
     pod_errors: PodErrorSummary = field(default_factory=PodErrorSummary)
     database: DatabaseSummary = field(default_factory=DatabaseSummary)
+    replication: ReplicationSummary = field(default_factory=ReplicationSummary)
+    pooler: PoolerSummary = field(default_factory=PoolerSummary)
     pod_health: PodHealthSummary = field(default_factory=PodHealthSummary)
     events: EventSummary = field(default_factory=EventSummary)
     utilization: str = ""
@@ -33,6 +32,8 @@ class DiagnosticsSummary:
         sections = [
             ("### Application and database errors (from pod logs)", self.pod_errors.to_prompt_block()),
             ("### PostgreSQL", self.database.to_prompt_block()),
+            ("### Replication lag", self.replication.to_prompt_block()),
+            ("### PgBouncer pools", self.pooler.to_prompt_block()),
             ("### Pod health", self.pod_health.to_prompt_block()),
             ("### Cluster events", self.events.to_prompt_block()),
             ("### Kubernetes utilization", self.utilization or "(kubernetes metrics unavailable)"),
@@ -49,6 +50,8 @@ class DiagnosticsSummary:
         return {
             "pod_errors": self.pod_errors.to_dict(),
             "database": self.database.to_dict(),
+            "replication": self.replication.to_dict(),
+            "pooler": self.pooler.to_dict(),
             "pod_health": self.pod_health.to_dict(),
             "events": self.events.to_dict(),
             "utilization": self.utilization,
@@ -59,6 +62,8 @@ class DiagnosticsSummary:
         return cls(
             pod_errors=PodErrorSummary.from_dict(data.get("pod_errors") or {}),
             database=DatabaseSummary.from_dict(data.get("database") or {}),
+            replication=ReplicationSummary.from_dict(data.get("replication") or {}),
+            pooler=PoolerSummary.from_dict(data.get("pooler") or {}),
             pod_health=PodHealthSummary.from_dict(data.get("pod_health") or {}),
             events=EventSummary.from_dict(data.get("events") or {}),
             utilization=str(data.get("utilization") or ""),
@@ -80,6 +85,8 @@ def summarize_run_dir(
     return DiagnosticsSummary(
         pod_errors=summarize_pod_errors(run_dir, bench_log=bench_log),
         database=summarize_database_metrics(run_dir, max_connections=max_connections),
+        replication=summarize_replication_metrics(run_dir),
+        pooler=summarize_pooler_metrics(run_dir),
         pod_health=summarize_pod_health(run_dir),
         events=summarize_cluster_events(run_dir),
         utilization=summarize_k8s_utilization(run_dir),
