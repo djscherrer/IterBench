@@ -1,4 +1,5 @@
 from .cluster import ClusterDiagnostics
+from .cache import RedisMetricsCollector
 from .database import PostgresMetricsCollector
 from .pooler import PgBouncerMetricsCollector
 from .pods import PodLogStream, PodLogsCollector
@@ -10,5 +11,6 @@ __all__ = [
     "PodLogStream",
     "PodLogsCollector",
     "PostgresMetricsCollector",
+    "RedisMetricsCollector",
     "ReplicationMetricsCollector",
 ]

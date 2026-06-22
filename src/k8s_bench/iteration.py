@@ -503,6 +503,11 @@ def run_k8s_bench_iteration(
         db_password=POSTGRES_PASSWORD,
         db_name=POSTGRES_DATABASE,
         db_replicas=spec.database.replicas if spec.database.enabled else 1,
+        pooler_enabled=spec.pooler.enabled if spec.database.enabled else False,
+        read_pooler_enabled=(
+            spec.read_pooler.enabled if spec.database.enabled else False
+        ),
+        cache_enabled=spec.cache.enabled,
         pooler_port=spec.pooler.port if spec.pooler.enabled else 6432,
         read_pooler_port=(
             spec.read_pooler.port if spec.read_pooler.enabled else 6432

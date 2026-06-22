@@ -176,6 +176,8 @@ class PgBouncerMetricsCollector(DiagnosticsCollector):
         password: str = "postgres",
         pooler_port: int = 6432,
         read_pooler_port: int = 6432,
+        pooler_enabled: bool = True,
+        read_pooler_enabled: bool = True,
         interval_s: int = 5,
         logger: logging.Logger | None = None,
     ) -> None:
@@ -186,9 +188,14 @@ class PgBouncerMetricsCollector(DiagnosticsCollector):
         self._password = password
         self._pooler_port = pooler_port
         self._read_pooler_port = read_pooler_port
+        self._pooler_enabled = pooler_enabled
+        self._read_pooler_enabled = read_pooler_enabled
         self._interval_s = interval_s
 
     def _build_threads(self) -> list[threading.Thread]:
+        threads: list[threading.Thread] = []
+        if not self._pooler_enabled and not self._read_pooler_enabled:
+            return threads
         out_csv = kubernetes_pooler_dir(self._run_dir) / "pgbouncer_pools.csv"
         shared = {
             "namespace": self._namespace,
@@ -199,21 +206,26 @@ class PgBouncerMetricsCollector(DiagnosticsCollector):
             "interval_s": self._interval_s,
             "logger": self._log,
         }
-        return [
-            threading.Thread(
-                target=_capture_pooler_pools,
-                kwargs={**shared, "role": "pooler", "port": self._pooler_port},
-                daemon=True,
-                name="diag-pgbouncer-write",
-            ),
-            threading.Thread(
-                target=_capture_pooler_pools,
-                kwargs={
-                    **shared,
-                    "role": "read-pooler",
-                    "port": self._read_pooler_port,
-                },
-                daemon=True,
-                name="diag-pgbouncer-read",
-            ),
-        ]
+        if self._pooler_enabled:
+            threads.append(
+                threading.Thread(
+                    target=_capture_pooler_pools,
+                    kwargs={**shared, "role": "pooler", "port": self._pooler_port},
+                    daemon=True,
+                    name="diag-pgbouncer-write",
+                )
+            )
+        if self._read_pooler_enabled:
+            threads.append(
+                threading.Thread(
+                    target=_capture_pooler_pools,
+                    kwargs={
+                        **shared,
+                        "role": "read-pooler",
+                        "port": self._read_pooler_port,
+                    },
+                    daemon=True,
+                    name="diag-pgbouncer-read",
+                )
+            )
+        return threads

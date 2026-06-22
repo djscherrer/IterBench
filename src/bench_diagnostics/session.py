@@ -22,6 +22,7 @@ from .config import (
 from .distributed.hosts import WorkloadHostMetricsCollector, WorkloadHostSpec
 from .hosts import LoadHostMetricsCollector
 from .kubernetes.cluster import ClusterDiagnostics
+from .kubernetes.cache import RedisMetricsCollector
 from .kubernetes.database import PostgresMetricsCollector
 from .kubernetes.pooler import PgBouncerMetricsCollector
 from .kubernetes.replication import ReplicationMetricsCollector
@@ -141,6 +142,38 @@ def diagnostics_session(
                         max_log_requests=4,
                     )
                 )
+                if k8s.db_replicas > 1:
+                    streams.append(
+                        PodLogStream(
+                            name="postgres-replica",
+                            selector="baxbench.dev/db-tier=replica",
+                            max_log_requests=8,
+                        )
+                    )
+            if k8s.pooler_enabled:
+                streams.append(
+                    PodLogStream(
+                        name="pgbouncer",
+                        selector="baxbench.dev/role=pooler",
+                        max_log_requests=8,
+                    )
+                )
+            if k8s.read_pooler_enabled:
+                streams.append(
+                    PodLogStream(
+                        name="pgbouncer-read",
+                        selector="baxbench.dev/role=read-pooler",
+                        max_log_requests=8,
+                    )
+                )
+            if k8s.cache_enabled:
+                streams.append(
+                    PodLogStream(
+                        name="redis",
+                        selector="baxbench.dev/role=cache",
+                        max_log_requests=4,
+                    )
+                )
             collectors.append(
                 PodLogsCollector(
                     run_dir,
@@ -175,14 +208,26 @@ def diagnostics_session(
                             logger=logger,
                         )
                     )
+                if k8s.pooler_enabled or k8s.read_pooler_enabled:
+                    collectors.append(
+                        PgBouncerMetricsCollector(
+                            run_dir,
+                            namespace=k8s.namespace,
+                            user=k8s.db_user,
+                            password=k8s.db_password,
+                            pooler_port=k8s.pooler_port,
+                            read_pooler_port=k8s.read_pooler_port,
+                            pooler_enabled=k8s.pooler_enabled,
+                            read_pooler_enabled=k8s.read_pooler_enabled,
+                            interval_s=db_interval_s,
+                            logger=logger,
+                        )
+                    )
+            if k8s.cache_enabled:
                 collectors.append(
-                    PgBouncerMetricsCollector(
+                    RedisMetricsCollector(
                         run_dir,
                         namespace=k8s.namespace,
-                        user=k8s.db_user,
-                        password=k8s.db_password,
-                        pooler_port=k8s.pooler_port,
-                        read_pooler_port=k8s.read_pooler_port,
                         interval_s=db_interval_s,
                         logger=logger,
                     )
@@ -222,6 +267,9 @@ def diagnostics_session_for_k8s(
     db_name: str = "testdb",
     backend_label_selector: str = "app=backend",
     db_replicas: int = 1,
+    pooler_enabled: bool = False,
+    read_pooler_enabled: bool = False,
+    cache_enabled: bool = False,
     pooler_port: int = 6432,
     read_pooler_port: int = 6432,
 ) -> DiagnosticsSession:
@@ -242,6 +290,9 @@ def diagnostics_session_for_k8s(
             backend_label_selector=backend_label_selector,
             pod_and_db_diagnostics=pod_and_db_diagnostics,
             db_replicas=db_replicas,
+            pooler_enabled=pooler_enabled,
+            read_pooler_enabled=read_pooler_enabled,
+            cache_enabled=cache_enabled,
             pooler_port=pooler_port,
             read_pooler_port=read_pooler_port,
         ),

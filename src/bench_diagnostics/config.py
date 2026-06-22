@@ -26,6 +26,9 @@ class KubernetesDiagnosticsConfig:
     backend_label_selector: str = "app=backend"
     pod_and_db_diagnostics: bool = True
     db_replicas: int = 1
+    pooler_enabled: bool = False
+    read_pooler_enabled: bool = False
+    cache_enabled: bool = False
     pooler_port: int = 6432
     read_pooler_port: int = 6432
 
