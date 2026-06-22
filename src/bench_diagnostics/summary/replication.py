@@ -6,17 +6,22 @@ import csv
 from dataclasses import dataclass
 from pathlib import Path
 
-from ..paths import kubernetes_database_dir
+from ..paths import resolve_kubernetes_metrics_database_dir
+from ._stats import distribution_float
+
+
+@dataclass
+class ReplicationMetricStats:
+    metric: str
+    min_p50_avg_p95_max: str
 
 
 @dataclass
 class ReplicationSummary:
     samples: int = 0
-    max_replay_lag_s: float | None = None
-    avg_replay_lag_s: float | None = None
-    max_flush_lag_s: float | None = None
     replica_count: int = 0
     not_streaming: int = 0
+    metrics: tuple[ReplicationMetricStats, ...] = ()
 
     def to_prompt_block(self) -> str:
         if self.samples == 0:
@@ -25,18 +30,8 @@ class ReplicationSummary:
             f"- **Replication samples**: {self.samples}",
             f"- **Replica streams observed**: {self.replica_count}",
         ]
-        if self.max_replay_lag_s is not None:
-            parts.append(
-                f"- **Replay lag (avg/max)**: {self.avg_replay_lag_s:.2f}s / "
-                f"{self.max_replay_lag_s:.2f}s"
-            )
-            if self.max_replay_lag_s > 5.0:
-                parts.append(
-                    "  — **high replay lag**; read replicas may serve stale data "
-                    "or fall behind under write load"
-                )
-        if self.max_flush_lag_s is not None:
-            parts.append(f"- **Flush lag (max)**: {self.max_flush_lag_s:.2f}s")
+        for m in self.metrics:
+            parts.append(f"- **{m.metric}** (min/p50/avg/p95/max s): {m.min_p50_avg_p95_max}")
         if self.not_streaming > 0:
             parts.append(
                 f"- **Non-streaming replica observations**: {self.not_streaming}"
@@ -46,27 +41,32 @@ class ReplicationSummary:
     def to_dict(self) -> dict:
         return {
             "samples": self.samples,
-            "max_replay_lag_s": self.max_replay_lag_s,
-            "avg_replay_lag_s": self.avg_replay_lag_s,
-            "max_flush_lag_s": self.max_flush_lag_s,
             "replica_count": self.replica_count,
             "not_streaming": self.not_streaming,
+            "metrics": [
+                {"metric": m.metric, "min_p50_avg_p95_max": m.min_p50_avg_p95_max}
+                for m in self.metrics
+            ],
         }
 
     @classmethod
     def from_dict(cls, data: dict) -> ReplicationSummary:
         return cls(
             samples=int(data.get("samples") or 0),
-            max_replay_lag_s=data.get("max_replay_lag_s"),
-            avg_replay_lag_s=data.get("avg_replay_lag_s"),
-            max_flush_lag_s=data.get("max_flush_lag_s"),
             replica_count=int(data.get("replica_count") or 0),
             not_streaming=int(data.get("not_streaming") or 0),
+            metrics=tuple(
+                ReplicationMetricStats(
+                    metric=str(m["metric"]),
+                    min_p50_avg_p95_max=str(m["min_p50_avg_p95_max"]),
+                )
+                for m in data.get("metrics") or []
+            ),
         )
 
 
 def summarize_replication_metrics(run_dir: Path) -> ReplicationSummary:
-    path = kubernetes_database_dir(run_dir) / "pg_stat_replication.csv"
+    path = resolve_kubernetes_metrics_database_dir(run_dir) / "pg_stat_replication.csv"
     if not path.is_file():
         return ReplicationSummary()
 
@@ -93,12 +93,26 @@ def summarize_replication_metrics(run_dir: Path) -> ReplicationSummary:
         except (TypeError, ValueError):
             continue
 
+    metrics: list[ReplicationMetricStats] = []
+    if replay_lags:
+        metrics.append(
+            ReplicationMetricStats(
+                metric="replay_lag_s",
+                min_p50_avg_p95_max=distribution_float(replay_lags),
+            )
+        )
+    if flush_lags:
+        metrics.append(
+            ReplicationMetricStats(
+                metric="flush_lag_s",
+                min_p50_avg_p95_max=distribution_float(flush_lags),
+            )
+        )
+
     samples = len({r.get("ts_epoch_s", "") for r in rows})
     return ReplicationSummary(
         samples=samples,
-        max_replay_lag_s=max(replay_lags) if replay_lags else None,
-        avg_replay_lag_s=sum(replay_lags) / len(replay_lags) if replay_lags else None,
-        max_flush_lag_s=max(flush_lags) if flush_lags else None,
         replica_count=len(apps),
         not_streaming=not_streaming,
+        metrics=tuple(metrics),
     )

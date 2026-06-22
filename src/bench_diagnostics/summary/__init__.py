@@ -6,6 +6,7 @@ import json
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from .cache import CacheSummary, summarize_cache_metrics
 from .database import DatabaseSummary, summarize_database_metrics
 from .events import EventSummary, summarize_cluster_events
 from .load_run import load_profile_from_config, summarize_load_run
@@ -24,16 +25,18 @@ class DiagnosticsSummary:
     database: DatabaseSummary = field(default_factory=DatabaseSummary)
     replication: ReplicationSummary = field(default_factory=ReplicationSummary)
     pooler: PoolerSummary = field(default_factory=PoolerSummary)
+    cache: CacheSummary = field(default_factory=CacheSummary)
     pod_health: PodHealthSummary = field(default_factory=PodHealthSummary)
     events: EventSummary = field(default_factory=EventSummary)
     utilization: str = ""
 
     def to_prompt_block(self) -> str:
         sections = [
-            ("### Application and database errors (from pod logs)", self.pod_errors.to_prompt_block()),
+            ("### Pod logs", self.pod_errors.to_prompt_block()),
             ("### PostgreSQL", self.database.to_prompt_block()),
             ("### Replication lag", self.replication.to_prompt_block()),
             ("### PgBouncer pools", self.pooler.to_prompt_block()),
+            ("### Redis cache", self.cache.to_prompt_block()),
             ("### Pod health", self.pod_health.to_prompt_block()),
             ("### Cluster events", self.events.to_prompt_block()),
             ("### Kubernetes utilization", self.utilization or "(kubernetes metrics unavailable)"),
@@ -52,6 +55,7 @@ class DiagnosticsSummary:
             "database": self.database.to_dict(),
             "replication": self.replication.to_dict(),
             "pooler": self.pooler.to_dict(),
+            "cache": self.cache.to_dict(),
             "pod_health": self.pod_health.to_dict(),
             "events": self.events.to_dict(),
             "utilization": self.utilization,
@@ -64,6 +68,7 @@ class DiagnosticsSummary:
             database=DatabaseSummary.from_dict(data.get("database") or {}),
             replication=ReplicationSummary.from_dict(data.get("replication") or {}),
             pooler=PoolerSummary.from_dict(data.get("pooler") or {}),
+            cache=CacheSummary.from_dict(data.get("cache") or {}),
             pod_health=PodHealthSummary.from_dict(data.get("pod_health") or {}),
             events=EventSummary.from_dict(data.get("events") or {}),
             utilization=str(data.get("utilization") or ""),
@@ -87,6 +92,7 @@ def summarize_run_dir(
         database=summarize_database_metrics(run_dir, max_connections=max_connections),
         replication=summarize_replication_metrics(run_dir),
         pooler=summarize_pooler_metrics(run_dir),
+        cache=summarize_cache_metrics(run_dir),
         pod_health=summarize_pod_health(run_dir),
         events=summarize_cluster_events(run_dir),
         utilization=summarize_k8s_utilization(run_dir),
@@ -126,6 +132,15 @@ def benchmark_context_from_config(config: dict) -> str:
             f"- **Postgres**: replicas={database.get('replicas', 1)}, "
             f"max_connections={database.get('max_connections', '?')}"
         )
+    pooler = spec.get("pooler") or {}
+    read_pooler = spec.get("read_pooler") or {}
+    cache = spec.get("cache") or {}
+    if pooler.get("enabled"):
+        lines.append(f"- **Write pooler (PgBouncer)**: enabled")
+    if read_pooler.get("enabled"):
+        lines.append(f"- **Read pooler (PgBouncer)**: enabled")
+    if cache.get("enabled"):
+        lines.append(f"- **Redis cache**: enabled")
     load_profile = load_profile_from_config(config)
     if load_profile:
         lines.append(f"- **Load profile**: `{load_profile}`")

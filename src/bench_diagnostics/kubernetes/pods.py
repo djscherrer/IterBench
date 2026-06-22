@@ -1,7 +1,8 @@
-"""Streaming container-log capture under ``diagnostics/kubernetes/pods/``."""
+"""Streaming container-log capture under ``diagnostics/kubernetes/logs/``."""
 
 from __future__ import annotations
 
+import io
 import json
 import logging
 import threading
@@ -12,7 +13,7 @@ from typing import Iterable, Sequence
 
 from bench_diagnostics import _kubectl
 from bench_diagnostics.base import DiagnosticsCollector
-from bench_diagnostics.paths import kubernetes_cluster_dir, kubernetes_pods_dir
+from bench_diagnostics.paths import kubernetes_logs_dir, kubernetes_logs_restarts_dir
 
 
 @dataclass(frozen=True)
@@ -36,7 +37,8 @@ def _stream_pod_logs(
     err_file = out_file.with_suffix(out_file.suffix + ".kubectl.stderr")
     while not stop_event.is_set():
         try:
-            with open(out_file, "ab") as out, open(err_file, "ab") as err:
+            err_buffer = io.BytesIO()
+            with open(out_file, "ab") as out:
                 header = (
                     f"\n# === kubectl logs -n {namespace} -l {selector} started at "
                     f"{time.strftime('%Y-%m-%dT%H:%M:%S%z')} ===\n"
@@ -58,12 +60,17 @@ def _stream_pod_logs(
                         "--follow",
                     ],
                     stdout=out,
-                    stderr=err,
+                    stderr=err_buffer,
                 )
                 while proc.poll() is None:
                     if stop_event.wait(timeout=1.0):
                         _kubectl.terminate(proc)
-                        return
+                        break
+            err_data = err_buffer.getvalue()
+            if err_data:
+                err_file.parent.mkdir(parents=True, exist_ok=True)
+                with open(err_file, "ab") as err:
+                    err.write(err_data)
         except Exception as exc:  # noqa: BLE001
             logger.warning(
                 "kubectl logs streamer failed (ns=%s sel=%s): %s; retrying",
@@ -143,7 +150,7 @@ class PodLogsCollector(DiagnosticsCollector):
         self._streams = tuple(streams)
 
     def _build_threads(self) -> list[threading.Thread]:
-        out_dir = kubernetes_pods_dir(self._run_dir)
+        out_dir = kubernetes_logs_dir(self._run_dir)
         threads: list[threading.Thread] = []
         for stream in self._streams:
             threads.append(
@@ -165,11 +172,19 @@ class PodLogsCollector(DiagnosticsCollector):
 
     def stop(self) -> None:
         super().stop()
+        out_dir = kubernetes_logs_dir(self._run_dir)
+        for stream in self._streams:
+            err_file = out_dir / f"{stream.name}.log.kubectl.stderr"
+            try:
+                if err_file.is_file() and err_file.stat().st_size == 0:
+                    err_file.unlink()
+            except OSError:
+                pass
         try:
             _capture_previous_logs(
                 namespace=self._namespace,
                 selectors=[s.selector for s in self._streams],
-                out_dir=kubernetes_cluster_dir(self._run_dir) / "restart_logs",
+                out_dir=kubernetes_logs_restarts_dir(self._run_dir),
                 logger=self._log,
             )
         except Exception as exc:  # noqa: BLE001

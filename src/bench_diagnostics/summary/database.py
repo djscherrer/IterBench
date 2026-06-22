@@ -7,25 +7,20 @@ from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
 
-from ..paths import kubernetes_database_dir
+from ..paths import resolve_kubernetes_metrics_database_dir
+from ._stats import distribution_float, distribution_int
 @dataclass(frozen=True)
 class ActivityStateStats:
     state: str
-    count_min: int
-    count_avg: float
-    count_max: int
-    max_age_s_min: float
-    max_age_s_avg: float
-    max_age_s_max: float
+    count_distribution: str
+    max_age_s_distribution: str
 
 
 @dataclass
 class DatabaseSummary:
     activity_states: tuple[ActivityStateStats, ...] = ()
     peak_numbackends: int | None = None
-    total_conn_min: int | None = None
-    total_conn_avg: float | None = None
-    total_conn_max: int | None = None
+    total_conn_distribution: str = ""
     deadlocks_delta: int | None = None
     xact_rollback_delta: int | None = None
     max_connections: int | None = None
@@ -45,14 +40,12 @@ class DatabaseSummary:
             if self.max_connections:
                 pct = 100.0 * self.peak_numbackends / self.max_connections
                 conn_line += f" of {self.max_connections} allowed ({pct:.0f}%)"
-                if self.peak_numbackends >= int(0.9 * self.max_connections):
-                    conn_line += " — **at/near the connection limit**"
             parts.append(conn_line)
 
-        if self.total_conn_avg is not None:
+        if self.total_conn_distribution:
             parts.append(
-                f"- **Open connections (min/avg/max over samples)**: "
-                f"{self.total_conn_min}/{self.total_conn_avg:.0f}/{self.total_conn_max}"
+                f"- **Open connections (min/p50/avg/p95/max over samples)**: "
+                f"{self.total_conn_distribution}"
             )
 
         if self.deadlocks_delta is not None:
@@ -66,16 +59,15 @@ class DatabaseSummary:
             parts.append("")
             parts.append(
                 "Breakdown by connection state (count and oldest-session age, "
-                "min/avg/max across samples):"
+                "min/p50/avg/p95/max across samples):"
             )
             parts.append("")
-            parts.append("| State | Count (min/avg/max) | Oldest session s (min/avg/max) |")
+            parts.append("| State | Count | Oldest session s |")
             parts.append("|---|---:|---:|")
             for st in self.activity_states:
                 parts.append(
-                    f"| {st.state} | "
-                    f"{st.count_min}/{st.count_avg:.0f}/{st.count_max} | "
-                    f"{st.max_age_s_min:.1f}/{st.max_age_s_avg:.1f}/{st.max_age_s_max:.1f} |"
+                    f"| {st.state} | {st.count_distribution} | "
+                    f"{st.max_age_s_distribution} |"
                 )
 
         return "\n".join(parts)
@@ -84,21 +76,15 @@ class DatabaseSummary:
         return {
             "samples": self.samples,
             "peak_numbackends": self.peak_numbackends,
-            "total_conn_min": self.total_conn_min,
-            "total_conn_avg": self.total_conn_avg,
-            "total_conn_max": self.total_conn_max,
+            "total_conn_distribution": self.total_conn_distribution,
             "deadlocks_delta": self.deadlocks_delta,
             "xact_rollback_delta": self.xact_rollback_delta,
             "max_connections": self.max_connections,
             "activity_states": [
                 {
                     "state": s.state,
-                    "count_min": s.count_min,
-                    "count_avg": s.count_avg,
-                    "count_max": s.count_max,
-                    "max_age_s_min": s.max_age_s_min,
-                    "max_age_s_avg": s.max_age_s_avg,
-                    "max_age_s_max": s.max_age_s_max,
+                    "count_distribution": s.count_distribution,
+                    "max_age_s_distribution": s.max_age_s_distribution,
                 }
                 for s in self.activity_states
             ],
@@ -109,21 +95,15 @@ class DatabaseSummary:
         states = tuple(
             ActivityStateStats(
                 state=str(s["state"]),
-                count_min=int(s["count_min"]),
-                count_avg=float(s["count_avg"]),
-                count_max=int(s["count_max"]),
-                max_age_s_min=float(s["max_age_s_min"]),
-                max_age_s_avg=float(s["max_age_s_avg"]),
-                max_age_s_max=float(s["max_age_s_max"]),
+                count_distribution=str(s.get("count_distribution") or ""),
+                max_age_s_distribution=str(s.get("max_age_s_distribution") or ""),
             )
             for s in data.get("activity_states") or []
         )
         return cls(
             activity_states=states,
             peak_numbackends=data.get("peak_numbackends"),
-            total_conn_min=data.get("total_conn_min"),
-            total_conn_avg=data.get("total_conn_avg"),
-            total_conn_max=data.get("total_conn_max"),
+            total_conn_distribution=str(data.get("total_conn_distribution") or ""),
             deadlocks_delta=data.get("deadlocks_delta"),
             xact_rollback_delta=data.get("xact_rollback_delta"),
             max_connections=data.get("max_connections"),
@@ -136,16 +116,14 @@ def summarize_database_metrics(
     *,
     max_connections: int | None = None,
 ) -> DatabaseSummary:
-    db_dir = kubernetes_database_dir(run_dir)
+    db_dir = resolve_kubernetes_metrics_database_dir(run_dir)
     activity_path = db_dir / "pg_stat_activity.csv"
     database_path = db_dir / "pg_stat_database.csv"
 
     activity_states: list[ActivityStateStats] = []
     samples = 0
 
-    total_conn_min: int | None = None
-    total_conn_avg: float | None = None
-    total_conn_max: int | None = None
+    total_conn_distribution = ""
 
     if activity_path.is_file():
         with activity_path.open(newline="", encoding="utf-8", errors="replace") as f:
@@ -171,9 +149,7 @@ def summarize_database_metrics(
 
         if total_by_ts:
             totals = list(total_by_ts.values())
-            total_conn_min = min(totals)
-            total_conn_avg = sum(totals) / len(totals)
-            total_conn_max = max(totals)
+            total_conn_distribution = distribution_int(totals)
 
         for state in sorted(counts_by_state.keys()):
             counts = counts_by_state[state]
@@ -181,12 +157,8 @@ def summarize_database_metrics(
             activity_states.append(
                 ActivityStateStats(
                     state=state,
-                    count_min=min(counts),
-                    count_avg=sum(counts) / len(counts),
-                    count_max=max(counts),
-                    max_age_s_min=min(ages),
-                    max_age_s_avg=sum(ages) / len(ages),
-                    max_age_s_max=max(ages),
+                    count_distribution=distribution_int(counts),
+                    max_age_s_distribution=distribution_float(ages),
                 )
             )
 
@@ -215,9 +187,7 @@ def summarize_database_metrics(
     return DatabaseSummary(
         activity_states=tuple(activity_states),
         peak_numbackends=peak_backends,
-        total_conn_min=total_conn_min,
-        total_conn_avg=total_conn_avg,
-        total_conn_max=total_conn_max,
+        total_conn_distribution=total_conn_distribution,
         deadlocks_delta=deadlocks_delta,
         xact_rollback_delta=rollback_delta,
         max_connections=max_connections,

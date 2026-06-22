@@ -7,7 +7,7 @@ from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 
-from ..paths import kubernetes_cluster_dir
+from ..paths import resolve_kubernetes_metrics_cluster_dir
 
 _NOISE_REASONS = frozenset({"Pulled", "Created", "Started", "ScalingReplicaSet"})
 
@@ -85,7 +85,7 @@ def _is_notable(event: dict) -> bool:
 
 
 def summarize_cluster_events(run_dir: Path, *, max_rows: int = 8) -> EventSummary:
-    path = kubernetes_cluster_dir(run_dir) / "events.jsonl"
+    path = resolve_kubernetes_metrics_cluster_dir(run_dir) / "events.jsonl"
     if not path.is_file():
         return EventSummary()
 

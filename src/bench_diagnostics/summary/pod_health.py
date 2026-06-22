@@ -6,7 +6,7 @@ import csv
 from dataclasses import dataclass
 from pathlib import Path
 
-from ..paths import kubernetes_cluster_dir
+from ..paths import resolve_kubernetes_metrics_cluster_dir
 
 
 @dataclass
@@ -62,7 +62,7 @@ class PodHealthSummary:
 
 
 def summarize_pod_health(run_dir: Path) -> PodHealthSummary:
-    path = kubernetes_cluster_dir(run_dir) / "pod_status.csv"
+    path = resolve_kubernetes_metrics_cluster_dir(run_dir) / "pod_status.csv"
     if not path.is_file():
         return PodHealthSummary()
 

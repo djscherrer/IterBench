@@ -6,16 +6,20 @@ import csv
 from dataclasses import dataclass
 from pathlib import Path
 
-from ..paths import kubernetes_pooler_dir
+from ..paths import resolve_kubernetes_metrics_pooler_dir
+from ._stats import distribution_int
+
+
+@dataclass
+class PoolerMetricStats:
+    metric: str
+    min_p50_avg_p95_max: str
 
 
 @dataclass
 class PoolerRoleStats:
     role: str
-    peak_cl_active: int
-    peak_cl_waiting: int
-    peak_sv_active: int
-    peak_sv_idle: int
+    metrics: tuple[PoolerMetricStats, ...] = ()
 
 
 @dataclass
@@ -28,16 +32,9 @@ class PoolerSummary:
             return "(no PgBouncer pool samples — pooler disabled or not reachable)"
         parts = [f"- **Pool samples**: {self.samples}"]
         for st in self.roles:
-            parts.append(
-                f"- **{st.role}**: peak cl_active={st.peak_cl_active}, "
-                f"cl_waiting={st.peak_cl_waiting}, sv_active={st.peak_sv_active}, "
-                f"sv_idle={st.peak_sv_idle}"
-            )
-            if st.peak_cl_waiting > 0:
-                parts.append(
-                    f"  — **clients waiting** on {st.role}; raise pool size or "
-                    "scale pooler replicas"
-                )
+            parts.append(f"- **{st.role}**:")
+            for m in st.metrics:
+                parts.append(f"  - {m.metric}: {m.min_p50_avg_p95_max}")
         return "\n".join(parts)
 
     def to_dict(self) -> dict:
@@ -46,10 +43,10 @@ class PoolerSummary:
             "roles": [
                 {
                     "role": r.role,
-                    "peak_cl_active": r.peak_cl_active,
-                    "peak_cl_waiting": r.peak_cl_waiting,
-                    "peak_sv_active": r.peak_sv_active,
-                    "peak_sv_idle": r.peak_sv_idle,
+                    "metrics": [
+                        {"metric": m.metric, "min_p50_avg_p95_max": m.min_p50_avg_p95_max}
+                        for m in r.metrics
+                    ],
                 }
                 for r in self.roles
             ],
@@ -60,18 +57,24 @@ class PoolerSummary:
         roles = tuple(
             PoolerRoleStats(
                 role=str(r["role"]),
-                peak_cl_active=int(r["peak_cl_active"]),
-                peak_cl_waiting=int(r["peak_cl_waiting"]),
-                peak_sv_active=int(r["peak_sv_active"]),
-                peak_sv_idle=int(r["peak_sv_idle"]),
+                metrics=tuple(
+                    PoolerMetricStats(
+                        metric=str(m["metric"]),
+                        min_p50_avg_p95_max=str(m["min_p50_avg_p95_max"]),
+                    )
+                    for m in r.get("metrics") or []
+                ),
             )
             for r in data.get("roles") or []
         )
         return cls(roles=roles, samples=int(data.get("samples") or 0))
 
 
+_POOLER_METRICS = ("cl_active", "cl_waiting", "sv_active", "sv_idle")
+
+
 def summarize_pooler_metrics(run_dir: Path) -> PoolerSummary:
-    path = kubernetes_pooler_dir(run_dir) / "pgbouncer_pools.csv"
+    path = resolve_kubernetes_metrics_pooler_dir(run_dir) / "pgbouncer_pools.csv"
     if not path.is_file():
         return PoolerSummary()
 
@@ -83,11 +86,8 @@ def summarize_pooler_metrics(run_dir: Path) -> PoolerSummary:
     by_role: dict[str, dict[str, list[int]]] = {}
     for row in rows:
         role = (row.get("pooler_role") or "").strip() or "pooler"
-        bucket = by_role.setdefault(
-            role,
-            {"cl_active": [], "cl_waiting": [], "sv_active": [], "sv_idle": []},
-        )
-        for key in bucket:
+        bucket = by_role.setdefault(role, {k: [] for k in _POOLER_METRICS})
+        for key in _POOLER_METRICS:
             try:
                 bucket[key].append(int(float(row.get(key) or 0)))
             except (TypeError, ValueError):
@@ -96,15 +96,15 @@ def summarize_pooler_metrics(run_dir: Path) -> PoolerSummary:
     roles: list[PoolerRoleStats] = []
     for role in sorted(by_role.keys()):
         b = by_role[role]
-        roles.append(
-            PoolerRoleStats(
-                role=role,
-                peak_cl_active=max(b["cl_active"]) if b["cl_active"] else 0,
-                peak_cl_waiting=max(b["cl_waiting"]) if b["cl_waiting"] else 0,
-                peak_sv_active=max(b["sv_active"]) if b["sv_active"] else 0,
-                peak_sv_idle=max(b["sv_idle"]) if b["sv_idle"] else 0,
+        metrics = tuple(
+            PoolerMetricStats(
+                metric=key,
+                min_p50_avg_p95_max=distribution_int(b[key]),
             )
+            for key in _POOLER_METRICS
+            if b[key]
         )
+        roles.append(PoolerRoleStats(role=role, metrics=metrics))
 
     samples = len({r.get("ts_epoch_s", "") for r in rows})
     return PoolerSummary(roles=tuple(roles), samples=samples)
