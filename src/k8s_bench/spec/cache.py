@@ -12,6 +12,16 @@ DEFAULT_REDIS_IMAGE = "redis:7-alpine"
 DEFAULT_REDIS_SERVICE = "redis"
 DEFAULT_DB_REDIS_SERVICE = "redis-db"
 DEFAULT_REDIS_PORT = 6379
+
+
+def quantity_to_redis_maxmemory(quantity: str) -> str:
+    """Convert a Kubernetes quantity (e.g. ``256Mi``) to bytes for ``redis-server --maxmemory``."""
+    from ..cluster.capacity import _parse_memory_to_bytes
+
+    nbytes = _parse_memory_to_bytes(quantity)
+    if nbytes <= 0:
+        raise ValueError(f"invalid Redis maxmemory quantity: {quantity!r}")
+    return str(nbytes)
 ALLOWED_EVICTION_POLICIES = frozenset(
     {
         "allkeys-lru",
@@ -70,7 +80,11 @@ class CacheSpec:
             replicas=max(1, int(data.get("replicas", 1))),
             maxmemory=str(data.get("maxmemory", "256Mi")),
             maxmemory_policy=policy,
-            resources=ResourceSpec.from_mapping(data.get("resources")),
+            resources=(
+                ResourceSpec.from_mapping(data.get("resources"))
+                if data.get("resources")
+                else _default_cache_resources()
+            ),
         )
 
     def is_empty(self) -> bool:
@@ -137,7 +151,11 @@ class DatabaseCacheSpec:
             replicas=max(1, int(data.get("replicas", 1))),
             maxmemory=str(data.get("maxmemory", "256Mi")),
             maxmemory_policy=policy,
-            resources=ResourceSpec.from_mapping(data.get("resources")),
+            resources=(
+                ResourceSpec.from_mapping(data.get("resources"))
+                if data.get("resources")
+                else _default_cache_resources()
+            ),
         )
 
     def is_empty(self) -> bool:

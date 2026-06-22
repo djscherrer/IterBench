@@ -146,6 +146,41 @@ def apply_manifests(
                         log.warning("backend pod logs (tail):\n%s", logs.stdout.strip())
                     elif logs.stderr:
                         log.warning("backend pod logs unavailable: %s", logs.stderr.strip())
+                elif resource.startswith("deployment/") and (
+                    resource.endswith("/redis") or resource.endswith("redis-db")
+                ):
+                    app_label = resource.split("/", 1)[1]
+                    diag = _kubectl(
+                        [
+                            "get",
+                            "pods",
+                            "-n",
+                            namespace,
+                            "-l",
+                            f"app={app_label}",
+                            "-o",
+                            "wide",
+                        ],
+                        timeout_s=30,
+                    )
+                    if diag.stdout:
+                        log.warning("redis pods:\n%s", diag.stdout.strip())
+                    logs = _kubectl(
+                        [
+                            "logs",
+                            "-n",
+                            namespace,
+                            "-l",
+                            f"app={app_label}",
+                            "--tail=40",
+                            "--prefix=true",
+                        ],
+                        timeout_s=30,
+                    )
+                    if logs.stdout:
+                        log.warning("redis pod logs (tail):\n%s", logs.stdout.strip())
+                    elif logs.stderr:
+                        log.warning("redis pod logs unavailable: %s", logs.stderr.strip())
 
         ss_timeout = statefulset_wait_timeout_s or wait_timeout_s
         for resource in wait_statefulsets:

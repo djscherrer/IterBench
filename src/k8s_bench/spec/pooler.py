@@ -77,7 +77,11 @@ class PoolerSpec:
             default_pool_size=max(1, int(data.get("default_pool_size", 50))),
             min_pool_size=_optional_int("min_pool_size"),
             reserve_pool_size=_optional_int("reserve_pool_size"),
-            resources=ResourceSpec.from_mapping(data.get("resources")),
+            resources=(
+                ResourceSpec.from_mapping(data.get("resources"))
+                if data.get("resources")
+                else _default_pooler_resources()
+            ),
         )
 
     def is_empty(self) -> bool:

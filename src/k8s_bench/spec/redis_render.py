@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from .cache import DEFAULT_REDIS_IMAGE, CacheSpec
+from .cache import DEFAULT_REDIS_IMAGE, CacheSpec, quantity_to_redis_maxmemory
 from .models import K8sWorkloadSpec
 from .placement import _pod_spec_affinity
 
@@ -29,7 +29,7 @@ def _redis_manifests_for(
         "command": ["redis-server"],
         "args": [
             "--maxmemory",
-            cache.maxmemory,
+            quantity_to_redis_maxmemory(cache.maxmemory),
             "--maxmemory-policy",
             cache.maxmemory_policy,
             "--save",
