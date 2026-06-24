@@ -2,10 +2,25 @@
 
 from __future__ import annotations
 
+import io
 import os
 import signal
 import subprocess
 from typing import Sequence
+
+
+def _supports_unbuffered(stream: int | object) -> bool:
+    """``bufsize=0`` requires real OS file descriptors on both streams."""
+    if stream in (subprocess.DEVNULL, subprocess.PIPE):
+        return True
+    fileno = getattr(stream, "fileno", None)
+    if not callable(fileno):
+        return False
+    try:
+        fileno()
+        return True
+    except (AttributeError, io.UnsupportedOperation, OSError, ValueError):
+        return False
 
 
 def run(args: Sequence[str], *, timeout_s: int = 30) -> subprocess.CompletedProcess[str]:
@@ -22,14 +37,16 @@ def run(args: Sequence[str], *, timeout_s: int = 30) -> subprocess.CompletedProc
 def spawn(
     args: Sequence[str], *, stdout: int | object, stderr: int | object
 ) -> subprocess.Popen[bytes]:
-    return subprocess.Popen(
-        ["kubectl", *args],
-        stdout=stdout,
-        stderr=stderr,
-        env=os.environ.copy(),
-        bufsize=0,
-        preexec_fn=os.setsid if hasattr(os, "setsid") else None,
-    )
+    popen_kwargs: dict[str, object] = {
+        "stdout": stdout,
+        "stderr": stderr,
+        "env": os.environ.copy(),
+    }
+    if hasattr(os, "setsid"):
+        popen_kwargs["preexec_fn"] = os.setsid
+    if _supports_unbuffered(stdout) and _supports_unbuffered(stderr):
+        popen_kwargs["bufsize"] = 0
+    return subprocess.Popen(["kubectl", *args], **popen_kwargs)  # type: ignore[arg-type]
 
 
 def terminate(proc: subprocess.Popen[bytes], *, grace_s: float = 5.0) -> None:

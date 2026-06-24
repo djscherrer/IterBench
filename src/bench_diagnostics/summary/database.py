@@ -8,7 +8,9 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from ..paths import resolve_kubernetes_metrics_database_dir
-from ._stats import distribution_float, distribution_int
+from ._stats import DISTRIBUTION_LEGEND, distribution_float, distribution_int
+
+
 @dataclass(frozen=True)
 class ActivityStateStats:
     state: str
@@ -30,7 +32,12 @@ class DatabaseSummary:
         if self.samples == 0:
             return "(no PostgreSQL pg_stat samples found)"
 
-        parts: list[str] = []
+        parts: list[str] = [
+            "Primary Postgres health: connection pressure, deadlocks, and per-state "
+            "session counts from periodic ``pg_stat_*`` samples.",
+            DISTRIBUTION_LEGEND,
+            "",
+        ]
 
         # Headline: how close did we get to the connection ceiling?
         if self.peak_numbackends is not None:

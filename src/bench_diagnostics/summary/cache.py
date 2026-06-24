@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from ..paths import resolve_kubernetes_metrics_cache_dir
-from ._stats import distribution_int
+from ._stats import DISTRIBUTION_LEGEND, distribution_int
 
 
 def _int_or_zero(value: str) -> int:
@@ -35,7 +35,11 @@ class CacheSummary:
     def to_prompt_block(self) -> str:
         if self.samples <= 0:
             return "(no Redis INFO samples — cache disabled or not reachable)"
-        parts = [f"- **Redis samples**: {self.samples}"]
+        parts = [
+            "Redis ``INFO`` samples (memory, clients, command throughput).",
+            DISTRIBUTION_LEGEND,
+            f"- **Redis samples**: {self.samples}",
+        ]
         for m in self.metrics:
             parts.append(f"- **{m.metric}** (min/p50/avg/p95/max): {m.min_p50_avg_p95_max}")
         hits_delta = self.keyspace_hits_end - self.keyspace_hits_start

@@ -13,7 +13,7 @@ from typing import Iterable
 
 from ..paths import resolve_kubernetes_logs_dir
 from ._time import (
-    format_epoch_label,
+    format_run_elapsed_s,
     infer_load_start_epoch_s,
     parse_pod_log_line,
     timezone_from_pod_log,
@@ -64,6 +64,23 @@ _CLASS_LABELS: dict[str, str] = {
     "db_schema_race": "Schema initialization race (duplicate catalog object)",
 }
 
+_LOG_LINE_PREFIX_RE = re.compile(
+    r"^\[pod/[^/]+/[^\]]+\]\s+\d{4}-\d{2}-\d{2}T[\d:.+-]+(?:Z|[+-]\d{2}:\d{2})?\s+"
+)
+_PG_LOG_MSG_RE = re.compile(
+    r"^\d{4}-\d{2}-\d{2} [\d:.]+ GMT \[\d+\] (?:LOG|WARNING|ERROR|FATAL|PANIC):\s+",
+    re.I,
+)
+
+
+def _shorten_example_line(raw: str) -> str:
+    line = _LOG_LINE_PREFIX_RE.sub("", raw.strip())
+    line = _PG_LOG_MSG_RE.sub("", line)
+    if len(line) > 160:
+        return line[:157] + "…"
+    return line
+
+
 _LOG_SOURCES: tuple[tuple[str, str], ...] = (
     ("backend.log", "backend"),
     ("postgres.log", "postgres"),
@@ -98,14 +115,19 @@ class LogClassRow:
     last_seen_epoch: float
     example_line: str
     source_counts: tuple[tuple[str, int], ...] = ()
+    load_start_epoch: float | None = None
 
     @property
     def first_seen(self) -> str:
-        return format_epoch_label(self.first_seen_epoch)
+        return format_run_elapsed_s(
+            self.first_seen_epoch, load_start_epoch=self.load_start_epoch
+        )
 
     @property
     def last_seen(self) -> str:
-        return format_epoch_label(self.last_seen_epoch)
+        return format_run_elapsed_s(
+            self.last_seen_epoch, load_start_epoch=self.load_start_epoch
+        )
 
     @property
     def source_breakdown(self) -> str:
@@ -149,52 +171,52 @@ class PodErrorSummary:
             )
             return "\n".join(lines).rstrip()
 
-        boundary = format_epoch_label(self.load_start_epoch)
         if self.error_rows:
             lines.extend(
                 [
-                    f"**Errors** (load boundary: first Locust spawn at {boundary}):",
+                    f"**Errors** (t=0 at first Locust spawn; times are seconds into run):",
                     "",
-                    "| Class | Source (count) | Total | Pods | Pre-load | Under load | First | Last |",
-                    "|---|---|---:|---:|---:|---:|---|---|",
+                    "| Class | Log source | Count | Pods | Pre-load | Under load | First t (s) | Last t (s) |",
+                    "|---|---|---:|---:|---:|---:|---:|---:|",
                 ]
             )
             for row in self.error_rows:
+                src = row.source_counts[0][0] if len(row.source_counts) == 1 else row.source
                 lines.append(
-                    f"| `{row.class_id}` | {row.source_breakdown} | {row.count} | "
+                    f"| `{row.class_id}` | {src} | {row.count} | "
                     f"{row.pod_count} | {row.pre_load_count} | {row.under_load_count} | "
                     f"{row.first_seen} | {row.last_seen} |"
                 )
             lines.append("")
-            lines.append("Representative error line per class:")
+            lines.append("Example per class:")
             for row in self.error_rows:
-                example = row.example_line.strip()
-                if len(example) > 200:
-                    example = example[:197] + "…"
-                lines.append(f"- `{row.class_id}`: `{example}`")
+                lines.append(
+                    f"- `{row.class_id}`: `{_shorten_example_line(row.example_line)}`"
+                )
             lines.append("")
 
         if self.warning_rows:
             lines.extend(
                 [
-                    "**Warnings**:",
+                    "**Warnings** (times are seconds into run; t=0 at first Locust spawn):",
                     "",
-                    "| Class | Source (count) | Total | Pods | First | Last |",
-                    "|---|---|---:|---:|---|---|",
+                    "| Class | Log source | Count | Pods | First t (s) | Last t (s) |",
+                    "|---|---|---:|---:|---:|---:|",
                 ]
             )
             for row in self.warning_rows:
+                src = row.source_counts[0][0] if len(row.source_counts) == 1 else row.source
                 lines.append(
-                    f"| `{row.class_id}` | {row.source_breakdown} | {row.count} | "
+                    f"| `{row.class_id}` | {src} | {row.count} | "
                     f"{row.pod_count} | {row.first_seen} | {row.last_seen} |"
                 )
-            lines.append("")
-            lines.append("Representative warning line per class:")
-            for row in self.warning_rows:
-                example = row.example_line.strip()
-                if len(example) > 200:
-                    example = example[:197] + "…"
-                lines.append(f"- `{row.class_id}`: `{example}`")
+            if len(self.warning_rows) <= 5:
+                lines.append("")
+                lines.append("Example per class:")
+                for row in self.warning_rows:
+                    lines.append(
+                        f"- `{row.class_id}`: `{_shorten_example_line(row.example_line)}`"
+                    )
 
         return "\n".join(lines).rstrip()
 
@@ -464,6 +486,7 @@ def summarize_pod_errors(
                     last_seen_epoch=acc.last_epoch,
                     example_line=acc.example,
                     source_counts=source_counts,
+                    load_start_epoch=load_start,
                 )
             )
         return rows

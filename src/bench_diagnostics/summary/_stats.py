@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+DISTRIBUTION_LEGEND = (
+    "Numeric values are **min / p50 / avg / p95 / max** over samples in the run."
+)
+
 
 def _percentile(sorted_values: list[float], pct: float) -> float:
     if not sorted_values:

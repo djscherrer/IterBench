@@ -85,3 +85,10 @@ def format_epoch_label(epoch_s: float | None) -> str:
         return "?"
     dt = datetime.fromtimestamp(epoch_s, tz=timezone.utc)
     return dt.strftime("%Y-%m-%d %H:%M:%S UTC")
+
+
+def format_run_elapsed_s(epoch_s: float | None, *, load_start_epoch: float | None) -> str:
+    """Seconds since load start (matches adaptive ramp ``t (s)``)."""
+    if epoch_s is None or load_start_epoch is None:
+        return "?"
+    return f"{max(0.0, epoch_s - load_start_epoch):.0f}"

@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import csv
+from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
 
 from ..paths import resolve_kubernetes_metrics_database_dir
-from ._stats import distribution_float
+from ._stats import DISTRIBUTION_LEGEND, distribution_float
 
 
 @dataclass
@@ -27,8 +28,11 @@ class ReplicationSummary:
         if self.samples == 0:
             return "(no replication samples — single-node Postgres or replicas not yet streaming)"
         parts = [
+            "Replication lag from primary ``pg_stat_replication`` "
+            "(seconds behind primary; **0** means replicas are caught up).",
+            DISTRIBUTION_LEGEND,
             f"- **Replication samples**: {self.samples}",
-            f"- **Replica streams observed**: {self.replica_count}",
+            f"- **Replica streams per sample**: {self.replica_count}",
         ]
         for m in self.metrics:
             parts.append(f"- **{m.metric}** (min/p50/avg/p95/max s): {m.min_p50_avg_p95_max}")
@@ -77,14 +81,14 @@ def summarize_replication_metrics(run_dir: Path) -> ReplicationSummary:
 
     replay_lags: list[float] = []
     flush_lags: list[float] = []
-    apps: set[str] = set()
+    rows_per_ts: dict[str, int] = defaultdict(int)
     not_streaming = 0
 
     for row in rows:
-        app = (row.get("application_name") or "").strip()
+        ts = (row.get("ts_epoch_s") or "").strip()
+        if ts:
+            rows_per_ts[ts] += 1
         state = (row.get("state") or "").strip().lower()
-        if app:
-            apps.add(app)
         if state and state != "streaming":
             not_streaming += 1
         try:
@@ -110,9 +114,10 @@ def summarize_replication_metrics(run_dir: Path) -> ReplicationSummary:
         )
 
     samples = len({r.get("ts_epoch_s", "") for r in rows})
+    replica_count = max(rows_per_ts.values()) if rows_per_ts else 0
     return ReplicationSummary(
         samples=samples,
-        replica_count=len(apps),
+        replica_count=replica_count,
         not_streaming=not_streaming,
         metrics=tuple(metrics),
     )

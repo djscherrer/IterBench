@@ -100,50 +100,21 @@ def summarize_run_dir(
 
 
 def benchmark_context_from_config(config: dict) -> str:
-    """Short context block (scenario, framework, deployment sizing)."""
+    """Short context block (scenario identity only; sizing is in conversation history)."""
     spec = config.get("k8s_workload_spec") or {}
     labels = spec.get("labels") or {}
     scenario = labels.get("baxbench.dev/scenario", "")
     env = labels.get("baxbench.dev/env", "")
-    model = labels.get("baxbench.dev/model", "")
     iteration = (spec.get("metadata") or {}).get("iteration_id") or (
         (config.get("k8s_iteration") or {}).get("id")
     )
 
-    backend = spec.get("backend") or {}
-    database = spec.get("database") or {}
     lines = [
         f"- **Scenario**: {scenario or '(unknown)'}",
         f"- **Framework / environment**: {env or '(unknown)'}",
     ]
-    if model:
-        lines.append(f"- **Model**: {model}")
     if iteration:
         lines.append(f"- **Iteration**: {iteration}")
-    if backend.get("replicas") is not None:
-        lines.append(f"- **Backend replicas**: {backend['replicas']}")
-    if backend.get("web_concurrency") is not None:
-        lines.append(
-            f"- **Worker processes per replica** (WEB_CONCURRENCY): "
-            f"{backend['web_concurrency']}"
-        )
-    if database.get("enabled"):
-        lines.append(
-            f"- **Postgres**: replicas={database.get('replicas', 1)}, "
-            f"max_connections={database.get('max_connections', '?')}"
-        )
-    pooler = spec.get("pooler") or {}
-    read_pooler = spec.get("read_pooler") or {}
-    cache = spec.get("cache") or {}
-    if pooler.get("enabled"):
-        lines.append(f"- **Write pooler (PgBouncer)**: enabled")
-    if read_pooler.get("enabled"):
-        lines.append(f"- **Read pooler (PgBouncer)**: enabled")
-    if cache.get("enabled"):
-        lines.append(f"- **Redis cache**: enabled")
-    load_profile = load_profile_from_config(config)
-    if load_profile:
-        lines.append(f"- **Load profile**: `{load_profile}`")
     return "\n".join(lines)
 
 

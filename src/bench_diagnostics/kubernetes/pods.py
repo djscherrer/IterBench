@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import io
 import json
 import logging
 import threading
@@ -37,8 +36,7 @@ def _stream_pod_logs(
     err_file = out_file.with_suffix(out_file.suffix + ".kubectl.stderr")
     while not stop_event.is_set():
         try:
-            err_buffer = io.BytesIO()
-            with open(out_file, "ab") as out:
+            with open(out_file, "ab") as out, open(err_file, "ab") as err:
                 header = (
                     f"\n# === kubectl logs -n {namespace} -l {selector} started at "
                     f"{time.strftime('%Y-%m-%dT%H:%M:%S%z')} ===\n"
@@ -60,17 +58,19 @@ def _stream_pod_logs(
                         "--follow",
                     ],
                     stdout=out,
-                    stderr=err_buffer,
+                    stderr=err,
                 )
                 while proc.poll() is None:
                     if stop_event.wait(timeout=1.0):
                         _kubectl.terminate(proc)
                         break
-            err_data = err_buffer.getvalue()
-            if err_data:
-                err_file.parent.mkdir(parents=True, exist_ok=True)
-                with open(err_file, "ab") as err:
-                    err.write(err_data)
+                if proc.returncode not in (0, None) and proc.returncode != -15:
+                    logger.debug(
+                        "kubectl logs exited rc=%s (ns=%s sel=%s)",
+                        proc.returncode,
+                        namespace,
+                        selector,
+                    )
         except Exception as exc:  # noqa: BLE001
             logger.warning(
                 "kubectl logs streamer failed (ns=%s sel=%s): %s; retrying",

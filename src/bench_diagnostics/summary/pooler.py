@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from ..paths import resolve_kubernetes_metrics_pooler_dir
-from ._stats import distribution_int
+from ._stats import DISTRIBUTION_LEGEND, distribution_int
 
 
 @dataclass
@@ -30,11 +30,18 @@ class PoolerSummary:
     def to_prompt_block(self) -> str:
         if not self.roles:
             return "(no PgBouncer pool samples — pooler disabled or not reachable)"
-        parts = [f"- **Pool samples**: {self.samples}"]
+        parts = [
+            "PgBouncer ``SHOW POOLS`` samples (``cl_active`` / ``cl_waiting`` = "
+            "client connections active or queued).",
+            DISTRIBUTION_LEGEND,
+            f"- **Pool samples**: {self.samples}",
+        ]
         for st in self.roles:
             parts.append(f"- **{st.role}**:")
             for m in st.metrics:
-                parts.append(f"  - {m.metric}: {m.min_p50_avg_p95_max}")
+                parts.append(
+                    f"  - {m.metric} (min/p50/avg/p95/max): {m.min_p50_avg_p95_max}"
+                )
         return "\n".join(parts)
 
     def to_dict(self) -> dict:
