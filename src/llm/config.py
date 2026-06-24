@@ -57,6 +57,8 @@ OPENAI_TOGETHER_CONTEXT_LENGTHS: dict[str, int] = {
     "qwen/qwen3-coder": 200000,
     "openai/gpt-5": 256000,
     "deepseek/deepseek-v3.2": 160000,
+    "gpt-5.4-mini": 400000,
+    "openai/gpt-5.4-mini": 400000,
     "gpt-5.4-nano": 128000,
 }
 
@@ -94,6 +96,7 @@ OPENAI_MAX_COMPLETION_TOKENS: dict[str, int] = {
     "gpt-5-2025-08-07": 128000,
     "gpt-5.4": 128000,
     "gpt-5.4-2026-03-05": 128000,
+    "gpt-5.4-mini": 128000,
     "gpt-5.4-nano": 128000,
 }
 
