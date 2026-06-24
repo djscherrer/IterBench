@@ -22,13 +22,13 @@ MODEL="deepseek/deepseek-v4-pro"        # provider/name (slash form)
 PROVIDER="openrouter"
 CLUSTER="baxbench-emulab"
 LOAD_PROFILE="k8s-goodput-plateau"
-TIMEOUT="300"
-WAIT_TIMEOUT="180"
+TIMEOUT="600"
+WAIT_TIMEOUT="600"
 PORT="5001"
 LLM_MAX_COST="10"
 # ====================================================================
 
-ITER="results/deepseek-deepseek-v4-pro/LexiTally_WordCountDatasets/Python-Flask/temp0.2-openapi-high_performance/sample0/k8s-experiments/17-6-bench-plateau/manual/iteration-016-code-dbtune-specs-add"
+ITER="results/deepseek-deepseek-v4-pro/LexiTally_WordCountDatasets/Python-Flask/temp0.2-openapi-high_performance/sample0/k8s-experiments/17-6-bench-plateau/manual/iteration-016-code-dbtune-specs-add-2"
 KEEP_BENCH="false"
 
 while [ $# -gt 0 ]; do

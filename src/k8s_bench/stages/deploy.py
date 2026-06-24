@@ -1,14 +1,28 @@
-"""Verify a rendered spec actually deploys and exposes a reachable backend Service."""
+"""
+Deploy stage (``04-deploy/``): bring the iteration up on the cluster.
+
+Renders the spec with the bench image, applies manifests, waits for readiness,
+and records ``04-deploy/probe.json``. A passing probe leaves a live namespace
+that the bench stage can reuse instead of redeploying.
+"""
 
 from __future__ import annotations
 
 import json
 import logging
 import subprocess
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from ..iteration_failure import fail_iteration_phase
+from ..orchestration.config import IterationPlan, RunConfig, SampleContext
+from ..workspace import (
+    deploy_probe_record_path,
+    iteration_deploy_log_path,
+    resolve_iteration_dir,
+)
 from ..cluster.deploy import DeployResult, deploy_iteration
 from ..cluster.images import prepare_image_for_k8s
 from ..cluster.load_target import resolve_nodeport_target
@@ -207,3 +221,138 @@ def probe_iteration_deployable(
         reason="deploy probe passed",
         details=details,
     )
+
+
+@dataclass(frozen=True)
+class DeployStageResult:
+    ok: bool
+    skipped: bool = False
+    reason: str | None = None
+
+
+def should_run_deploy_stage(plan: IterationPlan) -> bool:
+    """
+    Run deploy after spec when application code or deployment spec changed.
+
+    Baseline is excluded: its spec retry loop probes inline via
+    :func:`baseline_deploy_probe_callback`.
+    """
+    return plan.refinement_action in {"code", "deployment"}
+
+
+def probe_record_passed(iteration_path: Path) -> bool:
+    probe_path = deploy_probe_record_path(iteration_path)
+    if not probe_path.is_file():
+        return False
+    try:
+        record = json.loads(probe_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return False
+    return bool(record.get("success"))
+
+
+def _bench_labels(ctx: SampleContext, plan: IterationPlan) -> dict[str, str]:
+    from tasks import esc
+
+    return {
+        "baxbench.dev/model": esc(ctx.task.model),
+        "baxbench.dev/scenario": esc(ctx.task.scenario.id),
+        "baxbench.dev/env": esc(ctx.task.env.id),
+        "baxbench.dev/spec-gen": "true",
+        "baxbench.dev/phase": str(plan.iteration_index),
+    }
+
+
+def _sample_slug(ctx: SampleContext) -> str:
+    from tasks import esc
+
+    return (
+        f"{esc(ctx.task.model)}-{esc(ctx.task.env.id)}-"
+        f"{esc(ctx.task.scenario.id)}-sample{ctx.sample}"
+    )
+
+
+def baseline_deploy_probe_callback(
+    ctx: SampleContext,
+    plan: IterationPlan,
+    image_id: str,
+    cfg: RunConfig,
+    iteration_path: Path,
+    logger: logging.Logger,
+) -> Callable[[], DeployProbeResult]:
+    """Zero-arg probe callable for the baseline spec retry loop."""
+
+    def _probe() -> DeployProbeResult:
+        return probe_iteration_deployable(
+            iteration_path=iteration_path,
+            image_id=image_id,
+            sample_slug=_sample_slug(ctx),
+            app_port=ctx.task.env.port,
+            needs_db=ctx.task.scenario.needs_db,
+            wait_timeout_s=cfg.k8s_wait_timeout,
+            labels=_bench_labels(ctx, plan),
+            logger=logger,
+        )
+
+    return _probe
+
+
+def run_deploy_stage(
+    ctx: SampleContext,
+    plan: IterationPlan,
+    image_id: str,
+    cfg: RunConfig,
+) -> DeployStageResult:
+    """
+    Bring the iteration up on the cluster so bench can run Locust immediately.
+
+    Probes when ``refinement_action`` is ``code`` (new image, reused spec) or
+    ``deployment`` (new spec). Skips baseline iterations that already probed
+    during the spec retry loop.
+    """
+    iteration_path = resolve_iteration_dir(ctx.sample_dir, plan.iteration_id)
+
+    if not should_run_deploy_stage(plan):
+        if probe_record_passed(iteration_path):
+            return DeployStageResult(ok=True, skipped=True)
+        return DeployStageResult(
+            ok=False,
+            reason="deploy probe required but baseline spec loop did not record success",
+        )
+
+    deploy_log = iteration_deploy_log_path(iteration_path)
+    failure_kind = "code" if plan.refinement_action == "code" else "spec"
+
+    with ctx.task.create_logger(deploy_log) as logger:
+        logger.info(
+            "iteration %s: deploying for bench (action=%s, image=%s)",
+            plan.iteration_id,
+            plan.refinement_action,
+            image_id,
+        )
+        probe = probe_iteration_deployable(
+            iteration_path=iteration_path,
+            image_id=image_id,
+            sample_slug=_sample_slug(ctx),
+            app_port=ctx.task.env.port,
+            needs_db=ctx.task.scenario.needs_db,
+            wait_timeout_s=cfg.k8s_wait_timeout,
+            labels=_bench_labels(ctx, plan),
+            logger=logger,
+        )
+        if probe.ok:
+            logger.info("deploy stage passed; cluster ready for bench")
+            return DeployStageResult(ok=True)
+
+        logger.error("deploy stage failed: %s", probe.reason)
+        fail_iteration_phase(
+            iteration_path=iteration_path,
+            task_run_dir=ctx.task_run_dir,
+            sample_dir=ctx.sample_dir,
+            sample=ctx.sample,
+            iteration_id=plan.iteration_id,
+            failure_reason=probe.reason,
+            kind=failure_kind,
+            logger=logger,
+        )
+        return DeployStageResult(ok=False, reason=probe.reason)

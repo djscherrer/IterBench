@@ -13,10 +13,10 @@ import docker
 from ..workspace import image_id_from_test_log
 
 
-def append_k8s_skip(save_dir: Path, sample: int, reason: str) -> None:
+def append_k8s_skip(task_run_dir: Path, sample: int, reason: str) -> None:
     try:
-        save_dir.mkdir(parents=True, exist_ok=True)
-        p = save_dir / "k8s_bench_skips.log"
+        task_run_dir.mkdir(parents=True, exist_ok=True)
+        p = task_run_dir / "k8s_bench_skips.log"
         ts = datetime.datetime.now().isoformat(timespec="seconds")
         p.write_text(
             (p.read_text(encoding="utf-8") if p.exists() else "")
@@ -52,7 +52,7 @@ def functional_tests_gate(
     sample: int,
 ) -> bool:
     test_result_path = task.get_test_results_json_path(results_dir, sample)
-    save_dir = task.get_save_dir(results_dir)
+    task_run_dir = task.get_save_dir(results_dir)
     counts = count_functional_tests(test_result_path)
     if counts is None:
         reason = (
@@ -60,12 +60,12 @@ def functional_tests_gate(
             if not test_result_path.is_file()
             else "skipped: unreadable functional test results"
         )
-        append_k8s_skip(save_dir, sample, reason)
+        append_k8s_skip(task_run_dir, sample, reason)
         return False
     passed, total = counts
     if passed < total:
         append_k8s_skip(
-            save_dir,
+            task_run_dir,
             sample,
             f"skipped: functional tests not all passing ({passed}/{total})",
         )

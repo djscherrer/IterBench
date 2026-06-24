@@ -7,10 +7,9 @@
 #   3. Optional further phases (iteration-002+) use feedback from prior Locust run
 #
 # Prerequisites:
-#   1. generate + test already ran for the samples you benchmark
-#   2. ./scripts/k8s_setup_cluster.sh
-#   3. ./scripts/k8s_setup_registry.sh  (once; images push/pull via node0:5000)
-#   4. Docker on node0 for build + push
+#   1. ./scripts/k8s_setup_cluster.sh
+#   2. ./scripts/k8s_setup_registry.sh  (once; images push/pull via node0:5000)
+#   3. Docker on node0 for build + push
 #
 # Quick smoke (one sample, one phase):
 #   ONLY_SAMPLES="0" FORCE="true" ./scripts/bench_k8s.sh
@@ -66,8 +65,7 @@ K8S_REFINEMENT="auto"               # auto | deployment | code | off (empty = de
 #   regenerate = LLM-generate code with the current prompt into iteration-000-baseline/
 #                02-code/code/, validate with functional tests, retry on failure
 #                (failed attempts preserved under 02-code/attempts/<NNN>/).
-BASELINE_CODE="regenerate"
-BASELINE_CODE_MAX_ATTEMPTS="5"      # only used when BASELINE_CODE=regenerate
+BASELINE_CODE_MAX_ATTEMPTS="5"
 
 # Baseline (iteration-000) spec generation attempt cap. Each attempt is one
 # LLM call + static validation + deploy probe; failures are preserved under
@@ -169,7 +167,6 @@ for _model in $MODELS; do
     add_arg "--k8s-iterations" "$K8S_ITERATIONS"
     add_arg "--k8s-wait-timeout" "$K8S_WAIT_TIMEOUT"
     add_arg "--k8s-refinement" "$K8S_REFINEMENT"
-    add_arg "--baseline-code" "$BASELINE_CODE"
     add_arg "--baseline-code-max-attempts" "$BASELINE_CODE_MAX_ATTEMPTS"
     add_arg "--baseline-spec-max-attempts" "$BASELINE_SPEC_MAX_ATTEMPTS"
     add_arg "--max_retries" "$MAX_RETRIES"

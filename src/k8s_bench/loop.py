@@ -14,7 +14,7 @@ Two flavours:
 The bulk of the iteration logic lives in:
 
 - ``orchestration/`` — config, preflight, plan, execute
-- ``stages/``        — code, spec, bench, outcome
+- ``stages/``        — decision, code, spec, bench, outcome
 - ``workspace/``     — paths, layout, meta, artifact I/O
 """
 
@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import logging
 import os
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -30,6 +31,7 @@ from .orchestration.execute import execute_iteration
 from .orchestration.preflight import (
     build_run_config,
     deploy_only_preflight,
+    sample_context_from_baseline_disk,
     sample_postlude,
     sample_preflight,
 )
@@ -40,6 +42,7 @@ from .workspace import (
     ensure_iteration_core_layout,
     iteration_bench_dir,
     iteration_code_snapshot_dir,
+    k8s_fallback_code_dir,
     latest_code_dir,
 )
 
@@ -75,7 +78,6 @@ def run_iterative_k8s_bench(
     base_delay: float = 1.0,
     max_delay: float = 60.0,
     vllm_port: int = 8000,
-    baseline_code_mode: str = "reuse",
     baseline_code_max_attempts: int = 3,
     baseline_spec_max_attempts: int = 5,
 ) -> list[Path]:
@@ -96,7 +98,6 @@ def run_iterative_k8s_bench(
         base_delay=base_delay,
         max_delay=max_delay,
         vllm_port=vllm_port,
-        baseline_code_mode=baseline_code_mode,  # type: ignore[arg-type]
         baseline_code_max_attempts=baseline_code_max_attempts,
         baseline_spec_max_attempts=baseline_spec_max_attempts,
     )
@@ -111,6 +112,8 @@ def run_iterative_k8s_bench(
             outcome = execute_iteration(ctx, iteration_index, iteration_id, cfg)
             if outcome.run_dir is not None:
                 run_dirs_created.append(outcome.run_dir)
+            if outcome.base_image_id is not None:
+                ctx = replace(ctx, base_image_id=outcome.base_image_id)
             if outcome.abort_sample:
                 break
 
@@ -158,13 +161,11 @@ def run_deploy_only_k8s_bench(
     )
     # Override the load profile after the fact (deploy-only uses ``default``
     # rather than ``quick-check``); the config is otherwise the same.
-    from dataclasses import replace
-
     deploy_cfg = replace(deploy_cfg, load_profile=load_profile)
 
     for sample in samples:
         sample_dir = task.get_sample_dir(results_dir, sample)
-        save_dir = task.get_save_dir(results_dir)
+        task_run_dir = task.get_save_dir(results_dir)
 
         try:
             iteration_paths = resolve_iterations_to_run(
@@ -174,7 +175,7 @@ def run_deploy_only_k8s_bench(
                 iteration_path=k8s_iteration_path,
             )
         except FileNotFoundError as exc:
-            append_k8s_skip(save_dir, sample, f"skipped: {exc}")
+            append_k8s_skip(task_run_dir, sample, f"skipped: {exc}")
             continue
 
         if k8s_iteration_path is not None:
@@ -182,7 +183,7 @@ def run_deploy_only_k8s_bench(
                 task, results_dir, sample, iteration_paths[0], deploy_cfg
             )
         else:
-            ctx = sample_preflight(task, results_dir, sample, deploy_cfg)
+            ctx = sample_context_from_baseline_disk(task, results_dir, sample)
         if ctx is None:
             continue
 
@@ -192,7 +193,7 @@ def run_deploy_only_k8s_bench(
             already_benched = bench_dir_has_complete_run(bench_dir)
             if not force and already_benched:
                 append_k8s_skip(
-                    ctx.save_dir,
+                    ctx.task_run_dir,
                     ctx.sample,
                     f"skipped: k8s perf run already exists for "
                     f"iteration={iteration_id!r} load_profile={load_profile!r}",
@@ -205,14 +206,13 @@ def run_deploy_only_k8s_bench(
             run_dirs_created.append(run_dir)
             log_file = run_dir / "bench.log"
 
-            baseline_code = task.get_code_dir(results_dir, sample)
             code_snap = iteration_code_snapshot_dir(iteration_path)
             if code_snap.is_dir() and any(code_snap.iterdir()):
                 source_code_dir = code_snap
             else:
                 source_code_dir = latest_code_dir(
                     ctx.sample_dir,
-                    fallback=baseline_code,
+                    fallback=k8s_fallback_code_dir(ctx.sample_dir),
                 )
 
             with task.create_logger(log_file) as logger:
@@ -279,7 +279,6 @@ def bench_k8s_for_task(
     base_delay: float = 1.0,
     max_delay: float = 60.0,
     vllm_port: int = 8000,
-    baseline_code_mode: str = "reuse",
     baseline_code_max_attempts: int = 3,
     baseline_spec_max_attempts: int = 5,
 ) -> list[Path]:
@@ -304,7 +303,6 @@ def bench_k8s_for_task(
             base_delay=base_delay,
             max_delay=max_delay,
             vllm_port=vllm_port,
-            baseline_code_mode=baseline_code_mode,
             baseline_code_max_attempts=baseline_code_max_attempts,
             baseline_spec_max_attempts=baseline_spec_max_attempts,
         )

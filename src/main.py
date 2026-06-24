@@ -336,7 +336,6 @@ def main(args: Any) -> None:
             base_delay=args.base_delay,
             max_delay=args.max_delay,
             vllm_port=args.vllm_port,
-            baseline_code_mode=getattr(args, "baseline_code", "reuse"),
             baseline_code_max_attempts=getattr(
                 args, "baseline_code_max_attempts", 3
             ),
@@ -707,24 +706,11 @@ if __name__ == "__main__":
         ),
     )
     parser.add_argument(
-        "--baseline-code",
-        type=str,
-        default="reuse",
-        choices=["reuse", "regenerate"],
-        help=(
-            "Baseline (iteration-000) code source: 'reuse' (default) reuses the "
-            "sample-level code/ snapshot from --mode generate and requires its "
-            "functional tests to pass; 'regenerate' calls the LLM with the "
-            "current scenario prompt, lands code under iteration-000-baseline/"
-            "02-code/code/, and runs FTs against it (with retry on failure)."
-        ),
-    )
-    parser.add_argument(
         "--baseline-code-max-attempts",
         type=int,
         default=3,
         help=(
-            "Max LLM regeneration attempts when --baseline-code=regenerate (default 3). "
+            "Max LLM codegen attempts for iteration-000 baseline (default 3). "
             "Failed attempts are preserved under iteration-000-baseline/02-code/attempts/."
         ),
     )

@@ -8,6 +8,7 @@ Appends to ``experiment_summary.md`` at the workspace root (``sampleN/`` or
 from __future__ import annotations
 
 import csv
+import json
 import os
 import re
 from datetime import datetime, timezone
@@ -85,8 +86,9 @@ def _ensure_header(path: Path, *, sample_dir: Path, load_profile: str | None = N
             f"- **Started**: {_utc_now_label()}",
             f"- **Load profile**: `{profile}`",
             "",
-            "Each iteration below has a **spec generation** block (LLM deployment + rationale) "
-            "and a **Locust run** block (adaptive ramp table when applicable).",
+            "Each iteration below has a **spec generation** block (deployment snapshot, "
+            "full **Changes vs** prior iteration, rationale) and a **Locust run** block "
+            "(adaptive ramp; collapsible utilization + run metrics when collected).",
             "",
             f"- **LLM cost ledger**: `{k8s_workspace_root(sample_dir) / 'llm_cost_ledger.json'}` "
             "(estimated; set `BAXBENCH_LLM_MAX_COST` to cap spend)",
@@ -204,6 +206,12 @@ def _extract_llm_narrative(raw_response: str) -> str:
                 raw = text
                 break
 
+    if re.match(r"^<SPEC>", raw, re.I) or raw.lstrip().startswith("backend:"):
+        return (
+            "(no prose rationale — model returned only the machine-readable spec; "
+            "see **Deployment** and **Changes vs** above.)"
+        )
+
     if len(raw) > _MAX_NARRATIVE_CHARS:
         return raw[:_MAX_NARRATIVE_CHARS].rstrip() + "\n\n…(truncated)"
     return raw
@@ -221,8 +229,14 @@ def _spec_bullets(spec: K8sWorkloadSpec) -> list[str]:
     lines = [
         f"- **Namespace**: `{spec.namespace}`",
         f"- **Backend replicas**: {b.replicas}",
+        f"- **Backend web_concurrency**: {b.web_concurrency}",
+        f"- **Backend worker**: `{b.worker_class}`"
+        + (f" × {b.worker_threads} threads" if b.worker_threads else ""),
         f"- **Backend** {_format_resources('resources', b.resources)}",
     ]
+    if b.env:
+        env_bits = ", ".join(f"{k}={v}" for k, v in sorted(b.env.items()))
+        lines.append(f"- **Backend env**: {env_bits}")
     if spec.database.enabled:
         primary = spec.database.effective_primary_resources()
         replica = spec.database.effective_replica_resources()
@@ -255,6 +269,24 @@ def _spec_bullets(spec: K8sWorkloadSpec) -> list[str]:
             )
     else:
         lines.append("- **Database**: disabled")
+    if spec.pooler.enabled:
+        p = spec.pooler
+        lines.append(
+            f"- **Write pooler**: {p.replicas} replica(s), mode `{p.mode}`, "
+            f"pool_size={p.default_pool_size}, max_client_conn={p.max_client_conn}"
+        )
+    if spec.read_pooler.enabled:
+        rp = spec.read_pooler
+        lines.append(
+            f"- **Read pooler**: {rp.replicas} replica(s), mode `{rp.mode}`, "
+            f"pool_size={rp.default_pool_size}, max_client_conn={rp.max_client_conn}"
+        )
+    if spec.cache.enabled:
+        c = spec.cache
+        lines.append(
+            f"- **Redis cache**: {c.replicas} replica(s), maxmemory={c.maxmemory}, "
+            f"policy={c.maxmemory_policy}"
+        )
     if spec.backend.placement_workers:
         lines.append(
             f"- **Backend placement workers**: {', '.join(spec.backend.placement_workers)}"
@@ -312,6 +344,95 @@ def _diff_workers(name: str, prev: tuple[str, ...], cur: tuple[str, ...]) -> str
     return f"- **{name}**: `{prev_s}` → `{cur_s}`"
 
 
+def _diff_optional_int(name: str, old: int | None, new: int | None) -> str | None:
+    if old == new:
+        return None
+    old_s = str(old) if old is not None else "(unset)"
+    new_s = str(new) if new is not None else "(unset)"
+    return f"- **{name}**: `{old_s}` → `{new_s}`"
+
+
+def _diff_env_dict(prev: dict[str, str], cur: dict[str, str]) -> list[str]:
+    lines: list[str] = []
+    for key in sorted(set(prev) | set(cur)):
+        old = prev.get(key)
+        new = cur.get(key)
+        if old == new:
+            continue
+        old_s = old if old is not None else "(unset)"
+        new_s = new if new is not None else "(unset)"
+        lines.append(f"- **backend env {key}**: `{old_s}` → `{new_s}`")
+    return lines
+
+
+def _diff_pooler_fields(name: str, prev, cur) -> list[str]:
+    lines: list[str] = []
+    for line in (
+        _diff_field(f"{name} enabled", prev.enabled, cur.enabled),
+        _diff_field(f"{name} mode", prev.mode, cur.mode),
+        _diff_field(f"{name} replicas", prev.replicas, cur.replicas),
+        _diff_field(f"{name} max_client_conn", prev.max_client_conn, cur.max_client_conn),
+        _diff_field(
+            f"{name} default_pool_size", prev.default_pool_size, cur.default_pool_size
+        ),
+        _diff_optional_int(f"{name} min_pool_size", prev.min_pool_size, cur.min_pool_size),
+        _diff_optional_int(
+            f"{name} reserve_pool_size", prev.reserve_pool_size, cur.reserve_pool_size
+        ),
+        _diff_field(
+            f"{name} cpu limit",
+            prev.resources.cpu_limit,
+            cur.resources.cpu_limit,
+        ),
+        _diff_field(
+            f"{name} cpu request",
+            prev.resources.cpu_request,
+            cur.resources.cpu_request,
+        ),
+        _diff_field(
+            f"{name} memory limit",
+            prev.resources.memory_limit,
+            cur.resources.memory_limit,
+        ),
+        _diff_field(
+            f"{name} memory request",
+            prev.resources.memory_request,
+            cur.resources.memory_request,
+        ),
+    ):
+        if line:
+            lines.append(line)
+    return lines
+
+
+def _diff_cache_fields(prev, cur) -> list[str]:
+    lines: list[str] = []
+    for line in (
+        _diff_field("cache enabled", prev.enabled, cur.enabled),
+        _diff_field("cache replicas", prev.replicas, cur.replicas),
+        _diff_field("cache maxmemory", prev.maxmemory, cur.maxmemory),
+        _diff_field("cache maxmemory_policy", prev.maxmemory_policy, cur.maxmemory_policy),
+        _diff_field("cache cpu limit", prev.resources.cpu_limit, cur.resources.cpu_limit),
+        _diff_field(
+            "cache memory limit", prev.resources.memory_limit, cur.resources.memory_limit
+        ),
+    ):
+        if line:
+            lines.append(line)
+    return lines
+
+
+def _diff_database_cache_fields(prev, cur) -> list[str]:
+    lines: list[str] = []
+    for line in (
+        _diff_field("database cache enabled", prev.enabled, cur.enabled),
+        _diff_field("database cache use_shared", prev.use_shared, cur.use_shared),
+    ):
+        if line:
+            lines.append(line)
+    return lines
+
+
 def _diff_tuning(prev, cur) -> list[str]:
     lines: list[str] = []
     for field in (
@@ -347,6 +468,22 @@ def _spec_diff_markdown(prev: K8sWorkloadSpec, cur: K8sWorkloadSpec) -> str:
             prev.backend.web_concurrency,
             cur.backend.web_concurrency,
         ),
+        _diff_field("backend worker_class", prev.backend.worker_class, cur.backend.worker_class),
+        _diff_optional_int(
+            "backend worker_threads",
+            prev.backend.worker_threads,
+            cur.backend.worker_threads,
+        ),
+        _diff_field("backend preload", prev.backend.preload, cur.backend.preload),
+        _diff_optional_int("backend backlog", prev.backend.backlog, cur.backend.backlog),
+        _diff_optional_int(
+            "backend max_requests", prev.backend.max_requests, cur.backend.max_requests
+        ),
+        _diff_optional_int(
+            "backend max_requests_jitter",
+            prev.backend.max_requests_jitter,
+            cur.backend.max_requests_jitter,
+        ),
         _diff_field(
             "backend cpu limit",
             prev.backend.resources.cpu_limit,
@@ -377,6 +514,7 @@ def _spec_diff_markdown(prev: K8sWorkloadSpec, cur: K8sWorkloadSpec) -> str:
             prev.backend.placement_workers,
             cur.backend.placement_workers,
         ),
+        *_diff_env_dict(prev.backend.env, cur.backend.env),
         _diff_field("database enabled", prev.database.enabled, cur.database.enabled),
         _diff_field(
             "database replicas",
@@ -421,6 +559,16 @@ def _spec_diff_markdown(prev: K8sWorkloadSpec, cur: K8sWorkloadSpec) -> str:
                     prev.database.effective_replica_resources().cpu_request,
                     cur.database.effective_replica_resources().cpu_request,
                 ),
+                _diff_field(
+                    "database replica memory limit",
+                    prev.database.effective_replica_resources().memory_limit,
+                    cur.database.effective_replica_resources().memory_limit,
+                ),
+                _diff_field(
+                    "database replica memory request",
+                    prev.database.effective_replica_resources().memory_request,
+                    cur.database.effective_replica_resources().memory_request,
+                ),
             ]
             if prev.database.replicas > 1 or cur.database.replicas > 1
             else []
@@ -435,11 +583,15 @@ def _spec_diff_markdown(prev: K8sWorkloadSpec, cur: K8sWorkloadSpec) -> str:
             prev.database.placement_workers,
             cur.database.placement_workers,
         ),
+        *_diff_database_cache_fields(prev.database.cache, cur.database.cache),
+        *_diff_pooler_fields("pooler", prev.pooler, cur.pooler),
+        *_diff_pooler_fields("read_pooler", prev.read_pooler, cur.read_pooler),
+        *_diff_cache_fields(prev.cache, cur.cache),
     ):
         if line:
             changes.append(line)
     if not changes:
-        return "No resource/replica changes vs previous iteration."
+        return "No spec changes vs previous iteration."
     return "\n".join(changes)
 
 
@@ -914,6 +1066,61 @@ def append_baseline_codegen_block(
     return path
 
 
+def _build_spec_generation_block_text(
+    *,
+    iteration_path: Path,
+    spec: K8sWorkloadSpec,
+    raw_response: str,
+    warnings: list[str],
+    had_prior_feedback: bool,
+    iteration_index: int,
+) -> str:
+    prev_path = _previous_spec_path(iteration_path)
+    if prev_path:
+        try:
+            diff_text = _spec_diff_markdown(
+                K8sWorkloadSpec.from_yaml_file(prev_path), spec
+            )
+            diff_source = _spec_diff_source_label(prev_path)
+        except ValueError:
+            diff_text = f"(could not load previous spec at `{prev_path}`)"
+            diff_source = _spec_diff_source_label(prev_path)
+    else:
+        diff_text = "First iteration in this experiment (no prior spec to diff)."
+        diff_source = "—"
+
+    narrative = _extract_llm_narrative(raw_response)
+    warn_block = ""
+    if warnings:
+        warn_block = "\n**Validation warnings**\n" + "\n".join(f"- {w}" for w in warnings) + "\n"
+
+    return "\n".join(
+        [
+            f"### Spec generation ({_utc_now_label()})",
+            "",
+            f"- **Iteration index**: {iteration_index}",
+            f"- **Prior Locust feedback in prompt**: {'yes' if had_prior_feedback else 'no (first iteration)'}",
+            f"- **Spec path**: `{iteration_spec_path(iteration_path)}`",
+            "",
+            "**Deployment**",
+            "",
+            "\n".join(_spec_bullets(spec)),
+            "",
+            f"**Changes vs {diff_source}**",
+            "",
+            diff_text,
+            "",
+            "**LLM rationale** (from `response.log`, text before `<SPEC>`)",
+            "",
+            narrative,
+            warn_block,
+            "",
+            "---",
+            "",
+        ]
+    )
+
+
 def append_spec_generation_block(
     *,
     sample_dir: Path,
@@ -938,49 +1145,13 @@ def append_spec_generation_block(
     _ensure_header(path, sample_dir=sample_dir, load_profile=load_profile)
     iid = normalize_iteration_id(iteration_id)
 
-    prev_path = _previous_spec_path(iteration_path)
-    if prev_path:
-        try:
-            diff_text = _spec_diff_markdown(
-                K8sWorkloadSpec.from_yaml_file(prev_path), spec
-            )
-            diff_source = _spec_diff_source_label(prev_path)
-        except ValueError:
-            diff_text = f"(could not load previous spec at `{prev_path}`)"
-            diff_source = _spec_diff_source_label(prev_path)
-    else:
-        diff_text = "First iteration in this experiment (no prior spec to diff)."
-        diff_source = "—"
-
-    narrative = _extract_llm_narrative(raw_response)
-    warn_block = ""
-    if warnings:
-        warn_block = "\n**Validation warnings**\n" + "\n".join(f"- {w}" for w in warnings) + "\n"
-
-    body = "\n".join(
-        [
-            f"### Spec generation ({_utc_now_label()})",
-            "",
-            f"- **Iteration index**: {iteration_index}",
-            f"- **Prior Locust feedback in prompt**: {'yes' if had_prior_feedback else 'no (first iteration)'}",
-            f"- **Spec path**: `{iteration_spec_path(iteration_path)}`",
-            "",
-            "**Deployment**",
-            "",
-            "\n".join(_spec_bullets(spec)),
-            "",
-            f"**Changes vs {diff_source}**",
-            "",
-            diff_text,
-            "",
-            "**LLM rationale** (from `response.log`, text before `<SPEC>`)",
-            "",
-            narrative,
-            warn_block,
-            "",
-            "---",
-            "",
-        ]
+    body = _build_spec_generation_block_text(
+        iteration_path=iteration_path,
+        spec=spec,
+        raw_response=raw_response,
+        warnings=warnings,
+        had_prior_feedback=had_prior_feedback,
+        iteration_index=iteration_index,
     )
     _append_for_iteration(path, iid, body)
     return path
@@ -1037,6 +1208,8 @@ def _build_perf_run_block_text(
     if fb and fb.pod_utilization:
         pod_hint = _format_pod_utilization_for_summary(fb.pod_utilization)
 
+    diag_hint = _format_diagnostics_metrics_for_summary(perf_run_dir)
+
     notes_line = ""
     if fb and fb.notes and fb.notes.strip():
         notes_line = f"\n**Notes**\n\n{fb.notes.strip()}\n"
@@ -1057,6 +1230,7 @@ def _build_perf_run_block_text(
             adaptive_md,
             error_lines,
             pod_hint,
+            diag_hint,
             notes_line,
             "",
             "---",
@@ -1090,6 +1264,97 @@ def _replace_locust_run_block(
     new_section = section[: block.start()] + new_block + section[block.end() :]
     new_content = content[:sec_start] + new_section + content[sec_end:]
     return new_content, True
+
+
+def _replace_spec_generation_block(
+    content: str,
+    iteration_id: str,
+    new_block: str,
+) -> tuple[str, bool]:
+    """Replace the ``### Spec generation`` subsection under one iteration heading."""
+    iid = normalize_iteration_id(iteration_id)
+    heading_re = re.compile(rf"^## {re.escape(iid)}\s*$", re.M)
+    heading = heading_re.search(content)
+    if not heading:
+        return content, False
+
+    sec_start = heading.end()
+    next_iter = re.search(r"^## iteration-\d+", content[sec_start:], re.M)
+    sec_end = sec_start + next_iter.start() if next_iter else len(content)
+    section = content[sec_start:sec_end]
+
+    block_re = re.compile(r"^### Spec generation \([^)]*\)\n.*?\n---\n", re.M | re.S)
+    block = block_re.search(section)
+    if not block:
+        return content, False
+
+    new_section = section[: block.start()] + new_block + section[block.end() :]
+    new_content = content[:sec_start] + new_section + content[sec_end:]
+    return new_content, True
+
+
+def regenerate_experiment_summary_spec_blocks(experiment_root: Path) -> Path:
+    """Rebuild every ``### Spec generation`` subsection from on-disk specs + response logs."""
+    from .workspace import (
+        ITERATIONS_DIRNAME,
+        iteration_folder_is_failed,
+        iteration_spec_dir,
+        parse_iteration_index,
+    )
+    from .workspace.artifacts import RESPONSE_LOG_FILENAME
+
+    experiment_path = experiment_root.expanduser().resolve()
+    if (experiment_path / ITERATIONS_DIRNAME).is_dir():
+        root = experiment_path
+    else:
+        from .workspace import k8s_workspace_root
+
+        root = k8s_workspace_root(experiment_path)
+    path = experiment_summary_path(root)
+    if not path.is_file():
+        return path
+
+    content = path.read_text(encoding="utf-8")
+    iterations_dir = root / ITERATIONS_DIRNAME
+    if not iterations_dir.is_dir():
+        return path
+
+    for child in sorted(iterations_dir.iterdir()):
+        if not child.is_dir() or iteration_folder_is_failed(child.name):
+            continue
+        idx = parse_iteration_index(child.name)
+        if idx is None:
+            continue
+        spec_path = find_iteration_spec_path(child)
+        if spec_path is None:
+            continue
+        try:
+            spec = K8sWorkloadSpec.from_yaml_file(spec_path)
+        except ValueError:
+            continue
+        response_path = iteration_spec_dir(child) / RESPONSE_LOG_FILENAME
+        raw_response = ""
+        if response_path.is_file():
+            raw_response = response_path.read_text(encoding="utf-8", errors="replace")
+
+        iid = f"iteration-{idx:03d}"
+        block = _build_spec_generation_block_text(
+            iteration_path=child,
+            spec=spec,
+            raw_response=raw_response,
+            warnings=[],
+            had_prior_feedback=idx > 0,
+            iteration_index=idx,
+        )
+        updated_content, replaced = _replace_spec_generation_block(content, iid, block)
+        if replaced:
+            content = updated_content
+        else:
+            _append_for_iteration(path, iid, block)
+            content = path.read_text(encoding="utf-8")
+
+    path.write_text(content, encoding="utf-8")
+    return path
 
 
 def regenerate_experiment_summary_perf_blocks(
@@ -1184,17 +1449,93 @@ def _format_pod_utilization_for_summary(text: str) -> str:
         return ""
     if "unavailable" in body.splitlines()[0].lower():
         return f"\n**K8s utilization**: {body.splitlines()[0]}\n"
-    lines = [
-        "",
-        "<details>",
-        "<summary><strong>K8s utilization</strong> (kubectl top during the run)</summary>",
-        "",
-        body,
-        "",
-        "</details>",
-        "",
-    ]
-    return "\n".join(lines)
+    return _collapsible_details("K8s utilization (kubectl top during the run)", body)
+
+
+def _collapsible_details(summary: str, body: str) -> str:
+    return "\n".join(
+        [
+            "",
+            "<details>",
+            f"<summary><strong>{summary}</strong></summary>",
+            "",
+            body.strip(),
+            "",
+            "</details>",
+            "",
+        ]
+    )
+
+
+def _max_connections_from_perf_run(perf_run_dir: Path) -> int | None:
+    cfg_path = perf_run_dir / "config.json"
+    if not cfg_path.is_file():
+        return None
+    try:
+        cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+        return int(
+            (cfg.get("k8s_workload_spec") or {}).get("database", {}).get("max_connections")
+        )
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return None
+
+
+def _format_diagnostics_metrics_for_summary(perf_run_dir: Path) -> str:
+    """Condensed Postgres / pooler / cache / replication metrics from the bench run."""
+    diag_root = perf_run_dir / "diagnostics" / "kubernetes"
+    if not diag_root.is_dir():
+        return ""
+
+    try:
+        from bench_diagnostics.summary import summarize_run_dir
+
+        bench_log_path = perf_run_dir / "bench.log"
+        bench_log = ""
+        if bench_log_path.is_file():
+            bench_log = bench_log_path.read_text(encoding="utf-8", errors="replace")
+        diag = summarize_run_dir(
+            perf_run_dir,
+            bench_log=bench_log,
+            max_connections=_max_connections_from_perf_run(perf_run_dir),
+        )
+    except Exception:
+        return ""
+
+    sections: list[str] = []
+    for title, block in (
+        ("PostgreSQL", diag.database.to_prompt_block()),
+        ("Replication", diag.replication.to_prompt_block()),
+        ("PgBouncer pools", diag.pooler.to_prompt_block()),
+        ("Redis cache", diag.cache.to_prompt_block()),
+        ("Pod health", diag.pod_health.to_prompt_block()),
+    ):
+        text = (block or "").strip()
+        if not text or text.startswith("(no "):
+            continue
+        sections.append(f"#### {title}\n\n{text}")
+
+    if diag.pod_errors.sources:
+        log_lines = [
+            "#### Pod log warnings/errors",
+            "",
+            "| Source | Lines | Warnings | Errors |",
+            "|---|---:|---:|---:|",
+        ]
+        for st in diag.pod_errors.sources:
+            if st.warnings or st.errors:
+                log_lines.append(
+                    f"| {st.source} | {st.lines_total} | {st.warnings} | {st.errors} |"
+                )
+        if len(log_lines) > 4:
+            sections.append("\n".join(log_lines))
+
+    if not sections:
+        return ""
+
+    return _collapsible_details(
+        "Run diagnostics (Postgres, pooler, cache, replication)",
+        "\n\n".join(sections),
+    )
 
 
 def append_iteration_failure_block(

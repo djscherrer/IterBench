@@ -19,8 +19,8 @@ This module provides:
 The ``Prompter`` itself is unchanged for single-shot callers; conversation
 mode is opt-in via ``prompter.conversational = True`` (set here). Each phase
 appends its prompt + the model reply as turns (via ``Prompter.send`` or
-explicit ``append_*``). Prompt *slimming* (not re-embedding the full code /
-spec now that they live in history) is intentionally left as a later step.
+explicit ``append_*``). Prompt slimming for conversational mode lives in
+``prompt_helpers`` and the per-phase ``build_*_prompt`` functions.
 """
 
 from __future__ import annotations

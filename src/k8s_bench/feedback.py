@@ -15,7 +15,6 @@ from typing import Any
 
 from bench_diagnostics.summary import (
     benchmark_context_from_config,
-    load_profile_from_config,
     read_run_config,
     summarize_load_run,
     summarize_run_dir,
@@ -103,40 +102,54 @@ class IterationFeedback:
     def is_failed(self) -> bool:
         return self.status == "failed"
 
-    def to_prompt_text(self) -> str:
+    def to_prompt_text(self, *, include_spec_yaml: bool = True) -> str:
         if self.is_failed:
-            return self._to_prompt_text_failed()
-        return self._to_prompt_text_success()
+            return self._to_prompt_text_failed(include_spec_yaml=include_spec_yaml)
+        return self._to_prompt_text_success(include_spec_yaml=include_spec_yaml)
 
-    def _to_prompt_text_success(self) -> str:
+    def _to_prompt_text_success(self, *, include_spec_yaml: bool = True) -> str:
         parts = [
             f"Most recent successful iteration: {self.iteration_id}",
             "",
             "## Context",
             self.benchmark_context.strip() or "(context unavailable)",
             "",
-            "## Benchmark run",
+            "## Load test results",
+            "",
+            "### Adaptive ramp",
+            "Controller decision points only (per-second samples omitted).",
+            "",
             self.load_run_summary.strip() or "(load run details unavailable)",
             "",
-            "## Diagnostics (from benchmark run)",
-            "Aggregated pod logs, PostgreSQL stats, pod health, cluster events, and "
-            "``kubectl top`` utilization (min / avg / max per pod and node).",
+            "### Locust (per endpoint)",
+            "Source: Locust ``locust/results/<test>_stats.csv`` "
+            "(includes p95/p99 from Locust percentiles).",
             "",
-            self.diagnostics_summary.strip() or "(no diagnostics collected)",
-            "",
-            "## Locust results (per endpoint)",
-            "Source: Locust ``locust/results/<test>_stats.csv`` (markdown table; includes p95/p99 from Locust percentiles).",
             self.locust_summary or "(no Locust stats found)",
             "",
-            "## Locust HTTP errors",
-            "Client-side failure messages from Locust (often generic 500s; see diagnostics above for root cause).",
+            "### Locust HTTP errors",
+            "Client-side failure messages from Locust "
+            "(often generic 500s; see diagnostics for root cause).",
+            "",
             self.error_excerpt or "(no Locust error report)",
             "",
-            "## Previous spec.yaml",
-            "```yaml",
-            self.previous_spec_yaml.strip() or "(missing)",
-            "```",
+            "## Diagnostics",
+            "Pod logs, then run-scoped metrics (PostgreSQL, replication, pooler, "
+            "cache, pod health, cluster events, ``kubectl top``). "
+            "Bursty metrics use **min / p50 / avg / p95 / max** over samples.",
+            "",
+            self.diagnostics_summary.strip() or "(no diagnostics collected)",
         ]
+        if include_spec_yaml:
+            parts.extend(
+                [
+                    "",
+                    "## Previous spec.yaml",
+                    "```yaml",
+                    self.previous_spec_yaml.strip() or "(missing)",
+                    "```",
+                ]
+            )
         if self.failed_attempts:
             parts.extend(
                 [
@@ -157,7 +170,7 @@ class IterationFeedback:
             parts.extend(["", "## Notes", self.notes])
         return "\n".join(parts)
 
-    def _to_prompt_text_failed(self) -> str:
+    def _to_prompt_text_failed(self, *, include_spec_yaml: bool = True) -> str:
         """Render feedback when the prior iteration failed before producing benchmark data."""
         kind_label = self.failure_kind or "iteration"
         parts = [
@@ -594,7 +607,6 @@ def collect_iteration_feedback(
         bench_log=bench_log,
         max_connections=max_connections,
     )
-    load_profile = load_profile_from_config(run_config)
 
     return IterationFeedback(
         iteration_id=iteration_path.name,
@@ -604,7 +616,7 @@ def collect_iteration_feedback(
         pod_utilization=k8s_util,
         previous_spec_yaml=spec_yaml,
         benchmark_context=benchmark_context_from_config(run_config),
-        load_run_summary=summarize_load_run(bench_log, load_profile=load_profile),
+        load_run_summary=summarize_load_run(bench_log),
         diagnostics_summary=diagnostics.to_prompt_block(),
         notes=notes,
     )

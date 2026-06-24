@@ -79,12 +79,12 @@ def run_locust_for_iteration(
     """
     from tasks import esc
 
-    save_dir = task.get_save_dir(results_dir)
+    task_run_dir = task.get_save_dir(results_dir)
     iteration_id = iteration_path.name
     tests = performance_test_names(task)
     if not tests:
         append_k8s_skip(
-            save_dir,
+            task_run_dir,
             sample,
             f"skipped iteration {iteration_id}: no performance tests"
             if iteration_index
@@ -97,7 +97,7 @@ def run_locust_for_iteration(
     )
     if image_id is None:
         append_k8s_skip(
-            save_dir,
+            task_run_dir,
             sample,
             f"skipped iteration {iteration_id}: failed to build docker image"
             if iteration_index
@@ -107,7 +107,7 @@ def run_locust_for_iteration(
 
     locustfile = resolve_locustfile(task, run_dir)
     if locustfile is None:
-        append_k8s_skip(save_dir, sample, "skipped: missing locustfile")
+        append_k8s_skip(task_run_dir, sample, "skipped: missing locustfile")
         return False
 
     sample_slug = (

@@ -5,9 +5,11 @@ Filesystem is the **single source of truth**; these dataclasses are short-lived
 projections of disk state for the duration of one logical scope:
 
 - :class:`RunConfig`   – built once per ``run_iterative_k8s_bench`` call.
-- :class:`SampleContext` – built once per sample (after FT gate + image build).
+- :class:`SampleContext` – built once per sample in preflight; ``base_image_id``
+  is set after iteration-000 baseline codegen completes.
 - :class:`PriorIteration` – built per iteration by re-reading disk.
-- :class:`IterationPlan` – built per iteration by ``plan.plan_iteration``.
+- :class:`IterationSetup` – built per iteration by ``plan.plan_iteration``.
+- :class:`IterationPlan` – built per iteration by ``stages.decision.run_decision_stage``.
 - :class:`IterationOutcome` – return value of ``execute.execute_iteration``;
                               the ``abort_sample`` flag preserves the legacy
                               ``break`` semantics on baseline failure.
@@ -21,11 +23,10 @@ from typing import Any, Literal, NamedTuple
 
 from ..feedback import IterationFeedback
 from ..functional_failure import FunctionalFailureReport
-from ..refinement.decision import RefinementDecision, RefinementMode
+from ..stages.decision import RefinementDecision, RefinementMode
 
 
 RefinementAction = Literal["baseline", "code", "deployment"]
-BaselineCodeMode = Literal["reuse", "regenerate"]
 
 
 @dataclass(frozen=True)
@@ -48,18 +49,10 @@ class RunConfig:
     base_delay: float
     max_delay: float
     force: bool
-    # Baseline (iteration-000) code source. ``reuse`` (default) takes the
-    # sample-level ``code/`` snapshot from ``--mode generate``; ``regenerate``
-    # runs a fresh LLM codegen + FT loop into ``iteration-000-baseline/02-code/``
-    # before iteration-000 spec/bench. See ``baseline.codegen`` for details.
-    baseline_code_mode: BaselineCodeMode = "reuse"
-    # Maximum LLM codegen attempts during baseline ``regenerate`` mode. Only
-    # consulted when ``baseline_code_mode == "regenerate"``.
+    # Maximum LLM codegen attempts for iteration-000 baseline (FT-validated).
     baseline_code_max_attempts: int = 3
     # Maximum baseline spec-generation attempts (LLM call + static validation
-    # + deploy probe). Applies to iteration-000 regardless of
-    # ``baseline_code_mode``; refinement iterations use a single attempt and
-    # rely on subsequent iterations for recovery.
+    # + deploy probe). Refinement iterations use a single attempt.
     baseline_spec_max_attempts: int = 5
 
 
@@ -69,8 +62,8 @@ class SampleContext:
     results_dir: Path
     sample: int
     sample_dir: Path
-    save_dir: Path
-    base_image_id: str
+    task_run_dir: Path  # task.get_save_dir(); parent of all sampleN/ for this config
+    base_image_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -79,6 +72,17 @@ class PriorIteration:
 
     bench_feedback: IterationFeedback | None
     failure_report: FunctionalFailureReport | None
+
+
+@dataclass(frozen=True)
+class IterationSetup:
+    """Per-iteration inputs before the decision stage runs."""
+
+    iteration_id: str
+    iteration_index: int
+    iteration_path: Path
+    prior: PriorIteration
+    is_baseline: bool
 
 
 @dataclass(frozen=True)
@@ -97,3 +101,4 @@ class IterationPlan:
 class IterationOutcome(NamedTuple):
     run_dir: Path | None
     abort_sample: bool
+    base_image_id: str | None = None

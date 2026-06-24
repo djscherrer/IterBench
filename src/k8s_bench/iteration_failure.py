@@ -13,7 +13,7 @@ from .workspace.paths import mark_iteration_folder_failed
 def fail_iteration_phase(
     *,
     iteration_path: Path,
-    save_dir: Path,
+    task_run_dir: Path,
     sample_dir: Path,
     sample: int,
     iteration_id: str,
@@ -92,7 +92,7 @@ def fail_iteration_phase(
         )
 
     append_k8s_skip(
-        save_dir,
+        task_run_dir,
         sample,
         f"failed phase {iteration_id}: {failure_reason}",
     )

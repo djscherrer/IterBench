@@ -134,9 +134,9 @@ def _probe_deploy_is_reusable(
     if not _namespace_exists(spec.namespace, logger=logger):
         return None
 
-    # Late import to avoid the circular ``iteration → gates.deploy_probe →
+    # Late import to avoid the circular ``iteration → stages.deploy →
     # iteration.ensure_iteration_spec`` dependency at module load time.
-    from .gates.deploy_probe import check_service_endpoints_ready
+    from .stages.deploy import check_service_endpoints_ready
 
     backend_ok, backend_msg = check_service_endpoints_ready(
         namespace=spec.namespace, service="backend", logger=logger

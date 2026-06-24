@@ -6,7 +6,7 @@ data classes themselves live with their builders/parsers:
 
 - ``IterationFeedback``  → ``feedback.py``           (Locust + kubectl parsing)
 - ``FunctionalFailureReport`` → ``functional_failure.py`` (FT log parsing)
-- ``RefinementDecision`` → ``refinement/decision.py`` (LLM decision)
+- ``RefinementDecision`` → ``stages/decision.py`` (LLM decision)
 
 This module is the single place that reads/writes the JSON envelopes so other
 modules never touch the filesystem directly.
@@ -23,7 +23,7 @@ from .paths import iteration_code_phase_dir, iteration_decision_dir
 if TYPE_CHECKING:
     from ..feedback import IterationFeedback
     from ..functional_failure import FunctionalFailureReport
-    from ..refinement.decision import RefinementDecision
+    from ..stages.decision import RefinementDecision
 
 
 FEEDBACK_FILENAME = "iteration_feedback.json"

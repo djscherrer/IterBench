@@ -1,5 +1,5 @@
 """
-Run one iteration end-to-end: code refinement → spec → bench → outcome.
+Run one iteration end-to-end: decision → code → spec → deploy → bench → outcome.
 
 The orchestrator wires together the stages defined in :mod:`k8s_bench.stages`.
 Each phase owns its **own** log file rooted at the matching ``NN-<phase>/``
@@ -10,12 +10,13 @@ header + outcome (cheap, scannable index).
 
 from __future__ import annotations
 
-import logging
 from datetime import datetime, timezone
 from pathlib import Path
 
 from ..stages.bench import run_bench
-from ..stages.code import refine_code_or_fail
+from ..stages.code import run_code_stage
+from ..stages.decision import run_decision_stage
+from ..stages.deploy import run_deploy_stage
 from ..stages.outcome import record_outcome
 from ..stages.spec import prepare_spec_or_fail
 from ..workspace import (
@@ -23,7 +24,6 @@ from ..workspace import (
     iteration_bench_dir,
     iteration_log_path,
     iteration_spec_log_path,
-    materialize_code_lineage,
     resolve_iteration_dir,
 )
 from .config import (
@@ -40,41 +40,24 @@ def execute_iteration(
     iteration_id: str,
     cfg: RunConfig,
 ) -> IterationOutcome:
-    """Plan → maybe refine code → prepare spec → bench → record outcome."""
-    plan = plan_iteration(ctx, iteration_index, iteration_id, cfg)
-    if plan is None:
+    """Plan → decision → code → spec → deploy → bench → record outcome."""
+    setup = plan_iteration(ctx, iteration_index, iteration_id, cfg)
+    if setup is None:
         return IterationOutcome(None, False)
 
+    plan = run_decision_stage(ctx, setup, cfg)
     iteration_path = resolve_iteration_dir(ctx.sample_dir, plan.iteration_id)
     _write_iteration_header(iteration_path, plan, cfg)
 
-    image_id = ctx.base_image_id
-
-    if plan.refinement_action == "deployment":
-        image_id = (
-            materialize_code_lineage(
-                iteration_path,
-                plan.source_code_dir,
-                fallback_image_id=ctx.base_image_id,
-            )
-            or ctx.base_image_id
+    code_result = run_code_stage(ctx, plan, cfg)
+    if code_result.image_id is None:
+        _append_iteration_outcome(
+            resolve_iteration_dir(ctx.sample_dir, plan.iteration_id),
+            "code-failed",
         )
+        return IterationOutcome(None, code_result.abort_sample)
 
-    if (
-        plan.refinement_action == "code"
-        and plan.prior.bench_feedback is not None
-    ):
-        # ``refine_code_or_fail`` opens ``02-code/phase.log`` internally.
-        image_id = refine_code_or_fail(ctx, plan, cfg)
-        if image_id is None:
-            # fail_iteration_phase renamed the folder to ``-code-failed``;
-            # re-resolve to land in the right place.
-            _append_iteration_outcome(
-                resolve_iteration_dir(ctx.sample_dir, plan.iteration_id),
-                "code-failed",
-            )
-            return IterationOutcome(None, False)
-
+    image_id = code_result.image_id
     iteration_path = resolve_iteration_dir(ctx.sample_dir, plan.iteration_id)
     run_dir = _prepare_run_dir(iteration_path, cfg)
 
@@ -90,13 +73,21 @@ def execute_iteration(
         )
         return IterationOutcome(None, abort_sample)
 
+    deploy_result = run_deploy_stage(ctx, plan, image_id, cfg)
+    if not deploy_result.ok:
+        _append_iteration_outcome(
+            resolve_iteration_dir(ctx.sample_dir, plan.iteration_id),
+            "deploy-failed",
+        )
+        return IterationOutcome(None, False)
+
     bench_log = run_dir / "bench.log"
     with ctx.task.create_logger(bench_log) as bench_logger:
         run_bench(ctx, plan, run_dir, image_id, cfg, bench_logger)
         record_outcome(ctx, plan, run_dir, spec_file, cfg, bench_logger)
 
     _append_iteration_outcome(iteration_path, "ok")
-    return IterationOutcome(run_dir, False)
+    return IterationOutcome(run_dir, False, image_id)
 
 
 def _write_iteration_header(

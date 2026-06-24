@@ -294,8 +294,13 @@ def iteration_code_log_path(iteration_path: Path) -> Path:
 
 
 def iteration_spec_log_path(iteration_path: Path) -> Path:
-    """Per-stage log file for spec generation + deploy probe (``03-spec/phase.log``)."""
+    """Per-stage log file for spec generation (``03-spec/phase.log``)."""
     return iteration_spec_dir(iteration_path) / "phase.log"
+
+
+def iteration_deploy_log_path(iteration_path: Path) -> Path:
+    """Per-stage log file for cluster deploy + readiness probe (``04-deploy/phase.log``)."""
+    return iteration_deploy_dir(iteration_path) / "phase.log"
 
 
 def iteration_log_path(iteration_path: Path) -> Path:
@@ -324,11 +329,9 @@ def latest_code_dir(sample_dir: Path, *, fallback: Path) -> Path:
     """
     Return the newest non-failed iteration ``code/`` snapshot, else ``fallback``.
 
-    The sample-level ``code/`` directory (passed as ``fallback``) is the
-    immutable baseline; refined code lives under
-    ``iterations/iteration-NNN-code/code/`` only. Among iteration snapshots
-    we pick the highest phase number whose ``code/`` directory exists and is
-    not empty, ignoring any iteration whose folder is suffixed ``-failed``.
+    Refined code lives under ``iterations/iteration-NNN-*/02-code/code/``.
+    For k8s bench, pass :func:`k8s_fallback_code_dir` as ``fallback`` — not
+    sample-level ``code/`` from distributed bench.
     """
     root = iterations_root(sample_dir)
     if not root.is_dir():
@@ -346,6 +349,28 @@ def latest_code_dir(sample_dir: Path, *, fallback: Path) -> Path:
         if best is None or idx > best[0]:
             best = (idx, code_dir)
     return best[1] if best is not None else fallback
+
+
+def k8s_fallback_code_dir(sample_dir: Path) -> Path:
+    """
+    Fallback code directory for k8s bench when no iteration snapshot matches yet.
+
+    K8s experiments always generate baseline code under ``iteration-000*``; we do
+    not use sample-level ``code/`` from ``--mode generate``.
+    """
+    root = iterations_root(sample_dir)
+    if root.is_dir():
+        for child in sorted(root.iterdir()):
+            if not child.name.startswith(f"{ITERATION_PREFIX}000"):
+                continue
+            if iteration_folder_is_failed(child.name):
+                continue
+            code_dir = iteration_code_snapshot_dir(child)
+            if code_dir.is_dir() and any(code_dir.iterdir()):
+                return code_dir
+    return iteration_code_snapshot_dir(
+        resolve_iteration_dir(sample_dir, iteration_id_for_index(0))
+    )
 
 
 def latest_spec_path(sample_dir: Path) -> tuple[Path, Path] | None:

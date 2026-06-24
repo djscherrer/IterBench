@@ -1,17 +1,14 @@
 """
-Spec preparation stage.
+Spec preparation stage (``03-spec/``).
 
-Returns ``(spec_file, abort_sample)``. Three branches:
+Produces ``spec.yaml`` only — static validation, no cluster deploy. Deploy
+readiness is handled by :mod:`stages.deploy` after spec (and whenever code or
+spec changed for this iteration).
 
-- **baseline**: call ``generate_baseline_spec_until_deployable`` (retries LLM +
-  deploy probe until a working spec is produced). Failure aborts the sample
-  (legacy ``break`` semantics).
-- **reuse**: copy ``spec.yaml`` from the iteration named by ``plan.reuse_spec_from``
-  (used for code-refinement iterations — code changes, spec stays).
-- **generate**: LLM call + static validation + deploy probe.
-
-Any non-baseline failure marks the iteration ``-spec-failed`` and returns
-``(None, False)`` so the outer loop tries the next iteration.
+- **baseline**: LLM spec retry loop; each attempt calls deploy probe via callback
+  (spec + deploy are coupled until a deployable spec is found).
+- **reuse**: copy ``spec.yaml`` from a prior iteration (code-refinement path).
+- **generate**: LLM + static validation (deployment-refinement path).
 """
 
 from __future__ import annotations
@@ -20,7 +17,6 @@ import logging
 from pathlib import Path
 
 from ..cluster.capacity import collect_cluster_capacity
-from ..gates import probe_iteration_deployable
 from ..iteration_failure import fail_iteration_phase
 from ..spec.generation import (
     generate_and_write_spec,
@@ -33,6 +29,7 @@ from ..workspace import (
     update_iteration_meta,
 )
 from ..orchestration.config import IterationPlan, RunConfig, SampleContext
+from .deploy import baseline_deploy_probe_callback
 
 
 def prepare_spec_or_fail(
@@ -43,8 +40,6 @@ def prepare_spec_or_fail(
     logger: logging.Logger,
 ) -> tuple[Path | None, bool]:
     """Returns ``(spec_file, abort_sample)``. ``abort_sample`` only on baseline-fail."""
-    from tasks import esc
-
     iteration_path = resolve_iteration_dir(ctx.sample_dir, plan.iteration_id)
     is_baseline = plan.refinement_action == "baseline"
     folder_kind = (
@@ -53,34 +48,9 @@ def prepare_spec_or_fail(
         else ("code" if plan.refinement_action == "code" else "spec")
     )
 
-    bench_labels_dict = {
-        "baxbench.dev/model": esc(ctx.task.model),
-        "baxbench.dev/scenario": esc(ctx.task.scenario.id),
-        "baxbench.dev/env": esc(ctx.task.env.id),
-        "baxbench.dev/spec-gen": "true",
-        "baxbench.dev/phase": str(plan.iteration_index),
-    }
-    sample_slug = (
-        f"{esc(ctx.task.model)}-{esc(ctx.task.env.id)}-"
-        f"{esc(ctx.task.scenario.id)}-sample{ctx.sample}"
-    )
-
     spec_file: Path | None = None
 
     if is_baseline:
-
-        def _baseline_probe():
-            return probe_iteration_deployable(
-                iteration_path=iteration_path,
-                image_id=image_id,
-                sample_slug=sample_slug,
-                app_port=ctx.task.env.port,
-                needs_db=ctx.task.scenario.needs_db,
-                wait_timeout_s=cfg.k8s_wait_timeout,
-                labels=bench_labels_dict,
-                logger=logger,
-            )
-
         spec_file, baseline_err = generate_baseline_spec_until_deployable(
             task=ctx.task,
             results_dir=ctx.results_dir,
@@ -88,7 +58,9 @@ def prepare_spec_or_fail(
             iteration_path=iteration_path,
             iteration_id=plan.iteration_id,
             logger=logger,
-            deploy_probe=_baseline_probe,
+            deploy_probe=baseline_deploy_probe_callback(
+                ctx, plan, image_id, cfg, iteration_path, logger
+            ),
             iteration_index=plan.iteration_index,
             total_iterations=cfg.total_iterations,
             vllm_port=cfg.vllm_port,
@@ -97,7 +69,7 @@ def prepare_spec_or_fail(
         if spec_file is None:
             fail_iteration_phase(
                 iteration_path=iteration_path,
-                save_dir=ctx.save_dir,
+                task_run_dir=ctx.task_run_dir,
                 sample_dir=ctx.sample_dir,
                 sample=ctx.sample,
                 iteration_id=plan.iteration_id,
@@ -110,6 +82,15 @@ def prepare_spec_or_fail(
         update_iteration_meta(iteration_path, spec_regenerated=True)
 
     elif plan.reuse_spec_from is not None:
+        from tasks import esc
+
+        bench_labels_dict = {
+            "baxbench.dev/model": esc(ctx.task.model),
+            "baxbench.dev/scenario": esc(ctx.task.scenario.id),
+            "baxbench.dev/env": esc(ctx.task.env.id),
+            "baxbench.dev/spec-gen": "true",
+            "baxbench.dev/phase": str(plan.iteration_index),
+        }
         logger.info(
             "iteration %s: reusing deployment spec from %s (code refinement; "
             "no LLM spec generation)",
@@ -147,34 +128,11 @@ def prepare_spec_or_fail(
         if spec_file is None:
             fail_iteration_phase(
                 iteration_path=iteration_path,
-                save_dir=ctx.save_dir,
+                task_run_dir=ctx.task_run_dir,
                 sample_dir=ctx.sample_dir,
                 sample=ctx.sample,
                 iteration_id=plan.iteration_id,
                 failure_reason=gen_err or "static spec validation failed",
-                kind="spec",
-                logger=logger,
-            )
-            return None, False
-
-        probe = probe_iteration_deployable(
-            iteration_path=iteration_path,
-            image_id=image_id,
-            sample_slug=sample_slug,
-            app_port=ctx.task.env.port,
-            needs_db=ctx.task.scenario.needs_db,
-            wait_timeout_s=cfg.k8s_wait_timeout,
-            labels=bench_labels_dict,
-            logger=logger,
-        )
-        if not probe.ok:
-            fail_iteration_phase(
-                iteration_path=iteration_path,
-                save_dir=ctx.save_dir,
-                sample_dir=ctx.sample_dir,
-                sample=ctx.sample,
-                iteration_id=plan.iteration_id,
-                failure_reason=probe.reason,
                 kind="spec",
                 logger=logger,
             )
@@ -185,7 +143,7 @@ def prepare_spec_or_fail(
     if spec_file is None:
         fail_iteration_phase(
             iteration_path=iteration_path,
-            save_dir=ctx.save_dir,
+            task_run_dir=ctx.task_run_dir,
             sample_dir=ctx.sample_dir,
             sample=ctx.sample,
             iteration_id=plan.iteration_id,

@@ -20,6 +20,11 @@ from llm import Prompter
 from scenarios.base import Scenario
 
 from ..feedback import IterationFeedback
+from ..prompt_helpers import (
+    DECISION_TELEMETRY_POINTER,
+    ArtifactPointers,
+    format_artifact_pointers_block,
+)
 from ..cluster.capacity import (
     ClusterCapacity,
     capacity_as_json,
@@ -50,6 +55,7 @@ from ..workspace import (
     iteration_spec_dir,
     iteration_spec_path,
     latest_code_dir,
+    k8s_fallback_code_dir,
     new_iteration_id,
     next_attempt_index,
     normalize_iteration_id,
@@ -135,6 +141,7 @@ def build_k8s_spec_prompt(
     total_iterations: int = 0,
     prior_feedback: IterationFeedback | str | None = None,
     validation_feedback: str | None = None,
+    artifact_pointers: ArtifactPointers | None = None,
 ) -> str:
     perf = _safety_performance_text(env, scenario, safety_prompt)
     pool_max = infer_pool_max_from_hints(app_hints)
@@ -142,28 +149,38 @@ def build_k8s_spec_prompt(
         iteration_index=iteration_index, total_iterations=total_iterations
     )
     if prior_feedback is not None:
-        fb_text = (
-            prior_feedback.to_prompt_text()
-            if isinstance(prior_feedback, IterationFeedback)
-            else str(prior_feedback).strip()
+        pointer_block = (
+            format_artifact_pointers_block(artifact_pointers)
+            if artifact_pointers is not None
+            else "(artifact pointers unavailable)"
         )
         goal = f"""## Goal
 You are refining deployment parameters for iteration `{iteration_id}` after a benchmark of the **previous** iteration.
 
 **Progress**: {progress} Plan your remaining budget — bold experiments early, consolidate refinements toward the end.
 
-Use the feedback below to tune **all** deployment levers: backend replicas/concurrency, pooler/read_pooler, optional Redis cache, Postgres replicas/resources/GUCs, and placement. Reduce errors and saturation; **maximize goodput (sustained rate of successful responses)**. Raw throughput with high error rates does NOT count. If feedback shows **overload / high fail%** at modest user counts, prefer simplifying the stack (fewer hops, symmetric DB sizing) before adding more tiers.
+**Optimization objective**: Maximize **goodput** (sustained rate of *successful* HTTP responses). Failed requests do not count. Raw throughput with high error rates is NOT a win.
+
+Use load test results and diagnostics from the decision-phase message above to tune **all** deployment levers: backend replicas/concurrency/resources, database replicas/resources/GUCs, PgBouncer pooler and read_pooler, optional Redis cache, and pod placement. If feedback shows **overload / high fail%** at modest user counts, prefer simplifying the stack (fewer hops, symmetric DB sizing) before adding more tiers.
 
 {perf}
 
-## Feedback from previous benchmark
-{fb_text}
+## Context
+- Scenario: {scenario.id}
+- Environment: {env.id} (listen port {env.port})
+- Iteration: {iteration_id}
+
+{pointer_block}
+
+{DECISION_TELEMETRY_POINTER}
 """
     else:
         goal = f"""## Goal
-Propose deployment parameters for iteration `{iteration_id}` so the application can sustain **very high concurrent user load** in a Locust benchmark while **maximizing goodput (successful responses per second)**. Failed requests do not count toward your score.
+Propose deployment parameters for iteration `{iteration_id}` so the application can sustain **very high concurrent user load** in a Locust benchmark.
 
 **Progress**: {progress}
+
+**Optimization objective**: Maximize **goodput** (successful responses per second). Failed requests do not count toward your score.
 
 {perf}
 """
@@ -191,8 +208,6 @@ Propose deployment parameters for iteration `{iteration_id}` so the application 
 - App DB connection pool (per worker process): **{pool_max}** connections (inferred from generated code, unless you set `backend.env.PG_POOL_MAX` or `backend.env.DB_POOL_SIZE`)
 - A replica runs `backend.web_concurrency` worker processes; with `worker_class=gthread`, each process also runs `worker_threads` concurrent requests **but shares one DB pool per process** — effective DB concurrency per pod ≈ `web_concurrency × pool_max`, not `web_concurrency × worker_threads`
 
-{app_hints}
-
 ## Cluster capacity
 Schedulable **workers only** (control-plane excluded). Use **requests** for scheduling fit.
 
@@ -215,11 +230,8 @@ Schedulable **workers only** (control-plane excluded). Use **requests** for sche
 5. Optional **placement**: restrict or pin which workers may run postgres/backends; `spread_replicas: true` spreads backend pods across nodes.
 6. Use worker **`name` values** from the per-worker list (short names like `node3` are accepted).
 
-## Optimization objective
-**Maximize goodput** — successful HTTP responses per second sustained over the run. Failed requests (5xx, timeouts, connection errors) are **not counted** as wins. A configuration that processes 200 req/s with 0% errors beats one that processes 500 req/s with 20% errors.
-
 ## Spec fields (semantics — you choose values)
-Use **benchmark feedback** from prior iterations to refine replicas and resources. The framework validates feasibility; it does not prescribe tuning targets.
+Use load test results and diagnostics from the decision-phase message above to refine replicas and resources. The framework validates feasibility; it does not prescribe tuning targets.
 
 **`backend`** (horizontally scalable — many stateless pods):
 - `replicas`: pod count behind the Service
@@ -617,6 +629,7 @@ def generate_k8s_workload_spec(
     total_iterations: int = 0,
     enable_attempts: bool = False,
     session: "Prompter | None" = None,
+    artifact_pointers: ArtifactPointers | None = None,
 ) -> tuple[K8sWorkloadSpec, str, list[str]]:
     """Call the configured LLM and return (spec, raw_response, validation_warnings).
 
@@ -646,6 +659,7 @@ def generate_k8s_workload_spec(
             total_iterations=total_iterations,
             prior_feedback=prior_feedback,
             validation_feedback=validation_hint,
+            artifact_pointers=artifact_pointers,
         )
 
         # Per-attempt directory: each LLM call lands its own
@@ -994,7 +1008,7 @@ def generate_k8s_specs_for_task(
         with task.create_logger(log_file) as logger:
             code_dir = latest_code_dir(
                 task.get_sample_dir(results_dir, sample),
-                fallback=task.get_code_dir(results_dir, sample),
+                fallback=k8s_fallback_code_dir(task.get_sample_dir(results_dir, sample)),
             )
             app_hints = _read_app_hints(code_dir)
             labels = {
@@ -1197,11 +1211,19 @@ def generate_and_write_spec(
     """
     sample_dir = task.get_sample_dir(results_dir, sample)
     code_dir = latest_code_dir(
-        sample_dir, fallback=task.get_code_dir(results_dir, sample)
+        sample_dir, fallback=k8s_fallback_code_dir(sample_dir)
     )
     app_hints = _read_app_hints(code_dir)
+    from ..prompt_helpers import resolve_artifact_pointers
     from ..session import get_experiment_session, persist_session
 
+    artifact_pointers = (
+        resolve_artifact_pointers(
+            sample_dir,
+        )
+        if prior_feedback is not None
+        else None
+    )
     spec_session = get_experiment_session(
         task, sample_dir, sample, vllm_port=vllm_port, logger=logger
     )
@@ -1228,6 +1250,7 @@ def generate_and_write_spec(
             total_iterations=total_iterations,
             enable_attempts=enable_attempts,
             session=spec_session,
+            artifact_pointers=artifact_pointers,
         )
         persist_session(spec_session, sample_dir, logger=logger)
         spec = _apply_task_labels_to_spec(

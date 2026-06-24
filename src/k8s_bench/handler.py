@@ -36,7 +36,6 @@ def run_k8s_bench(
     base_delay: float = 1.0,
     max_delay: float = 60.0,
     vllm_port: int = 8000,
-    baseline_code_mode: str = "reuse",
     baseline_code_max_attempts: int = 3,
     baseline_spec_max_attempts: int = 5,
 ) -> list[Path]:
@@ -77,7 +76,6 @@ def run_k8s_bench(
                         base_delay=base_delay,
                         max_delay=max_delay,
                         vllm_port=vllm_port,
-                        baseline_code_mode=baseline_code_mode,
                         baseline_code_max_attempts=baseline_code_max_attempts,
                         baseline_spec_max_attempts=baseline_spec_max_attempts,
                     )
