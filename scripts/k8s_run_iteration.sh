@@ -5,41 +5,38 @@
 # Edit 03-spec/spec.yaml and/or 02-code/code/ there, run this script; results
 # land in that same folder (04-deploy/, 05-bench/, iteration.log).
 #
+# Task coordinates (model, scenario, env, sample, temperature, …) are derived
+# from the results path — you only need --iter plus cluster/load knobs.
+#
 # Example:
 #   ./scripts/k8s_run_iteration.sh \
-#       --iter results/.../sample3/k8s-experiments/expb/manual_experiments/iteration-018-spec
+#       --iter results/.../sample3/k8s-experiments/expb/manual/iteration-018-spec
 #
 # Flags:
 #   --iter <path>        Required. Iteration folder (relative or absolute).
-#   --model <m>          Override MODEL.       --provider <p>  Override PROVIDER.
 #   --cluster <c>        Override CLUSTER.     --load-profile <lp> Override profile.
 #   --keep-bench         Skip wiping 04-deploy/ + 05-bench/ before the run.
 
 set -euo pipefail
 
 # === EDIT THESE (overridable via --flags) ===========================
-MODEL="deepseek/deepseek-v4-pro"        # provider/name (slash form)
-PROVIDER="openrouter"
 CLUSTER="baxbench-emulab"
 LOAD_PROFILE="k8s-goodput-plateau"
 TIMEOUT="600"
 WAIT_TIMEOUT="600"
 PORT="5001"
-LLM_MAX_COST="10"
 # ====================================================================
 
-ITER="results/deepseek-deepseek-v4-pro/LexiTally_WordCountDatasets/Python-Flask/temp0.2-openapi-high_performance/sample0/k8s-experiments/17-6-bench-plateau/manual/iteration-016-code-dbtune-specs-add-2"
+ITER=""
 KEEP_BENCH="false"
 
 while [ $# -gt 0 ]; do
   case "$1" in
     --iter)         ITER="$2"; shift 2;;
-    --model)        MODEL="$2"; shift 2;;
-    --provider)     PROVIDER="$2"; shift 2;;
     --cluster)      CLUSTER="$2"; shift 2;;
     --load-profile) LOAD_PROFILE="$2"; shift 2;;
     --keep-bench)   KEEP_BENCH="true"; shift;;
-    -h|--help)      sed -n '2,20p' "$0"; exit 0;;
+    -h|--help)      sed -n '2,22p' "$0"; exit 0;;
     *)              echo "Unknown arg: $1" >&2; exit 2;;
   esac
 done
@@ -53,7 +50,6 @@ if [ ! -d "$ITER" ]; then
   exit 1
 fi
 ITER="$(cd "$ITER" && pwd)"
-ITER_ID="$(basename "$ITER")"
 
 # Find sampleN/ and parse BaxBench task coordinates from the path.
 SAMPLE_DIR=""
@@ -83,6 +79,10 @@ else
 fi
 ENV_ID="$(basename "$(dirname "$CONFIG_DIR")")"
 SCENARIO_ID="$(basename "$(dirname "$(dirname "$CONFIG_DIR")")")"
+MODEL_ESC="$(basename "$(dirname "$(dirname "$(dirname "$CONFIG_DIR")")")")"
+# results/<provider>-<model>/... → provider/model for --models
+MODEL="${MODEL_ESC/-//}"
+RESULTS_DIR="$(dirname "$(dirname "$(dirname "$(dirname "$(dirname "$SAMPLE_DIR")")")")")"
 
 if [ "$KEEP_BENCH" != "true" ]; then
   rm -f "$ITER/04-deploy/probe.json" "$ITER/04-deploy/bench.json"
@@ -110,28 +110,25 @@ fi
 ARGS=(
   --mode k8s-bench
   --models "$MODEL"
-  --provider "$PROVIDER"
   --only_samples "$SAMPLE_NUM"
   --envs "$ENV_ID"
   --scenarios "$SCENARIO_ID"
   --temperature "$TEMP"
   --safety_prompt "$SAFETY"
+  --spec_type "$SPEC_TYPE"
   --k8s-cluster "$CLUSTER"
   --k8s-iteration-path "$ITER"
   --k8s-iterations 0
   --k8s-wait-timeout "$WAIT_TIMEOUT"
-  --k8s-refinement off
-  --no-k8s-spec-gen
+  --load-profile "$LOAD_PROFILE"
+  --deploy-only
   --force
   --timeout "$TIMEOUT"
   --port "$PORT"
+  --results_dir "$RESULTS_DIR"
 )
 
-EXTRA_ENV=(
-  "BAXBENCH_LOAD_PROFILE=$LOAD_PROFILE"
-  "BAXBENCH_K8S_CLUSTER=$CLUSTER"
-  "BAXBENCH_LLM_MAX_COST=$LLM_MAX_COST"
-)
+EXTRA_ENV=()
 if [ -n "${KUBECONFIG:-}" ]; then
   EXTRA_ENV+=("KUBECONFIG=$KUBECONFIG")
 fi
@@ -140,6 +137,7 @@ cat <<EOF
 
 === Running iteration (in place) ===
   iter dir   : $ITER
+  model      : $MODEL
   scenario   : $SCENARIO_ID
   env        : $ENV_ID
   sample     : $SAMPLE_NUM

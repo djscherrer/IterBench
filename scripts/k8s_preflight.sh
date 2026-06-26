@@ -2,9 +2,8 @@
 # BaxBench - Kubernetes preflight
 #
 #   1. THIS SCRIPT  — install/check packages (K8S_INSTALL_PREREQUISITES=true)
-#   2. ./scripts/k8s_setup_cluster.sh — kubeadm init + join workers
-#   3. ./scripts/k8s_setup_registry.sh — private image registry on node0:5000
-#   4. THIS SCRIPT  — K8S_SKIP_CLUSTER_CHECKS=false to verify the cluster (optional)
+#   2. ./scripts/k8s_setup_cluster.sh — kubeadm init + join workers + registry
+#   3. THIS SCRIPT  — K8S_SKIP_CLUSTER_CHECKS=false to verify the cluster (optional)
 #
 # Topology: edit K8S_CLUSTER_REGISTRY in src/k8s_bench/cluster/profiles.py
 # Select profile: BAXBENCH_K8S_CLUSTER below.

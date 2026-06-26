@@ -232,7 +232,7 @@ choose to refine the **deployment spec** (default path) or **application code**
 via `Task.test_code`). **Single attempt** per refinement phase — functional test or
 deploy probe failure renames the folder to `NNN-code-failed` / `NNN-spec-failed`,
 reverts live code to the last passing snapshot, and leaves `prior_feedback` unchanged.
-Control with `--k8s-refinement auto|deployment|code|off` or `BAXBENCH_K8S_REFINEMENT`.
+Control with `--k8s-refinement auto|deployment|code` (default `auto`).
 
 After **generate** + **test**:
 
@@ -246,7 +246,7 @@ After **generate** + **test**:
 | Flag | Default | Meaning |
 |------|---------|---------|
 | `--k8s-iterations N` | 1 | Baseline `iteration-000` plus N refinement phases (`001`…`NNN`) |
-| `--k8s-spec-gen` / `--no-k8s-spec-gen` | on | LLM specs vs deploy-only |
+| `--deploy-only` | off | Deploy+bench existing iterations only (no LLM refinement) |
 | `--k8s-iteration iteration-000` | — | Pin a single phase (ignores N) |
 | `--k8s-experiment adaptive-may20` | — | Workspace under `k8s-experiments/<slug>/` |
 | `--force` | — | Regenerate specs and re-bench |
@@ -264,7 +264,8 @@ utilization aggregated over the run (min/avg/max from
 (append-only). After every spec generation it records deployment, diff vs the
 previous iteration, and LLM rationale (text before ``<SPEC>`` in ``spec_gen.log``).
 After every Locust run it records time range, an adaptive ramp table (from
-``bench.log``), aggregate req/fail stats, and top errors. Disable with
-``BAXBENCH_K8S_EXPERIMENT_SUMMARY=false``.
+``bench.log``), aggregate req/fail stats, and top errors.
 
-Standalone spec-only (no deploy): `--mode k8s-spec-gen` or `./scripts/generate_k8s_spec.sh`.
+Standalone spec-only (no deploy): use ``--mode k8s-bench`` with ``--k8s-iteration``
+to pin a single phase, or edit ``spec.yaml`` by hand and re-bench with
+``--deploy-only``.

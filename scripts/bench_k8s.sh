@@ -7,8 +7,8 @@
 #   3. Optional further phases (iteration-002+) use feedback from prior Locust run
 #
 # Prerequisites:
-#   1. ./scripts/k8s_setup_cluster.sh
-#   2. ./scripts/k8s_setup_registry.sh  (once; images push/pull via node0:5000)
+#   1. ./scripts/k8s_preflight.sh
+#   2. ./scripts/k8s_setup_cluster.sh  (kubeadm + registry when profile enables it)
 #   3. Docker on node0 for build + push
 #
 # Quick smoke (one sample, one phase):
@@ -53,12 +53,11 @@ KUBECONFIG_PATH=""              # empty = path from cluster profile
 K8S_ITERATION=""                # pin one iteration; empty = use K8S_ITERATIONS
 K8S_EXPERIMENT="17.6-bench-plateau-200max-4"               # e.g. adaptive-may20 → sampleN/k8s-experiments/<slug>/
 K8S_ITERATIONS="20"              # phases: iteration-001 .. iteration-NNN
-K8S_SPEC_GEN="true"             # false = deploy-only with existing spec.yaml files
+K8S_DEPLOY_ONLY="false"          # true = deploy+bench existing iterations only (no LLM)
 K8S_WAIT_TIMEOUT="600"
 # Locust runs on profile load_master/workers; backend exposed via NodePort
-K8S_AUTO_INIT="false"           # only used with K8S_SPEC_GEN=false
-K8S_REQUIRE_CLUSTER="true"
-K8S_REFINEMENT="auto"               # auto | deployment | code | off (empty = default auto)
+K8S_AUTO_INIT="false"           # only used with K8S_DEPLOY_ONLY=true
+K8S_REFINEMENT="auto"               # auto | deployment | code
 
 # Baseline (iteration-000) code source.
 #   reuse      = use sampleN/code/ from --mode generate; require its FTs to pass (default)
@@ -167,14 +166,13 @@ for _model in $MODELS; do
     add_arg "--k8s-iterations" "$K8S_ITERATIONS"
     add_arg "--k8s-wait-timeout" "$K8S_WAIT_TIMEOUT"
     add_arg "--k8s-refinement" "$K8S_REFINEMENT"
+    add_arg "--load-profile" "$profile"
     add_arg "--baseline-code-max-attempts" "$BASELINE_CODE_MAX_ATTEMPTS"
     add_arg "--baseline-spec-max-attempts" "$BASELINE_SPEC_MAX_ATTEMPTS"
+    add_arg "--llm-max-cost" "$BAXBENCH_LLM_MAX_COST"
     add_arg "--max_retries" "$MAX_RETRIES"
-    if [ "$K8S_REQUIRE_CLUSTER" == "false" ]; then
-      ARGS+=("--no-k8s-require-cluster")
-    fi
-    if [ "$K8S_SPEC_GEN" == "false" ]; then
-      ARGS+=("--no-k8s-spec-gen")
+    if [ "$K8S_DEPLOY_ONLY" == "true" ]; then
+      ARGS+=("--deploy-only")
     fi
     if [ "$K8S_AUTO_INIT" == "true" ]; then
       ARGS+=("--k8s-auto-init")
@@ -193,23 +191,8 @@ for _model in $MODELS; do
     for profile in "${BAXBENCH_LOAD_PROFILE[@]}"; do
       RUN_I=$((RUN_I+1))
       EXTRA_ENV=("${BASE_ENV[@]}")
-      if [ -n "$profile" ]; then
-        EXTRA_ENV+=("BAXBENCH_LOAD_PROFILE=$profile")
-      fi
-      if [ -n "$BAXBENCH_K8S_CLUSTER" ]; then
-        EXTRA_ENV+=("BAXBENCH_K8S_CLUSTER=$BAXBENCH_K8S_CLUSTER")
-      fi
-      if [ -n "$K8S_ITERATION" ]; then
-        EXTRA_ENV+=("BAXBENCH_K8S_ITERATION=$K8S_ITERATION")
-      fi
-      if [ -n "$K8S_EXPERIMENT" ]; then
-        EXTRA_ENV+=("BAXBENCH_K8S_EXPERIMENT=$K8S_EXPERIMENT")
-      fi
       if [ -n "${KUBECONFIG:-}" ]; then
         EXTRA_ENV+=("KUBECONFIG=$KUBECONFIG")
-      fi
-      if [ -n "$BAXBENCH_LLM_MAX_COST" ]; then
-        EXTRA_ENV+=("BAXBENCH_LLM_MAX_COST=$BAXBENCH_LLM_MAX_COST")
       fi
       echo ""
       echo "=== K8s iterative bench run #$RUN_I: model='${_model}' openhands='${_openhands}' load_profile='$profile' iterations=$K8S_ITERATIONS ==="
