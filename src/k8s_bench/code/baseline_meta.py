@@ -223,7 +223,7 @@ def capture_baseline_retry_state(
     iteration_id: str,
     logger: logging.Logger,
 ) -> tuple[str, Any]:
-    from ..functional_failure import (
+    from ..failure import (
         FunctionalFailureReport,
         build_functional_failure_report,
     )

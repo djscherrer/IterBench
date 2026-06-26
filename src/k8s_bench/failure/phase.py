@@ -5,9 +5,10 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-from .util.sample import append_k8s_skip
-from .workspace.meta import update_iteration_meta
-from .workspace.paths import mark_iteration_folder_failed
+from ..util.sample import append_k8s_skip
+from ..workspace.meta import update_iteration_meta
+from ..workspace.paths import mark_iteration_folder_failed
+from .build import build_functional_failure_report
 
 
 def fail_iteration_phase(
@@ -23,13 +24,10 @@ def fail_iteration_phase(
 ) -> Path:
     """
     Mark an iteration as failed: update meta, rename folder with ``-failed`` suffix,
-    and append a failure block to the experiment summary so the next iteration's
-    prompt + the human-readable summary both reflect what went wrong.
+    and append a failure block to the experiment summary.
 
-    For ``kind="code"`` we also build and persist a ``failure_report.json``
-    next to ``meta.json`` so the *next* refinement iteration receives a
-    structured diagnostic (which functional tests failed, with the actual error
-    message) instead of having to re-parse the noisy ``test.log`` tail.
+    For ``kind="code"`` we also build and persist ``failure_report.json`` so the
+    next refinement iteration receives structured FT diagnostics.
 
     Returns the renamed iteration directory.
     """
@@ -37,13 +35,13 @@ def fail_iteration_phase(
         iteration_path,
         status="failed",
         failure_reason=failure_reason,
+        failure_kind=kind,
         refinement_action=kind if kind in {"code", "spec", "baseline"} else None,
     )
 
     if kind == "code":
         try:
-            from .functional_failure import build_functional_failure_report
-            from .workspace import write_failure_report
+            from ..workspace import write_failure_report
 
             report = build_functional_failure_report(
                 iteration_path,
@@ -72,8 +70,8 @@ def fail_iteration_phase(
         failed_path = iteration_path
 
     try:
-        from .experiment_summary import append_iteration_failure_block
-        from .feedback import read_failed_iteration_error_excerpt
+        from ..experiment_summary import append_iteration_failure_block
+        from ..feedback import read_failed_iteration_error_excerpt
 
         excerpt = read_failed_iteration_error_excerpt(failed_path)
         append_iteration_failure_block(

@@ -11,7 +11,7 @@ from typing import Any
 from llm import Prompter
 
 from ..feedback import IterationFeedback
-from ..functional_failure import FunctionalFailureReport
+from ..failure import FunctionalFailureReport
 from ..prompt_helpers import (
     DECISION_TELEMETRY_POINTER,
     format_artifact_pointers_block,

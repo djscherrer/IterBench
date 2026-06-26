@@ -16,11 +16,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from ..iteration_failure import fail_iteration_phase
+from ..failure import fail_iteration_phase
 from ..orchestration.config import IterationPlan, RunConfig, SampleContext
 from ..workspace import (
     deploy_probe_record_path,
-    iteration_deploy_log_path,
     resolve_iteration_dir,
 )
 from ..cluster.deploy import DeployResult, deploy_iteration
@@ -111,6 +110,7 @@ def probe_iteration_deployable(
     sample_slug: str,
     app_port: int,
     needs_db: bool,
+    k8s_cluster: str,
     wait_timeout_s: int = 300,
     labels: dict[str, str] | None = None,
     logger: logging.Logger | None = None,
@@ -130,7 +130,7 @@ def probe_iteration_deployable(
         prepared = prepare_image_for_k8s(
             image_id,
             sample_slug=sample_slug,
-            profile_name=selected_cluster_profile().name,
+            profile_name=k8s_cluster,
             logger=log,
         )
         spec = ensure_iteration_spec(
@@ -177,7 +177,7 @@ def probe_iteration_deployable(
             details=details,
         )
 
-    profile = selected_cluster_profile()
+    profile = selected_cluster_profile(k8s_cluster)
     entry_node = profile.worker_nodes[0] if profile.worker_nodes else profile.control_node
     try:
         target = resolve_nodeport_target(
@@ -289,6 +289,7 @@ def baseline_deploy_probe_callback(
             sample_slug=_sample_slug(ctx),
             app_port=ctx.task.env.port,
             needs_db=ctx.task.scenario.needs_db,
+            k8s_cluster=ctx.k8s_cluster,
             wait_timeout_s=cfg.k8s_wait_timeout,
             labels=_bench_labels(ctx, plan),
             logger=logger,
@@ -302,6 +303,7 @@ def run_deploy_stage(
     plan: IterationPlan,
     image_id: str,
     cfg: RunConfig,
+    logger: logging.Logger,
 ) -> DeployStageResult:
     """
     Bring the iteration up on the cluster so bench can run Locust immediately.
@@ -314,45 +316,48 @@ def run_deploy_stage(
 
     if not should_run_deploy_stage(plan):
         if probe_record_passed(iteration_path):
+            logger.info(
+                "iteration %s: deploy stage skipped (baseline probe already recorded)",
+                plan.iteration_id,
+            )
             return DeployStageResult(ok=True, skipped=True)
         return DeployStageResult(
             ok=False,
             reason="deploy probe required but baseline spec loop did not record success",
         )
 
-    deploy_log = iteration_deploy_log_path(iteration_path)
-    failure_kind = "code" if plan.refinement_action == "code" else "spec"
+    failure_kind = "deploy"
 
-    with ctx.task.create_logger(deploy_log) as logger:
-        logger.info(
-            "iteration %s: deploying for bench (action=%s, image=%s)",
-            plan.iteration_id,
-            plan.refinement_action,
-            image_id,
-        )
-        probe = probe_iteration_deployable(
-            iteration_path=iteration_path,
-            image_id=image_id,
-            sample_slug=_sample_slug(ctx),
-            app_port=ctx.task.env.port,
-            needs_db=ctx.task.scenario.needs_db,
-            wait_timeout_s=cfg.k8s_wait_timeout,
-            labels=_bench_labels(ctx, plan),
-            logger=logger,
-        )
-        if probe.ok:
-            logger.info("deploy stage passed; cluster ready for bench")
-            return DeployStageResult(ok=True)
+    logger.info(
+        "iteration %s: deploying for bench (action=%s, image=%s)",
+        plan.iteration_id,
+        plan.refinement_action,
+        image_id,
+    )
+    probe = probe_iteration_deployable(
+        iteration_path=iteration_path,
+        image_id=image_id,
+        sample_slug=_sample_slug(ctx),
+        app_port=ctx.task.env.port,
+        needs_db=ctx.task.scenario.needs_db,
+        k8s_cluster=ctx.k8s_cluster,
+        wait_timeout_s=cfg.k8s_wait_timeout,
+        labels=_bench_labels(ctx, plan),
+        logger=logger,
+    )
+    if probe.ok:
+        logger.info("deploy stage passed; cluster ready for bench")
+        return DeployStageResult(ok=True)
 
-        logger.error("deploy stage failed: %s", probe.reason)
-        fail_iteration_phase(
-            iteration_path=iteration_path,
-            task_run_dir=ctx.task_run_dir,
-            sample_dir=ctx.sample_dir,
-            sample=ctx.sample,
-            iteration_id=plan.iteration_id,
-            failure_reason=probe.reason,
-            kind=failure_kind,
-            logger=logger,
-        )
-        return DeployStageResult(ok=False, reason=probe.reason)
+    logger.error("deploy stage failed: %s", probe.reason)
+    fail_iteration_phase(
+        iteration_path=iteration_path,
+        task_run_dir=ctx.task_run_dir,
+        sample_dir=ctx.sample_dir,
+        sample=ctx.sample,
+        iteration_id=plan.iteration_id,
+        failure_reason=probe.reason,
+        kind=failure_kind,
+        logger=logger,
+    )
+    return DeployStageResult(ok=False, reason=probe.reason)

@@ -5,7 +5,7 @@ Workspace owns *where* artifacts live on disk and *how* they're serialized. The
 data classes themselves live with their builders/parsers:
 
 - ``IterationFeedback``  → ``feedback.py``           (Locust + kubectl parsing)
-- ``FunctionalFailureReport`` → ``functional_failure.py`` (FT log parsing)
+- ``FunctionalFailureReport`` → ``failure/`` (FT log parsing)
 - ``RefinementDecision`` → ``stages/decision.py`` (LLM decision)
 
 This module is the single place that reads/writes the JSON envelopes so other
@@ -22,7 +22,7 @@ from .paths import iteration_code_phase_dir, iteration_decision_dir
 
 if TYPE_CHECKING:
     from ..feedback import IterationFeedback
-    from ..functional_failure import FunctionalFailureReport
+    from ..failure import FunctionalFailureReport
     from ..stages.decision import RefinementDecision
 
 
@@ -70,12 +70,10 @@ def write_feedback(
         "locust_summary": feedback.locust_summary,
         "error_excerpt": feedback.error_excerpt,
         "pod_utilization": feedback.pod_utilization,
-        "previous_spec_yaml": feedback.previous_spec_yaml,
         "benchmark_context": feedback.benchmark_context,
         "load_run_summary": feedback.load_run_summary,
         "diagnostics_summary": feedback.diagnostics_summary,
         "notes": feedback.notes,
-        "failed_attempts": [fa.to_dict() for fa in feedback.failed_attempts],
         "status": feedback.status,
         "failure_reason": feedback.failure_reason,
         "failure_kind": feedback.failure_kind,
@@ -93,11 +91,7 @@ def write_feedback(
 
 def load_feedback(perf_run_dir: Path) -> "IterationFeedback | None":
     """Load :class:`IterationFeedback` from a bench run directory, if present."""
-    from ..feedback import (
-        FailedAttempt,
-        IterationFeedback,
-        collect_iteration_feedback,
-    )
+    from ..feedback import IterationFeedback, collect_iteration_feedback
 
     json_path = feedback_artifact_path(perf_run_dir)
     if json_path.is_file():
@@ -108,12 +102,10 @@ def load_feedback(perf_run_dir: Path) -> "IterationFeedback | None":
             locust_summary=str(data.get("locust_summary", "")),
             error_excerpt=str(data.get("error_excerpt", "")),
             pod_utilization=str(data.get("pod_utilization", "")),
-            previous_spec_yaml=str(data.get("previous_spec_yaml", "")),
             benchmark_context=str(data.get("benchmark_context", "")),
             load_run_summary=str(data.get("load_run_summary", "")),
             diagnostics_summary=str(data.get("diagnostics_summary", "")),
             notes=str(data.get("notes", "")),
-            failed_attempts=_failed_attempts_from_payload(data, FailedAttempt),
             status=str(data.get("status", "success")),
             failure_reason=str(data.get("failure_reason", "")),
             failure_kind=str(data.get("failure_kind", "")),
@@ -143,7 +135,6 @@ def load_feedback(perf_run_dir: Path) -> "IterationFeedback | None":
             locust_summary="",
             error_excerpt="",
             pod_utilization="",
-            previous_spec_yaml="",
             notes=txt.read_text(encoding="utf-8", errors="replace"),
         )
     cfg_path = perf_run_dir / "config.json"
@@ -159,35 +150,6 @@ def load_feedback(perf_run_dir: Path) -> "IterationFeedback | None":
         except json.JSONDecodeError:
             pass
     return None
-
-
-def _failed_attempts_from_payload(
-    data: dict[str, Any], failed_attempt_cls: Any
-) -> tuple[Any, ...]:
-    raw = data.get("failed_attempts") or []
-    if not isinstance(raw, list):
-        return ()
-    out: list[Any] = []
-    for entry in raw:
-        if not isinstance(entry, dict):
-            continue
-        out.append(
-            failed_attempt_cls(
-                iteration_id=str(entry.get("iteration_id", "")),
-                kind=str(entry.get("kind", "")),
-                refinement_action=(
-                    str(entry["refinement_action"])
-                    if entry.get("refinement_action")
-                    else None
-                ),
-                rationale=(
-                    str(entry["rationale"]) if entry.get("rationale") else None
-                ),
-                failure_reason=str(entry.get("failure_reason", "")),
-                error_excerpt=str(entry.get("error_excerpt", "")),
-            )
-        )
-    return tuple(out)
 
 
 def write_failure_report(
@@ -208,7 +170,7 @@ def load_failure_report(
     iteration_path: Path,
 ) -> "FunctionalFailureReport | None":
     """Load :class:`FunctionalFailureReport` from a failed iteration directory."""
-    from ..functional_failure import FunctionalFailureReport
+    from ..failure import FunctionalFailureReport
 
     path = failure_report_path(iteration_path)
     if not path.is_file():

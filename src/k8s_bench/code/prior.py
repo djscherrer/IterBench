@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from ..functional_failure import FunctionalFailureReport
+from ..failure import FunctionalFailureReport
 from ..workspace import (
     iteration_folder_is_failed,
     iterations_root,
