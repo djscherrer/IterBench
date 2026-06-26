@@ -7,6 +7,9 @@
 
 set -euo pipefail
 
+REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+export PYTHONPATH="${REPO_ROOT}/src${PYTHONPATH:+:${PYTHONPATH}}"
+
 # --- 1. Remote Benchmarking / Topology ---
 BAXBENCH_SYSTEM_TOPOLOGY="${BAXBENCH_SYSTEM_TOPOLOGY:-2C-1B-1DB}"
 
@@ -83,4 +86,4 @@ echo "Extra env: ${BASE_ENV[*]}"
 echo "Command: pipenv run python src/main.py ${ARGS[*]}"
 echo ""
 
-env "${BASE_ENV[@]}" pipenv run python src/main.py "${ARGS[@]}"
+env "${BASE_ENV[@]}" bash -c 'cd "$1" && pipenv run python src/main.py "${@:2}"' _ "$REPO_ROOT" "${ARGS[@]}"

@@ -3,6 +3,9 @@
 # BaxBench - Generation Mode Script
 # Use this script to generate code for your scenarios.
 
+REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+export PYTHONPATH="${REPO_ROOT}/src${PYTHONPATH:+:${PYTHONPATH}}"
+
 # --- 1. Model Selection ---
 MODELS="openai/gpt-5.4-2026-03-05 anthropic/claude-opus-4-6 deepseek/deepseek-v3.2" # e.g. "gpt-5.4 gpt-5.4-2026-03-05 anthropic/claude-opus-4-6"
 TEMPERATURE="0.2"
@@ -106,6 +109,6 @@ for _model in $MODELS; do
     echo ""
     echo "=== Generate run #$RUN_I: model='${_model}' openhands='${_openhands}' ==="
     echo "Executing: pipenv run python src/main.py ${ARGS[@]}"
-    pipenv run python src/main.py "${ARGS[@]}"
+    (cd "$REPO_ROOT" && pipenv run python src/main.py "${ARGS[@]}")
   done
 done

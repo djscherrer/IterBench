@@ -1,19 +1,21 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+
 # cleanup_docker_data.sh
 # Removes local .tar files under a results directory and performs
 # aggressive Docker cleanup on a list of remote hosts.
 #
 # Usage:
-#   ./scripts/cleanup_docker_data.sh [--preserve-volumes] [RESULTS_DIR] host1 host2 ...
+#   ./scripts/distributed_bench/cleanup_docker_data.sh [--preserve-volumes] [RESULTS_DIR] host1 host2 ...
 # Or set hosts via env var:
-#   BAXBENCH_CLEANUP_HOSTS="host1 host2" ./scripts/cleanup_docker_data.sh
+#   BAXBENCH_CLEANUP_HOSTS="host1 host2" ./scripts/distributed_bench/cleanup_docker_data.sh
 #
 # By default this will remove containers, images, networks, volumes and builder cache
 # on the remote hosts. Use --preserve-volumes to skip volume pruning.
 
-RESULTS_DIR="results"
+RESULTS_DIR="${REPO_ROOT}/results"
 PRESERVE_VOLUMES=0
 
 usage() {
@@ -41,6 +43,9 @@ fi
 
 if [ "$#" -gt 0 ] && [[ ! "$1" =~ ^- ]]; then
   RESULTS_DIR="$1"
+  if [[ "$RESULTS_DIR" != /* ]]; then
+    RESULTS_DIR="$REPO_ROOT/$RESULTS_DIR"
+  fi
   shift
 fi
 

@@ -3,6 +3,9 @@
 # BaxBench - Evaluation Mode Script
 # Use this script to evaluate results and print performance tables.
 
+REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+export PYTHONPATH="${REPO_ROOT}/src${PYTHONPATH:+:${PYTHONPATH}}"
+
 # --- 1. Evaluation Targets ---
 MODELS="anthropic/claude-opus-4.6"
 ONLY_SAMPLES=""         # Specify indices, e.g. "0 1 2"
@@ -45,4 +48,4 @@ add_arg "--scenarios" "$SCENARIOS"
 add_arg "--results_dir" "$RESULTS_DIR"
 
 echo "Executing: pipenv run python src/main.py ${ARGS[@]}"
-pipenv run python src/main.py "${ARGS[@]}"
+(cd "$REPO_ROOT" && pipenv run python src/main.py "${ARGS[@]}")

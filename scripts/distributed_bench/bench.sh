@@ -3,6 +3,9 @@
 # BaxBench - Benchmarking Mode Script
 # Use this script to run load tests on your generated code (Locust).
 
+REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+export PYTHONPATH="${REPO_ROOT}/src${PYTHONPATH:+:${PYTHONPATH}}"
+
 # --- 1. Execution Targets ---
 MODELS="anthropic/claude-opus-4.6 deepseek/deepseek-v3.2"
 # Provider is inferred from the model prefix (e.g. openai/... anthropic/... deepseek/...).
@@ -72,7 +75,7 @@ BAXBENCH_LOG_COMMANDS="false"
 # Collect docker logs from LB/backends/DB into results folder.
 BAXBENCH_COLLECT_DOCKER_LOGS="true"
 
-# --- Post-bench plotting (same workflow as scripts/plot.sh --plot-run-dir) ---
+# --- Post-bench plotting (same workflow as scripts/distributed_bench/plot.sh --plot-run-dir) ---
 # When "true", after bench finishes, generates per-run plots (backend vs DB, throughput,
 # remote perf) for each perf-* directory created in this invocation.
 PLOT_AFTER_BENCH="true"
@@ -179,7 +182,7 @@ for _model in $MODELS; do
         echo "=== Bench run #$RUN_I: model='${_model}' openhands='${_openhands}' topology='$topo' load_profile='$profile' ==="
         echo "Extra env: ${EXTRA_ENV[*]}"
         echo "Command: pipenv run python src/main.py ${ARGS[*]}"
-        env "${EXTRA_ENV[@]}" pipenv run python src/main.py "${ARGS[@]}"
+        env "${EXTRA_ENV[@]}" bash -c 'cd "$1" && pipenv run python src/main.py "${@:2}"' _ "$REPO_ROOT" "${ARGS[@]}"
         RC=$?
         if [ $RC -ne 0 ]; then
             echo "Bench run #$RUN_I failed (exit=$RC). Stopping."

@@ -3,6 +3,9 @@
 # BaxBench - Test Mode Script
 # Use this script to run functional and security tests on your generated code.
 
+REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+export PYTHONPATH="${REPO_ROOT}/src${PYTHONPATH:+:${PYTHONPATH}}"
+
 # --- 1. Execution Targets ---
 MODELS="deepseek/deepseek-v3.2 openai/gpt-5.4-2026-03-05 anthropic/claude-opus-4-6" # e.g. "gpt-5.4 gpt-5.4-2026-03-05 anthropic/claude-opus-4-6"
 ONLY_SAMPLES=""         # Specify indices, e.g. "0 1 2"
@@ -92,6 +95,6 @@ for _model in $MODELS; do
     echo ""
     echo "=== Test run #$RUN_I: model='${_model}' openhands='${_openhands}' ==="
     echo "Executing: pipenv run python src/main.py ${ARGS[@]}"
-    pipenv run python src/main.py "${ARGS[@]}"
+    (cd "$REPO_ROOT" && pipenv run python src/main.py "${ARGS[@]}")
   done
 done

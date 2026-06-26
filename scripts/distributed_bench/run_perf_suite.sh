@@ -6,6 +6,9 @@
 
 set -u
 
+REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+export PYTHONPATH="${REPO_ROOT}/src${PYTHONPATH:+:${PYTHONPATH}}"
+
 # --- 1. Mode Selection ---
 # Available: generate test bench evaluate plot
 MODES="test bench evaluate plot"
@@ -131,7 +134,7 @@ run_step() {
     echo
     echo "===== $label ====="
     echo "Executing: pipenv run python src/main.py $*"
-    pipenv run python src/main.py "$@"
+    (cd "$REPO_ROOT" && pipenv run python src/main.py "$@")
     local rc=$?
     if [ $rc -ne 0 ]; then
         FAILURES+=("$label (exit $rc)")

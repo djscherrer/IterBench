@@ -3,6 +3,9 @@
 # BaxBench - Plot Mode Script
 # Use this script to generate plots from benchmarking results.
 
+REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+export PYTHONPATH="${REPO_ROOT}/src${PYTHONPATH:+:${PYTHONPATH}}"
+
 # --- 1. Execution Targets ---
 MODELS="anthropic/claude-opus-4.6"
 ONLY_SAMPLES="9"        # Specify indices, e.g. "0 1 2"; leave empty to use N_SAMPLES
@@ -48,8 +51,8 @@ add_arg "--scenarios" "$SCENARIOS"
 add_arg "--results_dir" "$RESULTS_DIR"
 
 # --- Run ---
-ROOT="${RESULTS_DIR:-results}"
-CMD_BASE="pipenv run python src/main.py"
+RESULTS_ROOT="${RESULTS_DIR:-$REPO_ROOT/results}"
+CMD_BASE="cd $(printf '%q' "$REPO_ROOT") && pipenv run python src/main.py"
 
 if [ -n "$PLOT_RUN_DIR" ] && [ "$PLOT_RUN_DIR" != "AUTO" ]; then
   # Single run-dir mode.
@@ -75,11 +78,11 @@ if [ -n "$PLOT_RUN_DIR" ] && [ "$PLOT_RUN_DIR" != "AUTO" ]; then
   exit $?
 fi
 
-# AUTO mode: plot every perf-* run dir under ROOT that contains a bench.log.
+# AUTO mode: plot every perf-* run dir under RESULTS_ROOT that contains a bench.log.
 shopt -s nullglob globstar
-RUN_DIRS=( "$ROOT"/**/perf-* )
+RUN_DIRS=( "$RESULTS_ROOT"/**/perf-* )
 if [ "${#RUN_DIRS[@]}" -eq 0 ]; then
-  echo "No perf-* run dirs found under: $ROOT"
+  echo "No perf-* run dirs found under: $RESULTS_ROOT"
   exit 0
 fi
 
@@ -90,7 +93,7 @@ for d in "${RUN_DIRS[@]}"; do
   total=$((total + 1))
 done
 if [ "$total" -eq 0 ]; then
-  echo "No perf-* run dirs with bench.log found under: $ROOT"
+  echo "No perf-* run dirs with bench.log found under: $RESULTS_ROOT"
   exit 0
 fi
 

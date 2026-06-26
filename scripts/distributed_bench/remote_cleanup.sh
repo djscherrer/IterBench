@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+
 ###############################################################################
 # Configuration (edit these defaults)
 ###############################################################################
@@ -19,12 +21,12 @@ usage() {
 remote_cleanup.sh - clean up BaxBench remote artifacts
 
 Usage:
-  scripts/remote_cleanup.sh                 # uses DEFAULT_HOSTS
-  scripts/remote_cleanup.sh host1 host2 ... # overrides DEFAULT_HOSTS
+  scripts/distributed_bench/remote_cleanup.sh                 # uses DEFAULT_HOSTS
+  scripts/distributed_bench/remote_cleanup.sh host1 host2 ... # overrides DEFAULT_HOSTS
 
 Examples:
-  scripts/remote_cleanup.sh
-  scripts/remote_cleanup.sh r630-02 r630-03 r630-04 r630-05 r630-08
+  scripts/distributed_bench/remote_cleanup.sh
+  scripts/distributed_bench/remote_cleanup.sh r630-02 r630-03 r630-04 r630-05 r630-08
 
 What it does (default):
   - Kills BaxBench SSH tunnel processes on each host (port forwards)

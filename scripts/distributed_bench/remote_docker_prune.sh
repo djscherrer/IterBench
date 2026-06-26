@@ -6,7 +6,7 @@ usage() {
 remote_docker_prune.sh - prune docker state on remote hosts over SSH
 
 USAGE:
-  ./scripts/remote_docker_prune.sh --hosts "host1 host2 host3" [options]
+  ./scripts/distributed_bench/remote_docker_prune.sh --hosts "host1 host2 host3" [options]
 
 OPTIONS:
   --hosts "<h1 h2 ...>"   Whitespace-separated SSH hostnames (required)
@@ -27,9 +27,9 @@ NOTES:
   - Requires passwordless SSH access or an ssh-agent.
 
 EXAMPLES:
-  ./scripts/remote_docker_prune.sh --hosts "app1 app2 load1" --dry-run
-  ./scripts/remote_docker_prune.sh --hosts "app1 app2 load1" --parallel 4 --force
-  ./scripts/remote_docker_prune.sh --hosts "app1 app2" --no-images --containers --force
+  ./scripts/distributed_bench/remote_docker_prune.sh --hosts "app1 app2 load1" --dry-run
+  ./scripts/distributed_bench/remote_docker_prune.sh --hosts "app1 app2 load1" --parallel 4 --force
+  ./scripts/distributed_bench/remote_docker_prune.sh --hosts "app1 app2" --no-images --containers --force
 EOF
 }
 
