@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 import re
 from pathlib import Path
 
@@ -35,17 +34,19 @@ def normalize_experiment_id(raw: str) -> str:
     return slug
 
 
-def resolve_k8s_experiment_id() -> str:
-    """Active experiment slug from ``BAXBENCH_K8S_EXPERIMENT``, else ``default``."""
-    value = os.environ.get("BAXBENCH_K8S_EXPERIMENT", "").strip()
-    if value:
-        return normalize_experiment_id(value)
+def resolve_k8s_experiment_id(experiment_id: str | None = None) -> str:
+    """Normalize an experiment slug; ``None`` or empty → ``default``."""
+    if experiment_id and experiment_id.strip():
+        return normalize_experiment_id(experiment_id)
     return DEFAULT_EXPERIMENT_SLUG
 
 
-def k8s_workspace_root(sample_dir: Path) -> Path:
+def k8s_workspace_root(
+    sample_dir: Path, *, experiment_id: str | None = None
+) -> Path:
     """Root for one experiment: ``sampleN/k8s-experiments/<slug>/``."""
-    return sample_dir / K8S_EXPERIMENTS_DIRNAME / resolve_k8s_experiment_id()
+    slug = resolve_k8s_experiment_id(experiment_id)
+    return sample_dir / K8S_EXPERIMENTS_DIRNAME / slug
 
 
 def experiment_root_from_iteration_path(iteration_path: Path) -> Path:
@@ -73,8 +74,10 @@ def experiment_root_from_iteration_path(iteration_path: Path) -> Path:
     )
 
 
-def iterations_root(sample_dir: Path) -> Path:
-    return k8s_workspace_root(sample_dir) / ITERATIONS_DIRNAME
+def iterations_root(
+    sample_dir: Path, *, experiment_id: str | None = None
+) -> Path:
+    return k8s_workspace_root(sample_dir, experiment_id=experiment_id) / ITERATIONS_DIRNAME
 
 
 def normalize_iteration_id(raw: str) -> str:
@@ -325,17 +328,16 @@ def iteration_code_snapshot_dir(iteration_path: Path) -> Path:
     return iteration_code_phase_dir(iteration_path) / "code"
 
 
-def latest_code_dir(sample_dir: Path, *, fallback: Path) -> Path:
+def find_latest_code_dir(sample_dir: Path) -> Path | None:
     """
-    Return the newest non-failed iteration ``code/`` snapshot, else ``fallback``.
+    Newest non-failed iteration ``02-code/code/`` snapshot, or ``None``.
 
-    Refined code lives under ``iterations/iteration-NNN-*/02-code/code/``.
-    For k8s bench, pass :func:`k8s_fallback_code_dir` as ``fallback`` — not
-    sample-level ``code/`` from distributed bench.
+    Excludes ``-failed`` folders so a broken code-refinement attempt does not
+    become the copy source for deployment/spec iterations.
     """
     root = iterations_root(sample_dir)
     if not root.is_dir():
-        return fallback
+        return None
     best: tuple[int, Path] | None = None
     for child in root.iterdir():
         if not child.is_dir() or iteration_folder_is_failed(child.name):
@@ -348,7 +350,18 @@ def latest_code_dir(sample_dir: Path, *, fallback: Path) -> Path:
             continue
         if best is None or idx > best[0]:
             best = (idx, code_dir)
-    return best[1] if best is not None else fallback
+    return best[1] if best is not None else None
+
+
+def latest_code_dir(sample_dir: Path, *, fallback: Path) -> Path:
+    """
+    Return the newest non-failed iteration ``code/`` snapshot, else ``fallback``.
+
+    Refined code lives under ``iterations/iteration-NNN-*/02-code/code/``.
+    For k8s bench, pass :func:`k8s_fallback_code_dir` as ``fallback`` — not
+    sample-level ``code/`` from distributed bench.
+    """
+    return find_latest_code_dir(sample_dir) or fallback
 
 
 def k8s_fallback_code_dir(sample_dir: Path) -> Path:
@@ -501,10 +514,12 @@ def iteration_bench_dir(iteration_path: Path) -> Path:
     return iteration_path / PHASE_BENCH_DIRNAME
 
 
-def default_k8s_namespace(iteration_id: str) -> str:
+def default_k8s_namespace(
+    iteration_id: str, *, experiment_id: str | None = None
+) -> str:
     """Kubernetes namespace for an iteration (includes experiment slug)."""
     iid = normalize_iteration_id(iteration_id)
-    eid = resolve_k8s_experiment_id()
+    eid = resolve_k8s_experiment_id(experiment_id)
     return f"baxbench-{eid}-{iid}"
 
 

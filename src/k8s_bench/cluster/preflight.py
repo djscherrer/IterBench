@@ -158,7 +158,7 @@ def ensure_k8s_cluster_ready(
     kube-system, dry-run apply).
     """
     log = logger or logging.getLogger("baxbench.k8s.cluster")
-    name = (profile_name or os.environ.get("BAXBENCH_K8S_CLUSTER", "") or "").strip() or None
+    name = (profile_name or "").strip() or None
     if name:
         apply_cluster_profile_to_env(name)
         log.info("Using K8s cluster profile: %s", name)

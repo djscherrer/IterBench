@@ -1,7 +1,8 @@
 """
 Orchestration layer for the k8s benchmark loop.
 
-This package owns the *story* of one ``run_iterative_k8s_bench`` invocation:
+This package owns the *story* of one iterative k8s experiment
+(``loop._run_iterative_experiment_for_task``):
 
 - :mod:`config`     – frozen dataclasses for each scope (run / sample / iteration).
 - :mod:`preflight`  – sample workspace setup; postlude cleanup.
@@ -22,18 +23,19 @@ from .config import (
     IterationOutcome,
     IterationPlan,
     IterationSetup,
-    PriorIteration,
     RefinementAction,
     RunConfig,
     SampleContext,
 )
+from .lineage import IterationLineage, SpecRef
 
 __all__ = [
+    "IterationLineage",
     "IterationOutcome",
     "IterationPlan",
     "IterationSetup",
-    "PriorIteration",
     "RefinementAction",
     "RunConfig",
     "SampleContext",
+    "SpecRef",
 ]

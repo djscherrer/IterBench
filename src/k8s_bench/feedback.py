@@ -9,7 +9,7 @@ import json
 import logging
 import re
 from collections import defaultdict
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -31,55 +31,13 @@ from .workspace import (
 
 
 @dataclass(frozen=True)
-class FailedAttempt:
-    """One iteration that ran between the last successful bench and the current phase."""
-
-    iteration_id: str
-    kind: str
-    refinement_action: str | None
-    rationale: str | None
-    failure_reason: str
-    error_excerpt: str = ""
-
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "iteration_id": self.iteration_id,
-            "kind": self.kind,
-            "refinement_action": self.refinement_action,
-            "rationale": self.rationale,
-            "failure_reason": self.failure_reason,
-            "error_excerpt": self.error_excerpt,
-        }
-
-    def to_prompt_block(self) -> str:
-        lines = [
-            f"- Iteration `{self.iteration_id}` (kind={self.kind}"
-            + (f", action={self.refinement_action}" if self.refinement_action else "")
-            + ")",
-            f"  - Failure reason: {self.failure_reason or '(unspecified)'}",
-        ]
-        if self.rationale:
-            rationale = self.rationale.strip().replace("\n", " ")
-            if len(rationale) > 400:
-                rationale = rationale[:400] + "…"
-            lines.append(f"  - Rationale at the time: {rationale}")
-        if self.error_excerpt:
-            excerpt = self.error_excerpt.strip()
-            if len(excerpt) > 800:
-                excerpt = excerpt[:800] + "\n…(truncated)"
-            lines.extend(["  - Error excerpt:", "    ```", excerpt, "    ```"])
-        return "\n".join(lines)
-
-
-@dataclass(frozen=True)
 class IterationFeedback:
     """
-    Structured summary of one prior iteration.
+    Structured summary of one prior iteration for the **decision** prompt.
 
-    A feedback object can describe either a **successful** iteration (full
-    Locust + kubectl data) or a **failed** one (no bench, no k8s metrics, just
-    the failure reason + an error excerpt + the spec that was attempted). The
-    ``status`` field distinguishes the two; the renderer adapts.
+    Success: Locust + diagnostics. Failure: reason + error excerpt only.
+    Code/spec content is referenced via conversation history pointers, not
+    inlined here.
     """
 
     iteration_id: str
@@ -87,27 +45,25 @@ class IterationFeedback:
     locust_summary: str
     error_excerpt: str
     pod_utilization: str
-    previous_spec_yaml: str
     benchmark_context: str = ""
     load_run_summary: str = ""
     diagnostics_summary: str = ""
     notes: str = ""
-    failed_attempts: tuple[FailedAttempt, ...] = field(default_factory=tuple)
     status: str = "success"  # "success" | "failed"
     failure_reason: str = ""
-    failure_kind: str = ""  # "spec" | "code" | "baseline" | "" for success
+    failure_kind: str = ""  # "spec" | "code" | "baseline" | "deploy" | "" for success
     decision_rationale: str = ""
 
     @property
     def is_failed(self) -> bool:
         return self.status == "failed"
 
-    def to_prompt_text(self, *, include_spec_yaml: bool = True) -> str:
+    def to_prompt_text(self) -> str:
         if self.is_failed:
-            return self._to_prompt_text_failed(include_spec_yaml=include_spec_yaml)
-        return self._to_prompt_text_success(include_spec_yaml=include_spec_yaml)
+            return self._to_prompt_text_failed()
+        return self._to_prompt_text_success()
 
-    def _to_prompt_text_success(self, *, include_spec_yaml: bool = True) -> str:
+    def _to_prompt_text_success(self) -> str:
         parts = [
             f"Most recent successful iteration: {self.iteration_id}",
             "",
@@ -140,51 +96,23 @@ class IterationFeedback:
             "",
             self.diagnostics_summary.strip() or "(no diagnostics collected)",
         ]
-        if include_spec_yaml:
-            parts.extend(
-                [
-                    "",
-                    "## Previous spec.yaml",
-                    "```yaml",
-                    self.previous_spec_yaml.strip() or "(missing)",
-                    "```",
-                ]
-            )
-        if self.failed_attempts:
-            parts.extend(
-                [
-                    "",
-                    "## Failed attempts since this last successful iteration",
-                    (
-                        "The iterations below were attempted after "
-                        f"`{self.iteration_id}` but did not produce benchmark "
-                        "results. Treat them as **anti-examples**: do not repeat "
-                        "the same change, and either fix the underlying cause or "
-                        "try a different direction."
-                    ),
-                    "",
-                    *[fa.to_prompt_block() for fa in self.failed_attempts],
-                ]
-            )
         if self.notes:
             parts.extend(["", "## Notes", self.notes])
         return "\n".join(parts)
 
-    def _to_prompt_text_failed(self, *, include_spec_yaml: bool = True) -> str:
+    def _to_prompt_text_failed(self) -> str:
         """Render feedback when the prior iteration failed before producing benchmark data."""
         kind_label = self.failure_kind or "iteration"
         parts = [
             f"Previous iteration: `{self.iteration_id}` — **FAILED** before benchmark.",
             "",
             "**No Locust or Kubernetes utilization data is available** for this "
-            "iteration; the change below was attempted but the benchmark never "
-            "ran. Read the failure reason and error excerpt, then propose a fix "
-            "that addresses the *cause* — do not blindly re-apply the same "
-            "change.",
+            "iteration. Read the failure reason and error excerpt, then propose a "
+            "fix that addresses the *cause*.",
             "",
             "## Failure",
             f"- **Stage**: `{kind_label}` "
-            "(`baseline`/`spec` = manifest could not be deployed; "
+            "(`baseline`/`spec`/`deploy` = manifest/cluster could not be deployed; "
             "`code` = functional tests did not pass after code refinement)",
             f"- **Reason**: {self.failure_reason or '(unspecified)'}",
         ]
@@ -198,11 +126,6 @@ class IterationFeedback:
                 "",
                 "## Error excerpt",
                 self.error_excerpt.strip() or "(no error excerpt captured)",
-                "",
-                "## Spec that was attempted",
-                "```yaml",
-                self.previous_spec_yaml.strip() or "(no spec.yaml on disk)",
-                "```",
                 "",
                 "## Locust results",
                 "(no Locust data — benchmark did not run for this iteration)",
@@ -561,11 +484,9 @@ def collect_iteration_feedback(
     if bench_log_path.is_file():
         bench_log = bench_log_path.read_text(encoding="utf-8", errors="replace")
 
-    spec_yaml = ""
     spec: K8sWorkloadSpec | None = None
     spec_path = find_iteration_spec_path(iteration_path)
     if spec_path is not None and spec_path.is_file():
-        spec_yaml = spec_path.read_text(encoding="utf-8", errors="replace")
         try:
             spec = K8sWorkloadSpec.from_yaml_file(spec_path)
         except ValueError:
@@ -614,7 +535,6 @@ def collect_iteration_feedback(
         locust_summary=_locust_summary_from_run_dir(perf_run_dir, bench_log),
         error_excerpt=_extract_error_excerpt(bench_log),
         pod_utilization=k8s_util,
-        previous_spec_yaml=spec_yaml,
         benchmark_context=benchmark_context_from_config(run_config),
         load_run_summary=summarize_load_run(bench_log),
         diagnostics_summary=diagnostics.to_prompt_block(),
@@ -747,26 +667,21 @@ def _failed_iteration_feedback(
 
     meta = read_iteration_meta(iteration_path) or {}
     failure_reason = str(meta.get("failure_reason") or "").strip()
-    raw_kind = meta.get("refinement_action") or ""
-    kind = str(raw_kind) if raw_kind in {"code", "spec", "baseline"} else ""
+    raw_kind = meta.get("failure_kind") or meta.get("refinement_action") or ""
+    kind = (
+        str(raw_kind)
+        if raw_kind in {"code", "spec", "baseline", "deploy"}
+        else ""
+    )
     rationale = read_decision_rationale(iteration_path) or ""
     excerpt = read_failed_iteration_error_excerpt(iteration_path)
-    spec_path = find_iteration_spec_path(iteration_path)
-    attempted_spec = ""
-    if spec_path is not None and spec_path.is_file():
-        try:
-            attempted_spec = spec_path.read_text(encoding="utf-8", errors="replace")
-        except OSError:
-            attempted_spec = ""
     return IterationFeedback(
         iteration_id=str(meta.get("iteration_id") or iteration_id),
         perf_run_dir="",
         locust_summary="",
         error_excerpt=excerpt,
         pod_utilization="",
-        previous_spec_yaml=attempted_spec,
         notes="",
-        failed_attempts=(),
         status="failed",
         failure_reason=failure_reason or "(no reason recorded)",
         failure_kind=kind,

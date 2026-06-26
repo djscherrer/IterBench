@@ -91,7 +91,7 @@ def _ensure_header(path: Path, *, sample_dir: Path, load_profile: str | None = N
             "(adaptive ramp; collapsible utilization + run metrics when collected).",
             "",
             f"- **LLM cost ledger**: `{k8s_workspace_root(sample_dir) / 'llm_cost_ledger.json'}` "
-            "(estimated; set `BAXBENCH_LLM_MAX_COST` to cap spend)",
+            "(estimated; pass --llm-max-cost to cap spend)",
             "",
             "---",
             "",
@@ -960,13 +960,6 @@ def append_baseline_codegen_block(
     code to pass the functional test suite — and which attempts' transcripts
     live under ``02-code/attempts/<NNN>/`` for forensics on the failures.
     """
-    if os.environ.get("BAXBENCH_K8S_EXPERIMENT_SUMMARY", "true").lower() in (
-        "0",
-        "false",
-        "no",
-    ):
-        return experiment_summary_path(sample_dir)
-
     path = experiment_summary_path(sample_dir)
     _ensure_header(path, sample_dir=sample_dir, load_profile=load_profile)
     iid = normalize_iteration_id("iteration-000")
@@ -1134,13 +1127,6 @@ def append_spec_generation_block(
     load_profile: str | None = None,
 ) -> Path:
     """Append spec-generation subsection for one iteration."""
-    if os.environ.get("BAXBENCH_K8S_EXPERIMENT_SUMMARY", "true").lower() in (
-        "0",
-        "false",
-        "no",
-    ):
-        return experiment_summary_path(sample_dir)
-
     path = experiment_summary_path(sample_dir)
     _ensure_header(path, sample_dir=sample_dir, load_profile=load_profile)
     iid = normalize_iteration_id(iteration_id)
@@ -1426,13 +1412,6 @@ def append_perf_run_block(
     load_profile: str | None = None,
 ) -> Path:
     """Append Locust / adaptive perf subsection for one iteration."""
-    if os.environ.get("BAXBENCH_K8S_EXPERIMENT_SUMMARY", "true").lower() in (
-        "0",
-        "false",
-        "no",
-    ):
-        return experiment_summary_path(sample_dir)
-
     path = experiment_summary_path(sample_dir)
     _ensure_header(path, sample_dir=sample_dir, load_profile=load_profile)
     iid = normalize_iteration_id(iteration_id)
@@ -1557,13 +1536,6 @@ def append_iteration_failure_block(
     and surfaces an explicit **Infrastructure failure** banner when the FT run
     was blocked by the test harness rather than the application.
     """
-    if os.environ.get("BAXBENCH_K8S_EXPERIMENT_SUMMARY", "true").lower() in (
-        "0",
-        "false",
-        "no",
-    ):
-        return experiment_summary_path(sample_dir)
-
     path = experiment_summary_path(sample_dir)
     _ensure_header(path, sample_dir=sample_dir, load_profile=load_profile)
     iid = normalize_iteration_id(iteration_id)
@@ -1707,13 +1679,6 @@ def append_refinement_decision_block(
     load_profile: str | None = None,
 ) -> Path:
     """Append deployment-vs-code decision before a phase's spec generation."""
-    if os.environ.get("BAXBENCH_K8S_EXPERIMENT_SUMMARY", "true").lower() in (
-        "0",
-        "false",
-        "no",
-    ):
-        return experiment_summary_path(sample_dir)
-
     path = experiment_summary_path(sample_dir)
     _ensure_header(path, sample_dir=sample_dir, load_profile=load_profile)
     iid = normalize_iteration_id(iteration_id)

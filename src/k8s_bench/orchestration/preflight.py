@@ -13,7 +13,6 @@ cost summary, clean up k8s namespaces.
 from __future__ import annotations
 
 import logging
-import os
 from pathlib import Path
 from typing import Any
 
@@ -35,8 +34,8 @@ from ..workspace import (
     k8s_workspace_root,
     latest_code_dir,
     materialize_code_lineage,
+    normalize_experiment_id,
     resolve_iteration_dir,
-    resolve_k8s_experiment_id,
 )
 from .config import RunConfig, SampleContext
 
@@ -45,10 +44,11 @@ def build_run_config(
     *,
     timeout: int,
     force: bool,
+    k8s_cluster: str,
     k8s_iteration: str | None,
     k8s_iterations: int,
     k8s_wait_timeout: int,
-    k8s_refinement: str | None,
+    k8s_refinement: str,
     ft_timeout: int | None,
     num_ports: int,
     min_port: int,
@@ -59,19 +59,26 @@ def build_run_config(
     base_delay: float,
     max_delay: float,
     vllm_port: int,
+    load_profile: str = "quick-check",
+    k8s_experiment_id: str | None = None,
+    llm_max_cost_usd: float | None = None,
     baseline_code_max_attempts: int = 3,
     baseline_spec_max_attempts: int = 5,
 ) -> RunConfig:
-    """Resolve env-derived knobs (load profile, refinement mode, iteration plan)."""
+    """Build :class:`RunConfig` from explicit caller parameters."""
+    cluster = (k8s_cluster or "").strip()
+    if not cluster:
+        raise ValueError("k8s_cluster is required")
+    experiment_id = normalize_experiment_id(k8s_experiment_id or "default")
     iteration_ids = _plan_iteration_ids(
         num_refinement_iterations=k8s_iterations,
-        explicit_iteration=k8s_iteration
-        or os.environ.get("BAXBENCH_K8S_ITERATION")
-        or None,
+        explicit_iteration=k8s_iteration,
     )
     return RunConfig(
-        load_profile=os.environ.get("BAXBENCH_LOAD_PROFILE", "quick-check"),
-        experiment_id=resolve_k8s_experiment_id(),
+        load_profile=load_profile,
+        experiment_id=experiment_id,
+        k8s_cluster=cluster,
+        llm_max_cost_usd=llm_max_cost_usd,
         refinement_mode=resolve_refinement_mode(k8s_refinement),
         iteration_ids=iteration_ids,
         total_iterations=len(iteration_ids),
@@ -120,17 +127,23 @@ def sample_preflight(
     cfg: RunConfig,
 ) -> SampleContext | None:
     """Ensure experiment workspace exists; return context (no baseline codegen)."""
-    del cfg
     task_run_dir = task.get_save_dir(results_dir)
     sample_dir = task.get_sample_dir(results_dir, sample)
-    k8s_workspace_root(sample_dir).mkdir(parents=True, exist_ok=True)
-    iterations_root(sample_dir).mkdir(parents=True, exist_ok=True)
+    k8s_workspace_root(sample_dir, experiment_id=cfg.experiment_id).mkdir(
+        parents=True, exist_ok=True
+    )
+    iterations_root(sample_dir, experiment_id=cfg.experiment_id).mkdir(
+        parents=True, exist_ok=True
+    )
     return SampleContext(
         task=task,
         results_dir=results_dir,
         sample=sample,
         sample_dir=sample_dir,
         task_run_dir=task_run_dir,
+        experiment_id=cfg.experiment_id,
+        k8s_cluster=cfg.k8s_cluster,
+        llm_max_cost_usd=cfg.llm_max_cost_usd,
     )
 
 
@@ -138,6 +151,7 @@ def sample_context_from_baseline_disk(
     task: Any,
     results_dir: Path,
     sample: int,
+    cfg: RunConfig,
 ) -> SampleContext | None:
     """
     Build :class:`SampleContext` from an existing baseline iteration on disk.
@@ -159,6 +173,9 @@ def sample_context_from_baseline_disk(
         task_run_dir,
         iteration_path,
         sample_logger,
+        experiment_id=cfg.experiment_id,
+        k8s_cluster=cfg.k8s_cluster,
+        llm_max_cost_usd=cfg.llm_max_cost_usd,
     )
     if ctx is not None:
         return ctx
@@ -187,6 +204,7 @@ def deploy_only_preflight(
     task_run_dir = task.get_save_dir(results_dir)
     sample_dir = task.get_sample_dir(results_dir, sample)
     sample_logger = logging.getLogger(task.id)
+    experiment_id = cfg.experiment_id
 
     ctx = _deploy_only_iteration_preflight(
         task,
@@ -196,6 +214,9 @@ def deploy_only_preflight(
         task_run_dir,
         iteration_path,
         sample_logger,
+        experiment_id=experiment_id,
+        k8s_cluster=cfg.k8s_cluster,
+        llm_max_cost_usd=cfg.llm_max_cost_usd,
     )
     if ctx is not None:
         return ctx
@@ -213,6 +234,9 @@ def deploy_only_preflight(
         task_run_dir,
         iteration_path,
         sample_logger,
+        experiment_id=experiment_id,
+        k8s_cluster=cfg.k8s_cluster,
+        llm_max_cost_usd=cfg.llm_max_cost_usd,
     )
     if ctx is not None:
         return ctx
@@ -234,6 +258,10 @@ def _deploy_only_iteration_preflight(
     task_run_dir: Path,
     iteration_path: Path,
     sample_logger: logging.Logger,
+    *,
+    experiment_id: str = "default",
+    k8s_cluster: str = "",
+    llm_max_cost_usd: float | None = None,
 ) -> SampleContext | None:
     iter_ft_results = iteration_functional_tests_dir(iteration_path) / "test_results.json"
     iter_test_log = iteration_functional_tests_dir(iteration_path) / "test.log"
@@ -269,6 +297,9 @@ def _deploy_only_iteration_preflight(
         sample_dir=sample_dir,
         task_run_dir=task_run_dir,
         base_image_id=image_id,
+        experiment_id=experiment_id,
+        k8s_cluster=k8s_cluster,
+        llm_max_cost_usd=llm_max_cost_usd,
     )
 
 
@@ -276,7 +307,7 @@ def sample_postlude(ctx: SampleContext) -> None:
     """Refresh LLM cost summary and clean up baxbench namespaces."""
     sample_logger = logging.getLogger(ctx.task.id)
     try:
-        refresh_k8s_cost_summary(ctx.sample_dir)
+        refresh_k8s_cost_summary(ctx.sample_dir, experiment_id=ctx.experiment_id)
     except Exception as exc:
         sample_logger.warning("Could not refresh LLM cost summary: %s", exc)
 

@@ -70,7 +70,7 @@ def resolve_registry_config(profile_name: str | None = None, *, logger: logging.
             return RegistryConfig(host=host, port=int(port_s))
         return RegistryConfig(host=env_ep)
 
-    name = (profile_name or os.environ.get("BAXBENCH_K8S_CLUSTER", "") or "").strip()
+    name = (profile_name or "").strip()
     if not name:
         return None
     try:
@@ -313,7 +313,7 @@ def run_registry_setup(
     """
     Start registry on control-plane and configure containerd on all cluster nodes.
     """
-    name = (profile_name or os.environ.get("BAXBENCH_K8S_CLUSTER", "") or "").strip() or None
+    name = (profile_name or "").strip() or None
     if registry_host:
         registry = RegistryConfig(host=registry_host.strip(), port=registry_port)
     else:
@@ -333,7 +333,7 @@ def run_registry_setup(
         _configure_docker_insecure_local(registry, logger)
     else:
         raise RuntimeError(
-            f"Run k8s-setup-registry on the control-plane host ({control_plane}), not via SSH to it."
+            f"Run k8s_setup_cluster.sh on the control-plane host ({control_plane}), not via SSH to it."
         )
 
     hosts = _dedupe_hosts(node_hosts)

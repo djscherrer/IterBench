@@ -24,7 +24,7 @@ from ..workspace import (
 from ..orchestration.config import IterationPlan, RunConfig, SampleContext
 
 
-def record_outcome(
+def run_outcome_stage(
     ctx: SampleContext,
     plan: IterationPlan,
     run_dir: Path,

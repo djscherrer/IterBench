@@ -571,7 +571,7 @@ def _write_spec_attempt_meta(
     )
 
 
-def _record_probe_failure_on_last_attempt(
+def record_spec_deploy_probe_failure(
     iteration_path: pathlib.Path,
     *,
     probe_reason: str,
@@ -630,6 +630,8 @@ def generate_k8s_workload_spec(
     enable_attempts: bool = False,
     session: "Prompter | None" = None,
     artifact_pointers: ArtifactPointers | None = None,
+    experiment_id: str = "default",
+    llm_max_cost_usd: float | None = None,
 ) -> tuple[K8sWorkloadSpec, str, list[str]]:
     """Call the configured LLM and return (spec, raw_response, validation_warnings).
 
@@ -668,10 +670,8 @@ def generate_k8s_workload_spec(
         # refinement iterations write only the top-level prompt/response
         # logs and rely on git/snapshot diffs across iterations for
         # forensics. The global index (across both validation retries
-        # inside a single call and across baseline deploy-probe rounds in
-        # the outer loop) is read from disk, so a fresh
-        # ``generate_baseline_spec_until_deployable`` iteration picks up
-        # the next free slot automatically.
+        # inside a single call and across outer deploy-probe rounds in
+        # ``stages.spec``) picks up the next free slot automatically.
         per_attempt_dir: pathlib.Path | None = None
         global_attempt_idx = 0
         if iteration_path is not None:
@@ -699,7 +699,11 @@ def generate_k8s_workload_spec(
             if sample_dir is not None:
                 from ..llm_cost import check_k8s_llm_budget, record_k8s_llm_call
 
-                check_k8s_llm_budget(sample_dir)
+                check_k8s_llm_budget(
+                    sample_dir,
+                    experiment_id=experiment_id,
+                    max_cost_usd=llm_max_cost_usd,
+                )
             try:
                 responses = prompter.prompt_model(logger)
             except Exception:
@@ -724,7 +728,11 @@ def generate_k8s_workload_spec(
             if sample_dir is not None:
                 from ..llm_cost import check_k8s_llm_budget, record_k8s_llm_call
 
-                check_k8s_llm_budget(sample_dir)
+                check_k8s_llm_budget(
+                    sample_dir,
+                    experiment_id=experiment_id,
+                    max_cost_usd=llm_max_cost_usd,
+                )
             responses = prompter.prompt_model(logger)
         if sample_dir is not None:
             record_k8s_llm_call(
@@ -736,6 +744,8 @@ def generate_k8s_workload_spec(
                 or (iteration_spec_dir(iteration_path) if iteration_path else None),
                 iteration_id=iteration_id,
                 note=f"validation_attempt={attempt} global_attempt={global_attempt_idx}",
+                experiment_id=experiment_id,
+                max_cost_usd=llm_max_cost_usd,
             )
         if not responses:
             if session is not None and session.history:
@@ -956,185 +966,6 @@ def reuse_deployment_spec_for_iteration(
     return dest
 
 
-def generate_k8s_specs_for_task(
-    task: Any,
-    results_dir: Path,
-    samples: list[int],
-    force: bool,
-    *,
-    k8s_iteration: str | None = None,
-    iteration_path: Path | None = None,
-    max_retries: int = 3,
-    base_delay: float = 1.0,
-    max_delay: float = 60.0,
-    vllm_port: int = 8000,
-    prior_feedback: Any | None = None,
-    iteration_index: int = 1,
-) -> list[Path]:
-    """LLM spec per sample. Callers must run ``functional_tests_gate`` before calling."""
-    from tasks import esc
-
-    written: list[Path] = []
-    capacity = collect_cluster_capacity()
-
-    for sample in samples:
-        sample_dir = task.get_sample_dir(results_dir, sample)
-        iid = normalize_iteration_id(
-            k8s_iteration
-            or os.environ.get("BAXBENCH_K8S_ITERATION")
-            or new_iteration_id(sample_dir)
-        )
-        if iteration_path is None:
-            from k8s_bench.workspace import resolve_iteration_dir
-
-            iteration_path = resolve_iteration_dir(sample_dir, iid)
-            if not iteration_path.is_dir():
-                iteration_path = task.get_k8s_iteration_dir(results_dir, sample, iid)
-        ensure_iteration_core_layout(iteration_path)
-        spec_path = iteration_spec_path(iteration_path)
-        regen = force or iteration_index > 0
-        if find_iteration_spec_path(iteration_path) is not None and not regen:
-            existing = find_iteration_spec_path(iteration_path)
-            assert existing is not None
-            logging.getLogger(task.id).info(
-                "sample%d: spec exists at %s (use --force to regenerate)",
-                sample,
-                existing,
-            )
-            written.append(existing)
-            continue
-
-        log_file = iteration_spec_dir(iteration_path) / "phase.log"
-        with task.create_logger(log_file) as logger:
-            code_dir = latest_code_dir(
-                task.get_sample_dir(results_dir, sample),
-                fallback=k8s_fallback_code_dir(task.get_sample_dir(results_dir, sample)),
-            )
-            app_hints = _read_app_hints(code_dir)
-            labels = {
-                "baxbench.dev/model": esc(task.model),
-                "baxbench.dev/scenario": esc(task.scenario.id),
-                "baxbench.dev/env": esc(task.env.id),
-                "baxbench.dev/spec-gen": "true",
-            }
-
-            from ..session import get_experiment_session, persist_session
-
-            spec_session = get_experiment_session(
-                task, sample_dir, sample, vllm_port=vllm_port, logger=logger
-            )
-            retries = 0
-            while True:
-                try:
-                    spec, raw, warnings = generate_k8s_workload_spec(
-                        env=task.env,
-                        scenario=task.scenario,
-                        model=task.model,
-                        provider=task.provider,
-                        temperature=task.temperature,
-                        reasoning_effort=task.reasoning_effort,
-                        safety_prompt=task.safety_prompt,
-                        capacity=capacity,
-                        app_hints=app_hints,
-                        iteration_id=iid,
-                        logger=logger,
-                        vllm_port=vllm_port,
-                        prior_feedback=prior_feedback,
-                        sample_dir=sample_dir,
-                        iteration_path=iteration_path,
-                        session=spec_session,
-                    )
-                    persist_session(spec_session, sample_dir, logger=logger)
-                    spec = K8sWorkloadSpec(
-                        iteration_id=spec.iteration_id,
-                        namespace=spec.namespace,
-                        backend=BackendSpec.from_mapping(
-                            {
-                                "image": spec.backend.image,
-                                "replicas": spec.backend.replicas,
-                                "port": task.env.port,
-                                "web_concurrency": spec.backend.web_concurrency,
-                                "worker_class": spec.backend.worker_class,
-                                "worker_threads": spec.backend.worker_threads,
-                                "preload": spec.backend.preload,
-                                "max_requests": spec.backend.max_requests,
-                                "max_requests_jitter": spec.backend.max_requests_jitter,
-                                "backlog": spec.backend.backlog,
-                                "resources": {
-                                    "cpu_request": spec.backend.resources.cpu_request,
-                                    "cpu_limit": spec.backend.resources.cpu_limit,
-                                    "memory_request": spec.backend.resources.memory_request,
-                                    "memory_limit": spec.backend.resources.memory_limit,
-                                },
-                                "env": dict(spec.backend.env),
-                                "placement": {
-                                    "workers": list(spec.backend.placement_workers),
-                                    "spread_replicas": spec.backend.spread_replicas,
-                                },
-                            }
-                        ),
-                        database=spec.database,
-                        pooler=spec.pooler,
-                        read_pooler=spec.read_pooler,
-                        cache=spec.cache,
-                        labels={**spec.labels, **labels},
-                    )
-                    out = write_spec_generation_artifacts(
-                        iteration_path,
-                        spec=spec,
-                        raw_response=raw,
-                        capacity=capacity,
-                        warnings=warnings,
-                        logger=logger,
-                    )
-                    try:
-                        from ..experiment_summary import append_spec_generation_block
-
-                        summary_path = append_spec_generation_block(
-                            sample_dir=sample_dir,
-                            iteration_id=iid,
-                            iteration_path=iteration_path,
-                            spec=spec,
-                            raw_response=raw,
-                            warnings=warnings,
-                            had_prior_feedback=prior_feedback is not None,
-                            iteration_index=iteration_index,
-                        )
-                        logger.info("Updated experiment summary: %s", summary_path)
-                    except Exception as exc:
-                        logger.warning("Could not update experiment summary: %s", exc)
-                    written.append(out)
-                    break
-                except SpecValidationError as e:
-                    logger.error(
-                        "k8s spec validation failed for sample %d after LLM retries: %s",
-                        sample,
-                        e,
-                    )
-                    break
-                except Exception as e:
-                    retries += 1
-                    if retries > max_retries:
-                        logger.exception(
-                            "k8s spec generation failed for sample %d: %s",
-                            sample,
-                            e,
-                            exc_info=e,
-                        )
-                        break
-                    delay = min(base_delay * 2**retries, max_delay)
-                    logger.warning(
-                        "k8s spec gen retry %d/%d after %s (sleep %.1fs)",
-                        retries,
-                        max_retries,
-                        e,
-                        delay,
-                    )
-                    time.sleep(delay)
-
-    return written
-
-
 def _apply_task_labels_to_spec(
     spec: K8sWorkloadSpec,
     *,
@@ -1202,6 +1033,8 @@ def generate_and_write_spec(
     total_iterations: int = 0,
     vllm_port: int = 8000,
     enable_attempts: bool = False,
+    experiment_id: str = "default",
+    llm_max_cost_usd: float | None = None,
 ) -> tuple[Path | None, str | None]:
     """
     Generate spec via LLM, static-validate, write artifacts.
@@ -1225,7 +1058,12 @@ def generate_and_write_spec(
         else None
     )
     spec_session = get_experiment_session(
-        task, sample_dir, sample, vllm_port=vllm_port, logger=logger
+        task,
+        sample_dir,
+        sample,
+        vllm_port=vllm_port,
+        experiment_id=experiment_id,
+        logger=logger,
     )
     try:
         spec, raw, warnings = generate_k8s_workload_spec(
@@ -1251,8 +1089,12 @@ def generate_and_write_spec(
             enable_attempts=enable_attempts,
             session=spec_session,
             artifact_pointers=artifact_pointers,
+            experiment_id=experiment_id,
+            llm_max_cost_usd=llm_max_cost_usd,
         )
-        persist_session(spec_session, sample_dir, logger=logger)
+        persist_session(
+            spec_session, sample_dir, experiment_id=experiment_id, logger=logger
+        )
         spec = _apply_task_labels_to_spec(
             spec, task=task, results_dir=results_dir, sample=sample
         )
@@ -1285,89 +1127,4 @@ def generate_and_write_spec(
     except Exception as exc:
         logger.exception("spec generation failed: %s", exc, exc_info=exc)
         return None, str(exc)
-
-
-def generate_baseline_spec_until_deployable(
-    *,
-    task: Any,
-    results_dir: Path,
-    sample: int,
-    iteration_path: Path,
-    iteration_id: str,
-    logger: logging.Logger,
-    deploy_probe: Any,
-    iteration_index: int = 0,
-    total_iterations: int = 0,
-    vllm_port: int = 8000,
-    max_deploy_attempts: int | None = None,
-) -> tuple[Path | None, str | None]:
-    """
-    Baseline (iteration-000): retry spec generation until deploy probe passes.
-
-    ``deploy_probe`` is a zero-arg callable returning ``DeployProbeResult``.
-    """
-    if max_deploy_attempts is None:
-        max_deploy_attempts = int(
-            os.environ.get("BAXBENCH_K8S_BASELINE_SPEC_MAX_ATTEMPTS", "5")
-        )
-    capacity = collect_cluster_capacity()
-    validation_feedback: str | None = None
-    last_error = "baseline spec generation did not produce a deployable configuration"
-
-    for attempt in range(1, max_deploy_attempts + 1):
-        logger.info(
-            "baseline spec attempt %d/%d for sample %d",
-            attempt,
-            max_deploy_attempts,
-            sample,
-        )
-        spec_path, gen_error = generate_and_write_spec(
-            task=task,
-            results_dir=results_dir,
-            sample=sample,
-            iteration_path=iteration_path,
-            iteration_id=iteration_id,
-            logger=logger,
-            capacity=capacity,
-            prior_feedback=None,
-            validation_feedback=validation_feedback,
-            enable_attempts=True,
-            max_validation_retries=3,
-            iteration_index=iteration_index,
-            total_iterations=total_iterations,
-            vllm_port=vllm_port,
-        )
-        if spec_path is None:
-            last_error = gen_error or last_error
-            validation_feedback = gen_error
-            continue
-
-        probe = deploy_probe()
-        if probe.ok:
-            logger.info(
-                "baseline deploy probe passed on attempt %d for sample %d",
-                attempt,
-                sample,
-            )
-            return spec_path, None
-
-        last_error = probe.reason
-        validation_feedback = probe.to_prompt_feedback()
-        # Reach back into the spec ``attempts/`` log and mark the validation
-        # attempt that just produced this spec as ``deploy_probe_failed`` —
-        # the LLM produced a structurally valid spec but the cluster couldn't
-        # bring it up, and that distinction matters when debugging the chain.
-        _record_probe_failure_on_last_attempt(
-            iteration_path,
-            probe_reason=probe.reason,
-            probe_feedback=validation_feedback,
-        )
-        logger.warning(
-            "baseline deploy probe failed attempt %d/%d: %s",
-            attempt,
-            max_deploy_attempts,
-            probe.reason,
-        )
-
-    return None, last_error
 

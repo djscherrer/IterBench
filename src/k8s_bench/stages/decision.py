@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -17,7 +16,7 @@ from ..prompt_helpers import (
 )
 
 RefinementAction = Literal["deployment", "code"]
-RefinementMode = Literal["auto", "deployment", "code", "off"]
+RefinementMode = Literal["auto", "deployment", "code"]
 
 _DECISION_RE = re.compile(
     r"<DECISION>\s*(deployment|code)\s*</DECISION>", re.IGNORECASE | re.DOTALL
@@ -45,18 +44,93 @@ class RefinementDecision:
         }
 
 
-def resolve_refinement_mode(explicit: str | None = None) -> RefinementMode:
-    raw = (
-        (explicit or "").strip()
-        or os.environ.get("BAXBENCH_K8S_REFINEMENT", "auto").strip()
-        or "auto"
-    ).lower()
-    if raw in {"off", "false", "none", "0"}:
-        return "off"
+def forced_refinement_action_after_failure(
+    failure_kind: str,
+) -> RefinementAction | None:
+    """
+    When iteration N−1 failed, optionally force the same refinement path.
+
+    Returns ``None`` when the strategist LLM should decide (deploy failure,
+    successful N−1 handled elsewhere, unknown kinds).
+    """
+    if failure_kind == "code":
+        return "code"
+    if failure_kind == "spec":
+        return "deployment"
+    return None
+
+
+def persist_refinement_decision(
+    ctx: "SampleContext",
+    iteration_path: Path,
+    iteration_id: str,
+    decision: RefinementDecision,
+    cfg: "RunConfig",
+    logger: logging.Logger,
+    *,
+    based_on_iteration: str,
+) -> None:
+    from ..workspace import update_iteration_meta, write_decision
+
+    write_decision(iteration_path, decision)
+    update_iteration_meta(
+        iteration_path,
+        refinement_action=decision.action,
+        based_on_iteration=based_on_iteration,
+    )
+    try:
+        from ..experiment_summary import append_refinement_decision_block
+
+        append_refinement_decision_block(
+            sample_dir=ctx.sample_dir,
+            iteration_id=iteration_id,
+            decision=decision,
+            load_profile=cfg.load_profile,
+        )
+    except Exception as exc:
+        logger.warning(
+            "Could not update experiment summary (decision): %s", exc
+        )
+
+
+def run_refinement_decision_stage(
+    ctx: "SampleContext",
+    *,
+    iteration_path: Path,
+    iteration_index: int,
+    iteration_id: str,
+    cfg: "RunConfig",
+    lineage: "IterationLineage",
+    logger: logging.Logger,
+) -> RefinementDecision:
+    """
+    Run the decision stage (``01-decision``): choose code vs deployment-spec refinement.
+
+    This stage **does not** rename the iteration folder or build the full
+    :class:`~k8s_bench.orchestration.config.IterationPlan`. It only produces and
+    persists a :class:`RefinementDecision` (or raises on inconsistent disk state).
+
+    Caller responsibilities:
+    - Skip calling this for baseline (iteration_index == 0).
+    - Apply folder suffix + build the iteration plan in orchestration.
+    """
+    return _decide_refinement(
+        ctx,
+        iteration_path,
+        iteration_index,
+        iteration_id,
+        cfg,
+        lineage,
+        logger,
+    )
+
+
+def resolve_refinement_mode(refinement: str) -> RefinementMode:
+    raw = refinement.strip().lower() or "auto"
     if raw in {"auto", "deployment", "code"}:
         return raw  # type: ignore[return-value]
     raise ValueError(
-        f"Invalid k8s refinement mode {raw!r}; use auto, deployment, code, or off"
+        f"Invalid k8s refinement mode {refinement!r}; use auto, deployment, or code"
     )
 
 
@@ -78,7 +152,7 @@ def build_refinement_decision_prompt(
         iteration_index=iteration_index, total_iterations=total_iterations
     )
     pointer_block = format_artifact_pointers_block(pointers)
-    feedback_text = prior_feedback.to_prompt_text(include_spec_yaml=False)
+    feedback_text = prior_feedback.to_prompt_text()
     return f"""You are a performance optimization strategist for BaxBench iterative experiments.
 
 After iteration `{prior_feedback.iteration_id}`, decide what to refine **next** (`{next_iteration_id}`) to improve benchmark **goodput** (sustained rate of *successful* HTTP responses; failed requests do not count).
@@ -164,6 +238,8 @@ def decide_refinement_action(
     base_delay: float = 1.0,
     max_delay: float = 60.0,
     total_iterations: int = 0,
+    experiment_id: str = "default",
+    llm_max_cost_usd: float | None = None,
 ) -> RefinementDecision:
     from ..workspace import PROMPT_LOG_FILENAME, iteration_decision_dir
 
@@ -185,7 +261,12 @@ def decide_refinement_action(
 
     sample_dir = task.get_sample_dir(results_dir, sample)
     prompter = get_experiment_session(
-        task, sample_dir, sample, vllm_port=vllm_port, logger=logger
+        task,
+        sample_dir,
+        sample,
+        vllm_port=vllm_port,
+        experiment_id=experiment_id,
+        logger=logger,
     )
 
     import random
@@ -197,7 +278,11 @@ def decide_refinement_action(
         try:
             from ..llm_cost import check_k8s_llm_budget, record_k8s_llm_call
 
-            check_k8s_llm_budget(sample_dir)
+            check_k8s_llm_budget(
+                sample_dir,
+                experiment_id=experiment_id,
+                max_cost_usd=llm_max_cost_usd,
+            )
             last_raw = prompter.send(prompt, logger)
             record_k8s_llm_call(
                 prompter=prompter,
@@ -206,8 +291,12 @@ def decide_refinement_action(
                 logger=logger,
                 artifact_dir=iteration_decision_dir(iteration_path),
                 iteration_id=next_iteration_id,
+                experiment_id=experiment_id,
+                max_cost_usd=llm_max_cost_usd,
             )
-            persist_session(prompter, sample_dir, logger=logger)
+            persist_session(
+                prompter, sample_dir, experiment_id=experiment_id, logger=logger
+            )
             return parse_refinement_decision(
                 last_raw,
                 iteration_index=iteration_index,
@@ -242,141 +331,45 @@ def decide_refinement_action(
     )
 
 
-def _folder_kind(action: str) -> str:
-    if action == "baseline":
-        return "baseline"
-    return "code" if action == "code" else "spec"
-
-
-def run_decision_stage(
-    ctx: "SampleContext",
-    setup: "IterationSetup",
-    cfg: "RunConfig",
-) -> "IterationPlan":
-    """
-    Run the ``01-decision`` stage: choose refinement path and rename the folder.
-
-    Baseline iterations skip the LLM; refinement iterations force or call the
-    decision LLM, then apply the ``-baseline`` / ``-spec`` / ``-code`` suffix.
-    """
-    from ..workspace import (
-        apply_iteration_folder_suffix,
-        iteration_decision_log_path,
-        latest_code_dir,
-        k8s_fallback_code_dir,
-        update_iteration_meta,
-    )
-    from ..code.prior import find_latest_prior_failure_report
-    from ..orchestration.config import (
-        IterationPlan,
-        PriorIteration,
-        RefinementAction,
-    )
-
-    refinement_action: RefinementAction = (
-        "baseline" if setup.is_baseline else "deployment"
-    )
-    prior = setup.prior
-    decision: RefinementDecision | None = None
-    iteration_path = setup.iteration_path
-
-    decision_log = iteration_decision_log_path(iteration_path)
-    with ctx.task.create_logger(decision_log) as iteration_logger:
-        decision = _decide_refinement(
-            ctx,
-            iteration_path,
-            setup.iteration_index,
-            setup.iteration_id,
-            cfg,
-            prior,
-            setup.is_baseline,
-            iteration_logger,
-        )
-        if decision is not None:
-            refinement_action = (
-                decision.action if decision.action != "deployment" else "deployment"
-            )
-            if decision.action == "code":
-                refinement_action = "code"
-
-        iteration_path = apply_iteration_folder_suffix(
-            iteration_path, _folder_kind(refinement_action)
-        )
-        update_iteration_meta(iteration_path, folder=iteration_path.name)
-
-        baseline_code = k8s_fallback_code_dir(ctx.sample_dir)
-        source_code_dir = latest_code_dir(ctx.sample_dir, fallback=baseline_code)
-
-        reuse_spec_from: str | None = None
-        if refinement_action == "code" and prior.bench_feedback is not None:
-            reuse_spec_from = prior.bench_feedback.iteration_id
-
-        if refinement_action == "code":
-            failure_report = find_latest_prior_failure_report(
-                ctx.sample_dir, current_iteration_index=setup.iteration_index
-            )
-            prior = PriorIteration(
-                bench_feedback=prior.bench_feedback,
-                failure_report=failure_report,
-            )
-            if failure_report is not None:
-                iteration_logger.info(
-                    "iteration %s: prior code-refinement failure detected in %s "
-                    "(%d/%d FT passed, failed=%s); will surface in prompt",
-                    setup.iteration_id,
-                    failure_report.iteration_id,
-                    failure_report.num_passed_ft,
-                    failure_report.num_total_ft,
-                    [ft.name for ft in failure_report.failed_tests] or "(unknown)",
-                )
-
-    return IterationPlan(
-        iteration_id=setup.iteration_id,
-        iteration_index=setup.iteration_index,
-        refinement_action=refinement_action,
-        decision=decision,
-        prior=prior,
-        reuse_spec_from=reuse_spec_from,
-        source_code_dir=source_code_dir,
-    )
-
-
 def _decide_refinement(
     ctx: "SampleContext",
     iteration_path: Path,
     iteration_index: int,
     iteration_id: str,
     cfg: "RunConfig",
-    prior: "PriorIteration",
-    is_baseline: bool,
+    lineage: "IterationLineage",
     logger: logging.Logger,
-) -> RefinementDecision | None:
-    """Run/force the refinement decision and persist it to disk."""
-    from ..workspace import update_iteration_meta, write_decision
+) -> RefinementDecision:
+    """
+    Choose code vs deployment-spec refinement for iteration index >= 1.
 
-    if is_baseline or cfg.refinement_mode == "off":
-        return None
+    Caller must skip this when ``setup.is_baseline``.
+    Always returns a :class:`RefinementDecision` and persists it to disk.
+    """
+    from ..workspace import update_iteration_meta
 
-    if prior.bench_feedback is None:
-        logger.warning(
-            "iteration %s: no benchmark feedback from prior iterations; "
-            "defaulting to spec tuning (%s mode)",
-            iteration_id,
-            cfg.refinement_mode,
+    if lineage.bench_feedback is None:
+        # Hard error: for iteration_index >= 1 we expect iteration N-1 to have
+        # either (a) bench feedback artifacts (successful run) or (b) be marked
+        # failed, in which case the loader returns an IterationFeedback with
+        # status="failed". If both are missing, the experiment directory is in
+        # an inconsistent / partially-written state (interrupted run, manual
+        # deletion of 05-bench artifacts, etc.).
+        from ..workspace import iteration_id_for_index
+
+        prev_id = iteration_id_for_index(iteration_index - 1)
+        reason = (
+            f"Missing prior benchmark feedback for refinement decision in {iteration_id}: "
+            f"expected feedback for previous iteration {prev_id} (either a successful "
+            f"bench run under `05-bench/` or a `-failed` marker/meta). "
+            "This indicates an inconsistent experiment state (e.g. interrupted run, "
+            "incomplete resume, or deleted artifacts). Fix by re-running the previous "
+            "iteration with `--force` or deleting the incomplete iteration folder so it "
+            "can be regenerated."
         )
-        decision = RefinementDecision(
-            action="deployment",
-            rationale=(
-                "No benchmark feedback from prior iterations; "
-                "defaulting to deployment/spec tuning."
-            ),
-            raw_response="",
-            iteration_index=iteration_index,
-            based_on_iteration="",
-        )
-        write_decision(iteration_path, decision)
-        update_iteration_meta(iteration_path, refinement_action="deployment")
-        return decision
+        logger.error(reason)
+        update_iteration_meta(iteration_path, status="failed", failure_reason=reason)
+        raise RuntimeError(reason)
 
     if cfg.refinement_mode == "code":
         decision = RefinementDecision(
@@ -384,7 +377,7 @@ def _decide_refinement(
             rationale=f"Forced by refinement mode={cfg.refinement_mode!r}",
             raw_response="",
             iteration_index=iteration_index,
-            based_on_iteration=prior.bench_feedback.iteration_id,
+            based_on_iteration=lineage.bench_feedback.iteration_id,
         )
     elif cfg.refinement_mode == "deployment":
         decision = RefinementDecision(
@@ -392,7 +385,7 @@ def _decide_refinement(
             rationale=f"Forced by refinement mode={cfg.refinement_mode!r}",
             raw_response="",
             iteration_index=iteration_index,
-            based_on_iteration=prior.bench_feedback.iteration_id,
+            based_on_iteration=lineage.bench_feedback.iteration_id,
         )
     else:
         decision = decide_refinement_action(
@@ -400,7 +393,7 @@ def _decide_refinement(
             results_dir=ctx.results_dir,
             sample=ctx.sample,
             iteration_path=iteration_path,
-            prior_feedback=prior.bench_feedback,
+            prior_feedback=lineage.bench_feedback,
             iteration_index=iteration_index,
             next_iteration_id=iteration_id,
             logger=logger,
@@ -409,27 +402,19 @@ def _decide_refinement(
             base_delay=cfg.base_delay,
             max_delay=cfg.max_delay,
             total_iterations=cfg.total_iterations,
+            experiment_id=ctx.experiment_id,
+            llm_max_cost_usd=ctx.llm_max_cost_usd,
         )
 
-    write_decision(iteration_path, decision)
-    update_iteration_meta(
+    persist_refinement_decision(
+        ctx,
         iteration_path,
-        refinement_action=decision.action,
-        based_on_iteration=prior.bench_feedback.iteration_id,
+        iteration_id,
+        decision,
+        cfg,
+        logger,
+        based_on_iteration=lineage.bench_feedback.iteration_id,
     )
-    try:
-        from ..experiment_summary import append_refinement_decision_block
-
-        append_refinement_decision_block(
-            sample_dir=ctx.sample_dir,
-            iteration_id=iteration_id,
-            decision=decision,
-            load_profile=cfg.load_profile,
-        )
-    except Exception as exc:
-        logger.warning(
-            "Could not update experiment summary (decision): %s", exc
-        )
 
     if decision.action == "code":
         logger.info(
@@ -443,7 +428,7 @@ if TYPE_CHECKING:
     from ..orchestration.config import (
         IterationPlan,
         IterationSetup,
-        PriorIteration,
         RunConfig,
         SampleContext,
     )
+    from ..orchestration.lineage import IterationLineage

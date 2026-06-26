@@ -1,7 +1,7 @@
 """
 Kubernetes-backed benchmark path (parallel to ``distributed_bench``).
 
-Top level: orchestration (handler, loop, iteration), ``workspace``, and CLI.
+Top level: ``loop`` (bench entry), ``iteration`` (deploy+Locust engine), ``workspace``, and CLI.
 Supporting packages: ``spec/`` (workload YAML), ``cluster/`` (kubectl, registry, lab).
 """
 

@@ -124,7 +124,6 @@ def main(args: Any) -> None:
         "test",
         "bench",
         "k8s-bench",
-        "k8s-spec-gen",
         "evaluate",
     ) and not args.models:
         raise Exception("Got an empty list of models")
@@ -265,48 +264,19 @@ def main(args: Any) -> None:
             for rd in bench_run_dirs:
                 print(f"[bench] Post-bench plots for {rd}")
                 _run_plotting(plot_run_dir=pathlib.Path(rd))
-    elif args.mode == "k8s-spec-gen":
-        if getattr(args, "k8s_experiment", None):
-            os.environ["BAXBENCH_K8S_EXPERIMENT"] = str(args.k8s_experiment).strip()
-        if getattr(args, "k8s_require_cluster", True):
-            import logging
-
-            from k8s_bench.cluster import ensure_k8s_cluster_ready
-
-            profile = getattr(args, "k8s_cluster", None) or os.environ.get("BAXBENCH_K8S_CLUSTER")
-            logging.basicConfig(level=logging.INFO)
-            ensure_k8s_cluster_ready(
-                logger=logging.getLogger("baxbench.k8s.spec-gen"),
-                profile_name=str(profile).strip() if profile else None,
-            )
-        from k8s_bench.handler import run_k8s_spec_gen
-
-        run_k8s_spec_gen(
-            task_handler.tasks,
-            task_handler.results_dir,
-            samples=samples,
-            force=args.force,
-            k8s_iteration=args.k8s_iteration,
-            max_retries=args.max_retries,
-            base_delay=args.base_delay,
-            max_delay=args.max_delay,
-            vllm_port=args.vllm_port,
-        )
     elif args.mode == "k8s-bench":
-        if getattr(args, "k8s_experiment", None):
-            os.environ["BAXBENCH_K8S_EXPERIMENT"] = str(args.k8s_experiment).strip()
-        if getattr(args, "k8s_require_cluster", True):
-            import logging
+        import logging
 
-            from k8s_bench.cluster import ensure_k8s_cluster_ready
+        from k8s_bench.cluster import ensure_k8s_cluster_ready
 
-            profile = getattr(args, "k8s_cluster", None) or os.environ.get("BAXBENCH_K8S_CLUSTER")
-            logging.basicConfig(level=logging.INFO)
-            ensure_k8s_cluster_ready(
-                logger=logging.getLogger("baxbench.k8s.bench"),
-                profile_name=str(profile).strip() if profile else None,
-            )
-        from k8s_bench.handler import run_k8s_bench
+        if not args.k8s_cluster:
+            raise SystemExit("--k8s-cluster is required for --mode k8s-bench")
+        logging.basicConfig(level=logging.INFO)
+        ensure_k8s_cluster_ready(
+            logger=logging.getLogger("baxbench.k8s.bench"),
+            profile_name=str(args.k8s_cluster).strip(),
+        )
+        from k8s_bench.loop import run_k8s_bench
 
         k8s_iteration_path = (
             pathlib.Path(args.k8s_iteration_path).expanduser().resolve()
@@ -317,15 +287,19 @@ def main(args: Any) -> None:
             task_handler.tasks,
             task_handler.results_dir,
             samples=samples,
+            deploy_only=getattr(args, "deploy_only", False),
             timeout=args.timeout,
             force=args.force,
+            k8s_cluster=str(args.k8s_cluster).strip(),
             k8s_iteration=args.k8s_iteration,
             k8s_iteration_path=k8s_iteration_path,
             k8s_iterations=getattr(args, "k8s_iterations", 1),
-            k8s_spec_gen=getattr(args, "k8s_spec_gen", True),
             k8s_wait_timeout=args.k8s_wait_timeout,
             k8s_auto_init=args.k8s_auto_init,
-            k8s_refinement=getattr(args, "k8s_refinement", None),
+            k8s_refinement=args.k8s_refinement,
+            load_profile=args.load_profile,
+            k8s_experiment_id=args.k8s_experiment,
+            llm_max_cost_usd=getattr(args, "llm_max_cost", None),
             ft_timeout=args.timeout,
             num_ports=args.num_ports,
             min_port=args.min_port,
@@ -378,7 +352,6 @@ if __name__ == "__main__":
             "test",
             "bench",
             "k8s-bench",
-            "k8s-spec-gen",
             "k8s-preflight",
             "k8s-setup-cluster",
             "k8s-setup-registry",
@@ -619,7 +592,7 @@ if __name__ == "__main__":
         default=None,
         help=(
             "Deploy+bench this iteration directory in place (any path under sampleN/). "
-            "Use with --no-k8s-spec-gen. Overrides --k8s-iteration path resolution."
+            "Requires --deploy-only. Overrides --k8s-iteration path resolution."
         ),
     )
     parser.add_argument(
@@ -633,12 +606,12 @@ if __name__ == "__main__":
         ),
     )
     parser.add_argument(
-        "--k8s-spec-gen",
-        action=argparse.BooleanOptionalAction,
-        default=True,
+        "--deploy-only",
+        action="store_true",
         help=(
-            "k8s-bench: LLM-generate spec.yaml before each phase (default: true). "
-            "Use --no-k8s-spec-gen for deploy-only using existing specs."
+            "k8s-bench: deploy and benchmark existing iteration folders only "
+            "(no LLM codegen, spec generation, or refinement). Use when code "
+            "and spec.yaml are already on disk."
         ),
     )
     parser.add_argument(
@@ -648,30 +621,36 @@ if __name__ == "__main__":
         help="Seconds to wait for Kubernetes deployments to become available.",
     )
     parser.add_argument(
-        "--k8s-require-cluster",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-        help=(
-            "k8s-bench: verify kubeconfig, API, and all nodes Ready before benchmarking "
-            "(default: true). Use --no-k8s-require-cluster to skip."
-        ),
-    )
-    parser.add_argument(
         "--k8s-auto-init",
         action=argparse.BooleanOptionalAction,
         default=False,
         help=(
             "Deploy-only fallback: create a default spec.yaml when missing "
-            "(only with --no-k8s-spec-gen). Default: false."
+            "(only with --deploy-only). Default: false."
+        ),
+    )
+    parser.add_argument(
+        "--load-profile",
+        type=str,
+        default="quick-check",
+        help=(
+            "Locust load profile name for k8s-bench (default: quick-check). "
+            "Deploy-only re-bench scripts typically pass default."
         ),
     )
     parser.add_argument(
         "--k8s-cluster",
         type=str,
         default=None,
+        help="Select cluster profile from k8s_bench/cluster/profiles.py.",
+    )
+    parser.add_argument(
+        "--llm-max-cost",
+        type=float,
+        default=None,
         help=(
-            "Select cluster profile from k8s_bench/cluster/profiles.py "
-            "(also BAXBENCH_K8S_CLUSTER). Topology comes only from the profile."
+            "Stop k8s-bench LLM calls when estimated experiment spend (USD) "
+            "reaches this cap. Omit for no limit."
         ),
     )
     parser.add_argument(
@@ -680,9 +659,7 @@ if __name__ == "__main__":
         default=None,
         help=(
             "Group iterative k8s configs and perf runs under "
-            "sampleN/k8s-experiments/<slug>/ (also BAXBENCH_K8S_EXPERIMENT). "
-            "Omit for legacy layout directly under sampleN/. "
-            "Use a new slug to start a fresh iteration chain without reusing prior skips."
+            "sampleN/k8s-experiments/<slug>/. Omit for the ``default`` slug."
         ),
     )
     parser.add_argument(
@@ -697,12 +674,11 @@ if __name__ == "__main__":
     parser.add_argument(
         "--k8s-refinement",
         type=str,
-        default=None,
-        choices=["auto", "deployment", "code", "off"],
+        default="auto",
+        choices=["auto", "deployment", "code"],
         help=(
-            "Between k8s phases (iteration 002+): auto = LLM chooses deployment vs code "
-            "refinement; deployment/code = force path; off = deployment-only (legacy). "
-            "Also BAXBENCH_K8S_REFINEMENT (default: auto)."
+            "Between k8s phases (iteration 001+): auto = LLM chooses deployment vs "
+            "code refinement; deployment/code = force that path (default: auto)."
         ),
     )
     parser.add_argument(

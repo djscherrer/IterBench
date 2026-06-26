@@ -91,10 +91,7 @@ def expected_registry_reference(
     have produced *this* tag?" without re-pushing. Returns
     ``None`` when no registry is configured (legacy SSH-load path).
     """
-    profile = (
-        (profile_name or os.environ.get("BAXBENCH_K8S_CLUSTER", "") or "").strip()
-        or None
-    )
+    profile = (profile_name or "").strip() or None
     registry = resolve_registry_config(profile)
     if registry is None:
         return None
@@ -118,9 +115,7 @@ def prepare_image_for_k8s(
     log = logger or logging.getLogger(__name__)
     short = image_id.removeprefix("sha256:")[:12]
     repo = _slug_ref(sample_slug)
-    profile = (
-        (profile_name or os.environ.get("BAXBENCH_K8S_CLUSTER", "") or "").strip() or None
-    )
+    profile = (profile_name or "").strip() or None
 
     registry = resolve_registry_config(profile, logger=log)
     if registry is not None:
@@ -156,7 +151,7 @@ def prepare_image_for_k8s(
         else:
             log.warning(
                 "No registry and profile '%s' has no worker_nodes — image only on this machine. "
-                "Run ./scripts/k8s_setup_registry.sh or enable registry in the profile.",
+                "Run ./scripts/k8s_setup_cluster.sh or enable registry in the profile.",
                 profile or "?",
             )
 

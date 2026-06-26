@@ -7,7 +7,8 @@ Workload layout (replicas, CPU, DB) still lives in per-sample
 lab topology (control / workers / Locust), and optional image registry (``host:5000``).
 
 Topology is defined only in ``K8S_CLUSTER_REGISTRY``. Select a profile via
-``BAXBENCH_K8S_CLUSTER`` or ``--k8s-cluster``; there are no host-list overrides.
+``--k8s-cluster`` (or pass ``profile_name`` from bench code); there are no
+host-list overrides.
 """
 
 from __future__ import annotations
@@ -104,7 +105,7 @@ K8S_CLUSTER_REGISTRY: dict[str, K8sClusterProfile] = {
         registry_host="",  # auto-detect node0 lab IP at bench time
         registry_port=5000,
         registry_auto_host=True,
-        notes="Run ./scripts/k8s_setup_registry.sh once after k8s_setup_cluster.sh.",
+        notes="Registry is configured by ./scripts/k8s_setup_cluster.sh when registry_enabled=true.",
     ),
 }
 
@@ -117,20 +118,29 @@ def resolve_cluster_profile(name: str | None) -> K8sClusterProfile:
     return K8S_CLUSTER_REGISTRY[key]
 
 
-def selected_cluster_profile_name(*, args: Any | None = None) -> str:
-    """Profile name from ``--k8s-cluster`` or ``BAXBENCH_K8S_CLUSTER`` (selection only, not overrides)."""
+def selected_cluster_profile_name(
+    profile_name: str | None = None,
+    *,
+    args: Any | None = None,
+) -> str:
+    """Profile name from an explicit ``profile_name`` or ``--k8s-cluster`` on ``args``."""
+    if profile_name and profile_name.strip():
+        return profile_name.strip()
     if args is not None:
         from_cli = (getattr(args, "k8s_cluster", None) or "").strip()
         if from_cli:
             return from_cli
-    from_env = os.environ.get("BAXBENCH_K8S_CLUSTER", "").strip()
-    if from_env:
-        return from_env
     raise ValueError(
-        "Set BAXBENCH_K8S_CLUSTER or pass --k8s-cluster to select a profile from "
+        "Pass --k8s-cluster (or profile_name=…) to select a profile from "
         "k8s_bench/cluster/profiles.py (edit K8S_CLUSTER_REGISTRY to change topology)."
     )
 
 
-def selected_cluster_profile(*, args: Any | None = None) -> K8sClusterProfile:
-    return resolve_cluster_profile(selected_cluster_profile_name(args=args))
+def selected_cluster_profile(
+    profile_name: str | None = None,
+    *,
+    args: Any | None = None,
+) -> K8sClusterProfile:
+    return resolve_cluster_profile(
+        selected_cluster_profile_name(profile_name, args=args)
+    )

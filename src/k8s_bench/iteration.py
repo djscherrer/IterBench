@@ -378,11 +378,13 @@ def run_k8s_bench_iteration(
     bench_run_time: int | None,
     wait_timeout_s: int,
     labels: dict[str, str] | None,
+    load_profile: str,
+    k8s_cluster: str,
     logger: logging.Logger,
 ) -> DeployResult:
     del timeout, locust_user
 
-    profile = selected_cluster_profile()
+    profile = selected_cluster_profile(k8s_cluster)
     if not profile.has_load_topology():
         raise ValueError(
             f"K8s profile '{profile.name}' has no load_master; "
@@ -453,7 +455,7 @@ def run_k8s_bench_iteration(
         load_master=profile.load_master,
         load_workers=profile.load_workers,
     )
-    load_profile = resolve_load_profile(os.environ.get("BAXBENCH_LOAD_PROFILE", "default"))
+    load_profile = resolve_load_profile(load_profile)
     run_time_s = (
         int(bench_run_time) if bench_run_time is not None else int(load_profile.effective_run_time_s)
     )
@@ -469,7 +471,7 @@ def run_k8s_bench_iteration(
         run_dir,
         spec=spec,
         deploy_result=deploy_result,
-        load_profile=os.environ.get("BAXBENCH_LOAD_PROFILE", "default"),
+        load_profile=load_profile,
         iteration_path=iteration_path,
         image_reference=prepared.reference,
         locust_target=target_base_url,
@@ -532,7 +534,7 @@ def make_k8s_perf_run_dir(
     *,
     load_profile: str | None = None,
 ) -> Path:
-    prof = _slugify_run_part(load_profile or os.environ.get("BAXBENCH_LOAD_PROFILE", "default"))
+    prof = _slugify_run_part(load_profile)
     ts = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
     return perf_run_dir_for_iteration(
         sample_dir, iteration_id, load_profile=prof, timestamp=ts

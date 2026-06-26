@@ -4,12 +4,12 @@ Frozen dataclasses scoped to each level of the benchmark loop.
 Filesystem is the **single source of truth**; these dataclasses are short-lived
 projections of disk state for the duration of one logical scope:
 
-- :class:`RunConfig`   – built once per ``run_iterative_k8s_bench`` call.
+- :class:`RunConfig`   – built once per iterative experiment run.
 - :class:`SampleContext` – built once per sample in preflight; ``base_image_id``
   is set after iteration-000 baseline codegen completes.
-- :class:`PriorIteration` – built per iteration by re-reading disk.
+- :class:`IterationLineage` – built per iteration by ``plan.plan_iteration``.
 - :class:`IterationSetup` – built per iteration by ``plan.plan_iteration``.
-- :class:`IterationPlan` – built per iteration by ``stages.decision.run_decision_stage``.
+- :class:`IterationPlan` – built per iteration by the orchestrator (``orchestration.execute``).
 - :class:`IterationOutcome` – return value of ``execute.execute_iteration``;
                               the ``abort_sample`` flag preserves the legacy
                               ``break`` semantics on baseline failure.
@@ -21,9 +21,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal, NamedTuple
 
-from ..feedback import IterationFeedback
-from ..functional_failure import FunctionalFailureReport
 from ..stages.decision import RefinementDecision, RefinementMode
+from .lineage import IterationLineage, SpecRef
 
 
 RefinementAction = Literal["baseline", "code", "deployment"]
@@ -33,6 +32,8 @@ RefinementAction = Literal["baseline", "code", "deployment"]
 class RunConfig:
     load_profile: str
     experiment_id: str
+    k8s_cluster: str
+    llm_max_cost_usd: float | None
     refinement_mode: RefinementMode
     iteration_ids: list[str]
     total_iterations: int
@@ -64,14 +65,9 @@ class SampleContext:
     sample_dir: Path
     task_run_dir: Path  # task.get_save_dir(); parent of all sampleN/ for this config
     base_image_id: str | None = None
-
-
-@dataclass(frozen=True)
-class PriorIteration:
-    """Signals from iterations preceding this one (loaded from disk)."""
-
-    bench_feedback: IterationFeedback | None
-    failure_report: FunctionalFailureReport | None
+    experiment_id: str = "default"
+    k8s_cluster: str = ""
+    llm_max_cost_usd: float | None = None
 
 
 @dataclass(frozen=True)
@@ -81,7 +77,7 @@ class IterationSetup:
     iteration_id: str
     iteration_index: int
     iteration_path: Path
-    prior: PriorIteration
+    lineage: IterationLineage
     is_baseline: bool
 
 
@@ -93,9 +89,7 @@ class IterationPlan:
     iteration_index: int
     refinement_action: RefinementAction
     decision: RefinementDecision | None
-    prior: PriorIteration
-    reuse_spec_from: str | None
-    source_code_dir: Path
+    lineage: IterationLineage
 
 
 class IterationOutcome(NamedTuple):

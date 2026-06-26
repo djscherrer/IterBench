@@ -351,12 +351,17 @@ def usage_from_anthropic(
     )
 
 
-def resolve_max_cost_usd() -> float | None:
-    raw = os.environ.get("BAXBENCH_LLM_MAX_COST", "").strip()
-    if not raw:
+def resolve_max_cost_usd(raw: str | float | None) -> float | None:
+    """Parse an explicit max-cost value (USD); ``None`` means no cap."""
+    if raw is None:
+        return None
+    if isinstance(raw, (int, float)):
+        return float(raw)
+    text = str(raw).strip()
+    if not text:
         return None
     try:
-        return float(raw)
+        return float(text)
     except ValueError:
         return None
 
@@ -376,16 +381,16 @@ def load_ledger(workspace: Path) -> dict[str, Any]:
         return _empty_ledger()
 
 
-def _empty_ledger() -> dict[str, Any]:
+def _empty_ledger(*, max_cost_usd: float | None = None) -> dict[str, Any]:
     return {
         "currency": "USD",
         "pricing_note": (
             "OpenRouter: uses usage.cost from the API when present; otherwise "
             "estimated from the built-in per-model $/MTok table in "
             "llm/usage.py (cache reads/writes priced separately). "
-            "Set BAXBENCH_LLM_MAX_COST to cap spend."
+            "Pass --llm-max-cost to cap spend."
         ),
-        "max_cost_usd": resolve_max_cost_usd(),
+        "max_cost_usd": max_cost_usd,
         "total_cost_usd": 0.0,
         "total_input_tokens": 0,
         "total_output_tokens": 0,
@@ -397,30 +402,36 @@ def _empty_ledger() -> dict[str, Any]:
     }
 
 
-def enforce_cost_budget(workspace: Path) -> None:
-    """Raise if experiment ledger exceeds ``BAXBENCH_LLM_MAX_COST``."""
-    max_cost = resolve_max_cost_usd()
-    if max_cost is None:
+def enforce_cost_budget(
+    workspace: Path,
+    *,
+    max_cost_usd: float | None = None,
+) -> None:
+    """Raise if experiment ledger exceeds ``max_cost_usd`` (no cap when omitted)."""
+    if max_cost_usd is None:
         return
     ledger = load_ledger(workspace)
     total = float(ledger.get("total_cost_usd", 0.0))
-    if total >= max_cost:
+    if total >= max_cost_usd:
         raise RuntimeError(
-            f"LLM cost budget exceeded: ${total:.4f} >= ${max_cost:.4f} "
+            f"LLM cost budget exceeded: ${total:.4f} >= ${max_cost_usd:.4f} "
             f"(ledger: {ledger_path(workspace)}). "
-            "Raise BAXBENCH_LLM_MAX_COST or reset the ledger to continue."
+            "Raise --llm-max-cost or reset the ledger to continue."
         )
 
 
 def append_usage_record(
     workspace: Path,
     record: LlmUsageRecord,
+    *,
+    max_cost_usd: float | None = None,
 ) -> dict[str, Any]:
     """Append one call to the workspace ledger and return updated totals."""
-    enforce_cost_budget(workspace)
+    enforce_cost_budget(workspace, max_cost_usd=max_cost_usd)
 
     ledger = load_ledger(workspace)
-    ledger["max_cost_usd"] = resolve_max_cost_usd()
+    if max_cost_usd is not None:
+        ledger["max_cost_usd"] = max_cost_usd
     ledger["total_cost_usd"] = round(
         float(ledger.get("total_cost_usd", 0.0)) + record.estimated_cost_usd, 6
     )
@@ -451,7 +462,7 @@ def append_usage_record(
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(ledger, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
-    enforce_cost_budget(workspace)
+    enforce_cost_budget(workspace, max_cost_usd=max_cost_usd)
     return ledger
 
 
@@ -464,6 +475,7 @@ def record_prompter_usage(
     artifact_dir: Path | None = None,
     iteration_id: str | None = None,
     note: str | None = None,
+    max_cost_usd: float | None = None,
 ) -> LlmUsageRecord | None:
     """Persist usage from ``prompter.last_usage`` to ledger + optional local artifact."""
     usage: TokenUsage | None = getattr(prompter, "last_usage", None)
@@ -498,7 +510,7 @@ def record_prompter_usage(
         local_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
         record.artifact_path = str(local_path)
 
-    ledger = append_usage_record(workspace, record)
+    ledger = append_usage_record(workspace, record, max_cost_usd=max_cost_usd)
     cost_label = (
         "reported" if usage.cost_source == "openrouter_reported" else "estimated"
     )

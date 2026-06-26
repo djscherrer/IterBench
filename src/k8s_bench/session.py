@@ -41,9 +41,11 @@ CONVERSATION_FILENAME = "conversation.json"
 _SESSIONS: dict[tuple[str, str], Prompter] = {}
 
 
-def conversation_path(sample_dir: Path) -> Path:
+def conversation_path(
+    sample_dir: Path, *, experiment_id: str | None = None
+) -> Path:
     """``<sampleN>/k8s-experiments/<slug>/conversation.json``."""
-    return k8s_workspace_root(sample_dir) / CONVERSATION_FILENAME
+    return k8s_workspace_root(sample_dir, experiment_id=experiment_id) / CONVERSATION_FILENAME
 
 
 def _build_conversational_prompter(
@@ -68,9 +70,13 @@ def _build_conversational_prompter(
 
 
 def _load_history_from_disk(
-    prompter: Prompter, sample_dir: Path, logger: logging.Logger | None
+    prompter: Prompter,
+    sample_dir: Path,
+    *,
+    experiment_id: str | None = None,
+    logger: logging.Logger | None = None,
 ) -> None:
-    path = conversation_path(sample_dir)
+    path = conversation_path(sample_dir, experiment_id=experiment_id)
     if not path.is_file():
         return
     try:
@@ -101,6 +107,7 @@ def get_experiment_session(
     sample: int,
     *,
     vllm_port: int = 8000,
+    experiment_id: str | None = None,
     logger: logging.Logger | None = None,
 ) -> Prompter:
     """
@@ -109,8 +116,8 @@ def get_experiment_session(
     Built once per process and cached; on first build, any persisted history
     from a prior run is reloaded so the conversation continues seamlessly.
     """
-    experiment_id = resolve_k8s_experiment_id()
-    key = (str(sample_dir.resolve()), experiment_id)
+    experiment_slug = resolve_k8s_experiment_id(experiment_id)
+    key = (str(sample_dir.resolve()), experiment_slug)
     cached = _SESSIONS.get(key)
     if cached is not None:
         return cached
@@ -118,8 +125,10 @@ def get_experiment_session(
     # Stable per-conversation key so every call in this experiment routes to the
     # same OpenAI prompt-cache shard (improves hit rate; ignored by other
     # providers).
-    prompter.cache_key = f"{experiment_id}:s{sample}"
-    _load_history_from_disk(prompter, sample_dir, logger)
+    prompter.cache_key = f"{experiment_slug}:s{sample}"
+    _load_history_from_disk(
+        prompter, sample_dir, experiment_id=experiment_slug, logger=logger
+    )
     _SESSIONS[key] = prompter
     return prompter
 
@@ -128,14 +137,15 @@ def persist_session(
     prompter: Prompter,
     sample_dir: Path,
     *,
+    experiment_id: str | None = None,
     logger: logging.Logger | None = None,
 ) -> None:
     """Write the conversation history to ``conversation.json`` (best effort)."""
-    path = conversation_path(sample_dir)
+    path = conversation_path(sample_dir, experiment_id=experiment_id)
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         payload = {
-            "experiment": resolve_k8s_experiment_id(),
+            "experiment": resolve_k8s_experiment_id(experiment_id),
             "num_turns": len(prompter.history),
             "history": prompter.history,
         }

@@ -21,11 +21,11 @@ from ..util.sample import (
     performance_test_names,
     resolve_locustfile,
 )
-from ..workspace import resolve_iteration_dir
+from ..workspace import iteration_code_snapshot_dir, resolve_iteration_dir
 from ..orchestration.config import IterationPlan, RunConfig, SampleContext
 
 
-def run_bench(
+def run_bench_stage(
     ctx: SampleContext,
     plan: IterationPlan,
     run_dir: Path,
@@ -35,6 +35,9 @@ def run_bench(
 ) -> None:
     """Run the Locust bench for one iteration (no exception escapes)."""
     iteration_path = resolve_iteration_dir(ctx.sample_dir, plan.iteration_id)
+    rebuild_code_dir = plan.lineage.latest_code_dir or iteration_code_snapshot_dir(
+        iteration_path
+    )
     run_locust_for_iteration(
         ctx.task,
         ctx.results_dir,
@@ -49,7 +52,9 @@ def run_bench(
         k8s_wait_timeout=cfg.k8s_wait_timeout,
         iteration_index=plan.iteration_index,
         logger=logger,
-        rebuild_code_dir=plan.source_code_dir,
+        rebuild_code_dir=rebuild_code_dir,
+        load_profile=cfg.load_profile,
+        k8s_cluster=ctx.k8s_cluster,
     )
 
 
@@ -69,13 +74,15 @@ def run_locust_for_iteration(
     iteration_index: int | None = None,
     logger: logging.Logger,
     rebuild_code_dir: Path | None = None,
+    load_profile: str = "default",
+    k8s_cluster: str = "",
 ) -> bool:
     """
     Deploy + Locust for a single iteration directory.
 
     Exposed as a public helper because the deploy-only path
-    (``run_deploy_only_k8s_bench``) calls it directly without going through the
-    iterative loop.
+    Deploy-only paths (``--deploy-only`` on :func:`k8s_bench.loop.run_k8s_bench`)
+    call it directly without going through the iterative orchestrator.
     """
     from tasks import esc
 
@@ -140,6 +147,8 @@ def run_locust_for_iteration(
                 bench_run_time=bench_run_time,
                 wait_timeout_s=k8s_wait_timeout,
                 labels=labels,
+                load_profile=load_profile,
+                k8s_cluster=k8s_cluster,
                 logger=logger,
             )
         except Exception as e:
