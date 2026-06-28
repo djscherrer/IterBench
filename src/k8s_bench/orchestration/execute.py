@@ -18,7 +18,7 @@ from ..stages.decision import (
     RefinementDecision,
     forced_refinement_action_after_failure,
     persist_refinement_decision,
-    run_refinement_decision_stage,
+    run_decision_stage,
 )
 from ..stages.deploy import run_deploy_stage
 from ..stages.outcome import run_outcome_stage
@@ -32,6 +32,7 @@ from ..workspace import (
     iteration_deploy_log_path,
     iteration_log_path,
     iteration_spec_log_path,
+    parse_iteration_index,
     resolve_iteration_dir,
     update_iteration_meta,
 )
@@ -66,7 +67,7 @@ def execute_iteration(
     elif lineage.bench_feedback is not None and lineage.bench_feedback.is_failed:
         # The previous iteration failed, force to try again the same refinement action to fix the problem.
         fb = lineage.bench_feedback
-        if fb.failure_kind == "baseline":
+        if parse_iteration_index(fb.iteration_id) == 0:
             return IterationOutcome(None, True)
         forced = forced_refinement_action_after_failure(fb.failure_kind)
         if forced is not None:
@@ -108,7 +109,7 @@ def execute_iteration(
             with ctx.task.create_logger(
                 iteration_decision_log_path(setup.iteration_path)
             ) as decision_logger:
-                decision = run_refinement_decision_stage(
+                decision = run_decision_stage(
                     ctx,
                     iteration_path=setup.iteration_path,
                     iteration_index=setup.iteration_index,
@@ -124,7 +125,7 @@ def execute_iteration(
         with ctx.task.create_logger(
             iteration_decision_log_path(setup.iteration_path)
         ) as decision_logger:
-            decision = run_refinement_decision_stage(
+            decision = run_decision_stage(
                 ctx,
                 iteration_path=setup.iteration_path,
                 iteration_index=setup.iteration_index,

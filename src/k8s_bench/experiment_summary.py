@@ -1552,11 +1552,15 @@ def append_iteration_failure_block(
         except Exception:
             report = None
 
+    is_baseline_iter = "-baseline" in iteration_path.name
+
     stage_label = (
         "baseline spec (manifest could not be deployed)"
-        if kind == "baseline"
+        if kind == "spec" and is_baseline_iter
         else "spec deployment (manifest could not be deployed)"
         if kind == "spec"
+        else "baseline codegen (functional tests did not pass)"
+        if kind == "code" and is_baseline_iter
         else "code refinement (functional tests did not pass)"
         if kind == "code"
         else kind or "iteration"

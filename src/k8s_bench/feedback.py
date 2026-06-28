@@ -51,7 +51,7 @@ class IterationFeedback:
     notes: str = ""
     status: str = "success"  # "success" | "failed"
     failure_reason: str = ""
-    failure_kind: str = ""  # "spec" | "code" | "baseline" | "deploy" | "" for success
+    failure_kind: str = ""  # "spec" | "code" | "deploy" | "" for success
     decision_rationale: str = ""
 
     @property
@@ -668,11 +668,11 @@ def _failed_iteration_feedback(
     meta = read_iteration_meta(iteration_path) or {}
     failure_reason = str(meta.get("failure_reason") or "").strip()
     raw_kind = meta.get("failure_kind") or meta.get("refinement_action") or ""
-    kind = (
-        str(raw_kind)
-        if raw_kind in {"code", "spec", "baseline", "deploy"}
-        else ""
-    )
+    kind = str(raw_kind)
+    if kind == "baseline":
+        kind = "spec"
+    if kind not in {"code", "spec", "deploy"}:
+        kind = ""
     rationale = read_decision_rationale(iteration_path) or ""
     excerpt = read_failed_iteration_error_excerpt(iteration_path)
     return IterationFeedback(

@@ -20,7 +20,7 @@ from .decision import (
     RefinementDecision,
     decide_refinement_action,
     resolve_refinement_mode,
-    run_refinement_decision_stage,
+    run_decision_stage,
 )
 from .deploy import DeployProbeResult, DeployStageResult, probe_iteration_deployable, run_deploy_stage
 from .outcome import run_outcome_stage
@@ -38,7 +38,7 @@ __all__ = [
     "run_bench_stage",
     "run_codegen_stage",
     "run_code_lineage_stage",
-    "run_refinement_decision_stage",
+    "run_decision_stage",
     "run_deploy_stage",
     "run_locust_for_iteration",
     "run_outcome_stage",

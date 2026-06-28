@@ -93,38 +93,6 @@ def persist_refinement_decision(
         )
 
 
-def run_refinement_decision_stage(
-    ctx: "SampleContext",
-    *,
-    iteration_path: Path,
-    iteration_index: int,
-    iteration_id: str,
-    cfg: "RunConfig",
-    lineage: "IterationLineage",
-    logger: logging.Logger,
-) -> RefinementDecision:
-    """
-    Run the decision stage (``01-decision``): choose code vs deployment-spec refinement.
-
-    This stage **does not** rename the iteration folder or build the full
-    :class:`~k8s_bench.orchestration.config.IterationPlan`. It only produces and
-    persists a :class:`RefinementDecision` (or raises on inconsistent disk state).
-
-    Caller responsibilities:
-    - Skip calling this for baseline (iteration_index == 0).
-    - Apply folder suffix + build the iteration plan in orchestration.
-    """
-    return _decide_refinement(
-        ctx,
-        iteration_path,
-        iteration_index,
-        iteration_id,
-        cfg,
-        lineage,
-        logger,
-    )
-
-
 def resolve_refinement_mode(refinement: str) -> RefinementMode:
     raw = refinement.strip().lower() or "auto"
     if raw in {"auto", "deployment", "code"}:
@@ -146,9 +114,9 @@ def build_refinement_decision_prompt(
 ) -> str:
     sample_dir = task.get_sample_dir(results_dir, sample)
     pointers = resolve_artifact_pointers(sample_dir)
-    from ..spec.generation import _format_iteration_progress
+    from ..spec.prompts import format_iteration_progress
 
-    progress = _format_iteration_progress(
+    progress = format_iteration_progress(
         iteration_index=iteration_index, total_iterations=total_iterations
     )
     pointer_block = format_artifact_pointers_block(pointers)
@@ -331,8 +299,9 @@ def decide_refinement_action(
     )
 
 
-def _decide_refinement(
+def run_decision_stage(
     ctx: "SampleContext",
+    *,
     iteration_path: Path,
     iteration_index: int,
     iteration_id: str,
@@ -341,10 +310,11 @@ def _decide_refinement(
     logger: logging.Logger,
 ) -> RefinementDecision:
     """
-    Choose code vs deployment-spec refinement for iteration index >= 1.
+    Run the decision stage (``01-decision``): choose code vs deployment-spec refinement.
 
-    Caller must skip this when ``setup.is_baseline``.
-    Always returns a :class:`RefinementDecision` and persists it to disk.
+    Caller must skip this for baseline (iteration_index == 0). This stage does not
+    rename the iteration folder or build :class:`~k8s_bench.orchestration.config.IterationPlan`;
+    orchestration applies the folder suffix after this returns.
     """
     from ..workspace import update_iteration_meta
 
@@ -416,11 +386,6 @@ def _decide_refinement(
         based_on_iteration=lineage.bench_feedback.iteration_id,
     )
 
-    if decision.action == "code":
-        logger.info(
-            "iteration %s: will refine application code after folder setup",
-            iteration_id,
-        )
     return decision
 
 

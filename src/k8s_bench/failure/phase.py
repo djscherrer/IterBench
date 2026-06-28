@@ -36,7 +36,7 @@ def fail_iteration_phase(
         status="failed",
         failure_reason=failure_reason,
         failure_kind=kind,
-        refinement_action=kind if kind in {"code", "spec", "baseline"} else None,
+        refinement_action=kind if kind in {"code", "spec"} else None,
     )
 
     if kind == "code":
