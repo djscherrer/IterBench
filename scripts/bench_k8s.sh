@@ -51,7 +51,7 @@ BENCH_RUN_TIME=""
 BAXBENCH_K8S_CLUSTER="baxbench-emulab"
 KUBECONFIG_PATH=""              # empty = path from cluster profile
 K8S_ITERATION=""                # pin one iteration; empty = use K8S_ITERATIONS
-K8S_EXPERIMENT="17.6-bench-plateau-200max-4"               # e.g. adaptive-may20 → sampleN/k8s-experiments/<slug>/
+K8S_EXPERIMENT="28-6-Refactoring-Check"               # e.g. adaptive-may20 → sampleN/k8s-experiments/<slug>/
 K8S_ITERATIONS="20"              # phases: iteration-001 .. iteration-NNN
 K8S_DEPLOY_ONLY="false"          # true = deploy+bench existing iterations only (no LLM)
 K8S_WAIT_TIMEOUT="600"
@@ -135,7 +135,7 @@ if [ -n "$KUBECONFIG_PATH" ]; then
 fi
 
 echo "kubectl context: $(kubectl config current-context 2>/dev/null || echo '(not configured)')"
-echo "KUBECONFIG=${KUBECONFIG:-<default>}  experiment=${K8S_EXPERIMENT:-<legacy>}  iterations=${K8S_ITERATIONS}  spec_gen=${K8S_SPEC_GEN}"
+echo "KUBECONFIG=${KUBECONFIG:-<default>}  experiment=${K8S_EXPERIMENT:-<legacy>}  iterations=${K8S_ITERATIONS}  deploy_only=${K8S_DEPLOY_ONLY}"
 
 BASE_ENV=()
 RUN_I=0
