@@ -4,9 +4,9 @@ from __future__ import annotations
 
 from typing import Any
 
-from .cache import DEFAULT_REDIS_IMAGE, CacheSpec, quantity_to_redis_maxmemory
-from .models import K8sWorkloadSpec
-from .placement import _pod_spec_affinity
+from ..components.cache import DEFAULT_REDIS_IMAGE, CacheSpec, quantity_to_redis_maxmemory
+from ..models import K8sWorkloadSpec
+from ..components.placement import _pod_spec_affinity
 
 
 def _redis_manifests_for(

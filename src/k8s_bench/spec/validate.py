@@ -1,4 +1,4 @@
-"""Per-node scheduling validation for K8s workload specs."""
+"""Static validation of K8s workload specs against cluster capacity and scheduling rules."""
 
 from __future__ import annotations
 
@@ -11,10 +11,13 @@ from ..cluster.capacity import (
     _parse_memory_to_bytes,
 )
 from .models import K8sWorkloadSpec, ResourceSpec
-from .postgres_tuning import validate_postgres_tuning
-from .pooler import validate_pooler
-from .cache import validate_cache, validate_database_cache
-from .backend_env import parse_backend_env
+from .components.postgres_tuning import validate_postgres_tuning
+from .components import (
+    parse_backend_env,
+    validate_cache,
+    validate_database_cache,
+    validate_pooler,
+)
 
 DEFAULT_APP_POOL_MAX = 20
 _NODE_RESERVE_FRACTION = 0.10

@@ -4,9 +4,9 @@ from __future__ import annotations
 
 from typing import Any
 
-from .models import K8sWorkloadSpec, POSTGRES_DATABASE, POSTGRES_PASSWORD, POSTGRES_USER
-from .placement import _pod_spec_affinity
-from .pooler import DEFAULT_READ_POOLER_SERVICE, PGBOUNCER_IMAGE, PoolerSpec
+from ..models import K8sWorkloadSpec, POSTGRES_DATABASE, POSTGRES_PASSWORD, POSTGRES_USER
+from ..components.placement import _pod_spec_affinity
+from ..components.pooler import DEFAULT_READ_POOLER_SERVICE, PGBOUNCER_IMAGE, PoolerSpec
 
 
 def _pgbouncer_env(
@@ -144,7 +144,7 @@ def build_pgbouncer_manifests(
 
 def default_read_pooler_spec() -> PoolerSpec:
     """Default read pooler: separate service name, same port as primary pooler."""
-    from .pooler import PoolerSpec
+    from ..components.pooler import PoolerSpec
 
     return PoolerSpec(
         enabled=False,

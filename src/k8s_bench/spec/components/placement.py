@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from .models import K8sWorkloadSpec
+from ..models import K8sWorkloadSpec
 from .postgres_tuning import postgres_tuning_container_args
 
 

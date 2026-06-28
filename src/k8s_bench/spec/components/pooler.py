@@ -6,7 +6,7 @@ from dataclasses import asdict, dataclass, field
 from typing import Any, Literal, TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from .models import ResourceSpec
+    from ..models import ResourceSpec
 
 PoolerMode = Literal["transaction", "session"]
 
@@ -17,7 +17,7 @@ DEFAULT_POOLER_PORT = 6432
 
 
 def _default_pooler_resources() -> ResourceSpec:
-    from .models import ResourceSpec
+    from ..models import ResourceSpec
 
     return ResourceSpec(
         cpu_request="250m",
@@ -54,7 +54,7 @@ class PoolerSpec:
         *,
         default_service_name: str = DEFAULT_POOLER_SERVICE,
     ) -> PoolerSpec:
-        from .models import ResourceSpec
+        from ..models import ResourceSpec
 
         if not data:
             return cls(service_name=default_service_name)
@@ -88,7 +88,7 @@ class PoolerSpec:
         return not self.enabled
 
     def to_mapping(self) -> dict[str, Any]:
-        from .models import ResourceSpec
+        from ..models import ResourceSpec
 
         if not self.enabled:
             return {"enabled": False}

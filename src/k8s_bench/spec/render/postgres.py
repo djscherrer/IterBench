@@ -4,14 +4,14 @@ from __future__ import annotations
 
 from typing import Any
 
-from .models import (
+from ..models import (
     K8sWorkloadSpec,
     POSTGRES_DATABASE,
     POSTGRES_PASSWORD,
     POSTGRES_USER,
 )
-from .placement import _pod_spec_affinity, _postgres_container_args
-from .postgres_tuning import postgres_tuning_bitnami_env
+from ..components.placement import _pod_spec_affinity, _postgres_container_args
+from ..components.postgres_tuning import postgres_tuning_bitnami_env
 
 # Bitnami replication image. Short tags like ``bitnami/postgresql:17`` were removed
 # from docker.io/bitnami (2025 catalog change); use the legacy repo for PG 17.

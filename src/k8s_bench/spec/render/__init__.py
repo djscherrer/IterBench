@@ -5,11 +5,11 @@ from typing import Any
 
 import yaml
 
-from .models import K8sWorkloadSpec
-from .pgbouncer_render import build_pgbouncer_manifests
-from .placement import _pod_spec_affinity
-from .postgres_render import build_postgres_manifests
-from .redis_render import build_redis_manifests
+from ..models import K8sWorkloadSpec
+from .pgbouncer import build_pgbouncer_manifests
+from ..components.placement import _pod_spec_affinity
+from .postgres import build_postgres_manifests
+from .redis import build_redis_manifests
 from ..workspace.paths import iteration_manifests_dir, iteration_spec_path
 
 

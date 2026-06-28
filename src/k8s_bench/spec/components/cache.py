@@ -6,7 +6,7 @@ from dataclasses import asdict, dataclass, field
 from typing import Any, TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from .models import ResourceSpec
+    from ..models import ResourceSpec
 
 DEFAULT_REDIS_IMAGE = "redis:7-alpine"
 DEFAULT_REDIS_SERVICE = "redis"
@@ -16,7 +16,7 @@ DEFAULT_REDIS_PORT = 6379
 
 def quantity_to_redis_maxmemory(quantity: str) -> str:
     """Convert a Kubernetes quantity (e.g. ``256Mi``) to bytes for ``redis-server --maxmemory``."""
-    from ..cluster.capacity import _parse_memory_to_bytes
+    from ...cluster.capacity import _parse_memory_to_bytes
 
     nbytes = _parse_memory_to_bytes(quantity)
     if nbytes <= 0:
@@ -37,7 +37,7 @@ ALLOWED_EVICTION_POLICIES = frozenset(
 
 
 def _default_cache_resources() -> ResourceSpec:
-    from .models import ResourceSpec
+    from ..models import ResourceSpec
 
     return ResourceSpec(
         cpu_request="100m",
@@ -66,7 +66,7 @@ class CacheSpec:
 
     @classmethod
     def from_mapping(cls, data: dict[str, Any] | None) -> CacheSpec:
-        from .models import ResourceSpec
+        from ..models import ResourceSpec
 
         if not data:
             return cls()
@@ -136,7 +136,7 @@ class DatabaseCacheSpec:
 
     @classmethod
     def from_mapping(cls, data: dict[str, Any] | None) -> DatabaseCacheSpec:
-        from .models import ResourceSpec
+        from ..models import ResourceSpec
 
         if not data:
             return cls()

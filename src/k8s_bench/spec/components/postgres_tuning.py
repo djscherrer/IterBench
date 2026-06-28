@@ -6,7 +6,7 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
-from ..cluster.capacity import _parse_memory_to_bytes
+from ...cluster.capacity import _parse_memory_to_bytes
 
 _MEMORY_QUANTITY_RE = re.compile(
     r"^(\d+(?:\.\d+)?)\s*(Ki|Mi|Gi|Ti|K|M|G|T|KB|MB|GB|TB)?$",

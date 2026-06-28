@@ -6,9 +6,13 @@ from typing import Any
 
 import yaml
 
-from .postgres_tuning import PostgresTuningSpec
-from .pooler import DEFAULT_READ_POOLER_SERVICE, PoolerSpec
-from .cache import CacheSpec, DatabaseCacheSpec
+from .components import (
+    CacheSpec,
+    DatabaseCacheSpec,
+    DEFAULT_READ_POOLER_SERVICE,
+    PoolerSpec,
+    PostgresTuningSpec,
+)
 
 POSTGRES_USER = "postgres"
 POSTGRES_PASSWORD = "postgres"
@@ -75,7 +79,7 @@ class BackendSpec:
 
     @classmethod
     def from_mapping(cls, data: dict[str, Any]) -> BackendSpec:
-        from .backend_env import parse_backend_env
+        from .components import parse_backend_env
 
         placement_raw = data.get("placement") or {}
         workers: list[str] = []
