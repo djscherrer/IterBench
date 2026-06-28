@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from ..spec.models import K8sWorkloadSpec
-from ..spec.scheduling import effective_pool_max
+from ..spec.validate import effective_pool_max
 from ..workspace import find_iteration_spec_path, latest_spec_path
 
 

@@ -1,13 +1,13 @@
 """Application code generation for k8s bench (baseline + refinement)."""
 
-from .baseline_meta import try_reuse_baseline_codegen
-from .generation import (
+from .attempt import (
     CodegenAttemptResult,
     CodegenMode,
     CodegenRetryState,
-    generate_and_validate_code,
     prepare_codegen_workspace,
+    run_code_attempt,
 )
+from .baseline_meta import try_reuse_baseline_codegen
 from .prior import find_latest_prior_failure_report
 
 __all__ = [
@@ -15,7 +15,7 @@ __all__ = [
     "CodegenMode",
     "CodegenRetryState",
     "find_latest_prior_failure_report",
-    "generate_and_validate_code",
     "prepare_codegen_workspace",
+    "run_code_attempt",
     "try_reuse_baseline_codegen",
 ]

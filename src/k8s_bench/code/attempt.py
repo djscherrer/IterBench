@@ -1,8 +1,7 @@
 """
-Single-attempt code generation helpers for baseline and refinement.
+Single code-generation attempt: LLM call, parse, snapshot, functional tests.
 
 Retry loops and phase failure handling live in :mod:`k8s_bench.stages.code`.
-Each attempt follows: LLM call → parse → snapshot code → functional tests.
 """
 
 from __future__ import annotations
@@ -13,11 +12,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
 
-from llm import Parser
-
 from ..feedback import IterationFeedback
 from ..failure import FunctionalFailureReport, build_functional_failure_report
-from ..util.sample import append_k8s_skip
 from ..workspace import (
     PROMPT_LOG_FILENAME,
     RESPONSE_LOG_FILENAME,
@@ -29,18 +25,15 @@ from ..workspace import (
     iteration_code_snapshot_dir,
     iteration_functional_tests_dir,
     iteration_id_for_index,
-    mark_iteration_folder_failed,
-    next_attempt_index,
     parse_iteration_folder_name,
 )
 from .baseline_meta import (
-    append_baseline_summary,
     capture_baseline_retry_state,
     reset_baseline_phase_on_force,
     rotate_top_level_into_attempt,
     write_attempt_meta,
-    write_codegen_meta,
 )
+from .parse import parse_code_response
 from .prompts import (
     build_baseline_prompt,
     build_code_refinement_prompt,
@@ -92,7 +85,7 @@ def prepare_codegen_workspace(
     return phase_dir
 
 
-def generate_and_validate_code(
+def run_code_attempt(
     *,
     mode: CodegenMode,
     attempt_index: int,
@@ -205,9 +198,12 @@ def generate_and_validate_code(
         max_cost_usd=llm_max_cost_usd,
     )
 
-    files = Parser(task.env, logger).parse_response(raw_response)
-    if Path("failed") in files:
-        error = "parse failure (LLM response did not contain expected code blocks)"
+    try:
+        files = parse_code_response(
+            raw_response, env=task.env, logger=logger
+        )
+    except ValueError as exc:
+        error = str(exc)
         logger.warning(error)
         if track_attempt_dirs:
             attempt_dir = attempt_subdir(
@@ -380,93 +376,6 @@ def generate_and_validate_code(
         )
 
     return CodegenAttemptResult(error=error, infra_failure=is_infra, continue_loop=True)
-
-
-def record_baseline_codegen_success(
-    *,
-    iteration_path: Path,
-    sample_dir: Path,
-    task: Any,
-    attempts_used: int,
-    max_attempts: int,
-    winning_attempt: int,
-    logger: logging.Logger,
-) -> None:
-    write_codegen_meta(
-        iteration_path,
-        status="passed",
-        attempts_used=attempts_used,
-        max_attempts=max_attempts,
-        task=task,
-        winning_attempt=winning_attempt,
-    )
-    append_baseline_summary(
-        sample_dir=sample_dir,
-        iteration_path=iteration_path,
-        task=task,
-        attempts_used=attempts_used,
-        max_attempts=max_attempts,
-        winning_attempt=winning_attempt,
-        status="passed",
-        error=None,
-        logger=logger,
-    )
-
-
-def finalize_baseline_codegen_failure(
-    *,
-    task: Any,
-    sample: int,
-    sample_dir: Path,
-    task_run_dir: Path | None,
-    iteration_path: Path,
-    max_attempts: int,
-    last_error: str | None,
-    terminal_infra_failure: bool,
-    logger: logging.Logger,
-) -> None:
-    """Persist baseline terminal failure metadata and mark the folder failed."""
-    attempts_used = next_attempt_index(iteration_code_attempts_dir(iteration_path)) - 1
-    terminal_status = "infra_failed" if terminal_infra_failure else "failed"
-    write_codegen_meta(
-        iteration_path,
-        status=terminal_status,
-        attempts_used=attempts_used,
-        max_attempts=max_attempts,
-        task=task,
-        winning_attempt=None,
-        error=last_error,
-        infra_failure=terminal_infra_failure,
-    )
-    append_baseline_summary(
-        sample_dir=sample_dir,
-        iteration_path=iteration_path,
-        task=task,
-        attempts_used=attempts_used,
-        max_attempts=max_attempts,
-        winning_attempt=None,
-        status=terminal_status,
-        error=last_error,
-        logger=logger,
-    )
-
-    if task_run_dir is not None:
-        skip_reason = (
-            f"skipped: baseline codegen aborted on infra failure after "
-            f"{attempts_used} attempt(s) — fix the host environment and rerun "
-            f"(last error: {last_error or 'unknown'})"
-            if terminal_infra_failure
-            else (
-                f"skipped: baseline codegen failed after {max_attempts} attempt(s) "
-                f"(last error: {last_error or 'unknown'})"
-            )
-        )
-        append_k8s_skip(task_run_dir, sample, skip_reason)
-
-    try:
-        mark_iteration_folder_failed(iteration_path)
-    except FileExistsError:
-        pass
 
 
 def _llm_call_for_mode(

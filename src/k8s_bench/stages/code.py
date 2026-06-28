@@ -1,12 +1,8 @@
 """
 Code stage (``02-code/``): baseline codegen, refinement, or copied lineage.
 
-This stage owns retry loops and failure handling. Single-attempt helpers live in
-:mod:`k8s_bench.code.generation` (``generate_and_validate_code``, etc.).
-
-- **baseline** — multi-attempt LLM codegen + FT validation; failure aborts sample.
-- **code** — same loop in refinement mode; failure marks ``-code-failed``.
-- **deployment** — copy prior code + FT artifacts (no LLM).
+Orchestrates retry loops and failure handling. Single attempts live in
+:mod:`k8s_bench.code.attempt` (``run_code_attempt``).
 """
 
 from __future__ import annotations
@@ -14,21 +10,28 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
-from ..code.baseline_meta import try_reuse_baseline_codegen
-from ..code.generation import (
+from ..code.attempt import (
     CodegenMode,
     CodegenRetryState,
-    finalize_baseline_codegen_failure,
-    generate_and_validate_code,
     prepare_codegen_workspace,
-    record_baseline_codegen_success,
+    run_code_attempt,
+)
+from ..code.baseline_meta import (
+    append_baseline_summary,
+    try_reuse_baseline_codegen,
+    write_codegen_meta,
 )
 from ..failure import fail_iteration_phase
 from ..orchestration.config import IterationPlan, RunConfig, SampleContext
+from ..util.sample import append_k8s_skip
 from ..workspace import (
+    iteration_code_attempts_dir,
     iteration_code_phase_dir,
+    mark_iteration_folder_failed,
     materialize_code_lineage,
+    next_attempt_index,
     resolve_iteration_dir,
     update_iteration_meta,
 )
@@ -127,7 +130,7 @@ def _codegen_with_retries(
     mode: CodegenMode,
     max_attempts: int,
 ) -> str | None:
-    """Retry ``generate_and_validate_code`` until FTs pass or attempts exhaust."""
+    """Retry ``run_code_attempt`` until FTs pass or attempts exhaust."""
     is_baseline = mode == "baseline"
     track_attempt_dirs = is_baseline
     fail_fast_on_infra = is_baseline
@@ -147,7 +150,7 @@ def _codegen_with_retries(
             iteration_path.name,
         )
 
-        result = generate_and_validate_code(
+        result = run_code_attempt(
             mode=mode,
             attempt_index=attempt_idx,
             max_attempts=max_attempts,
@@ -178,7 +181,7 @@ def _codegen_with_retries(
 
         if result.passed and result.image_id is not None:
             if is_baseline:
-                record_baseline_codegen_success(
+                _record_baseline_codegen_success(
                     iteration_path=iteration_path,
                     sample_dir=ctx.sample_dir,
                     task=ctx.task,
@@ -206,7 +209,7 @@ def _codegen_with_retries(
             )
 
     if is_baseline:
-        finalize_baseline_codegen_failure(
+        _finalize_baseline_codegen_failure(
             task=ctx.task,
             sample=ctx.sample,
             sample_dir=ctx.sample_dir,
@@ -219,6 +222,96 @@ def _codegen_with_retries(
         )
 
     return None
+
+
+def _record_baseline_codegen_success(
+    *,
+    iteration_path: Path,
+    sample_dir: Path,
+    task: Any,
+    attempts_used: int,
+    max_attempts: int,
+    winning_attempt: int,
+    logger: logging.Logger,
+) -> None:
+    write_codegen_meta(
+        iteration_path,
+        status="passed",
+        attempts_used=attempts_used,
+        max_attempts=max_attempts,
+        task=task,
+        winning_attempt=winning_attempt,
+    )
+    append_baseline_summary(
+        sample_dir=sample_dir,
+        iteration_path=iteration_path,
+        task=task,
+        attempts_used=attempts_used,
+        max_attempts=max_attempts,
+        winning_attempt=winning_attempt,
+        status="passed",
+        error=None,
+        logger=logger,
+    )
+
+
+def _finalize_baseline_codegen_failure(
+    *,
+    task: Any,
+    sample: int,
+    sample_dir: Path,
+    task_run_dir: Path | None,
+    iteration_path: Path,
+    max_attempts: int,
+    last_error: str | None,
+    terminal_infra_failure: bool,
+    logger: logging.Logger,
+) -> None:
+    attempts_used = next_attempt_index(iteration_code_attempts_dir(iteration_path)) - 1
+    terminal_status = "infra_failed" if terminal_infra_failure else "failed"
+    write_codegen_meta(
+        iteration_path,
+        status=terminal_status,
+        attempts_used=attempts_used,
+        max_attempts=max_attempts,
+        task=task,
+        winning_attempt=None,
+        error=last_error,
+        infra_failure=terminal_infra_failure,
+    )
+    append_baseline_summary(
+        sample_dir=sample_dir,
+        iteration_path=iteration_path,
+        task=task,
+        attempts_used=attempts_used,
+        max_attempts=max_attempts,
+        winning_attempt=None,
+        status=terminal_status,
+        error=last_error,
+        logger=logger,
+    )
+    update_iteration_meta(
+        iteration_path,
+        status="failed",
+        failure_reason=last_error or "baseline codegen failed",
+        failure_kind="code",
+    )
+    if task_run_dir is not None:
+        skip_reason = (
+            f"skipped: baseline codegen aborted on infra failure after "
+            f"{attempts_used} attempt(s) — fix the host environment and rerun "
+            f"(last error: {last_error or 'unknown'})"
+            if terminal_infra_failure
+            else (
+                f"skipped: baseline codegen failed after {max_attempts} attempt(s) "
+                f"(last error: {last_error or 'unknown'})"
+            )
+        )
+        append_k8s_skip(task_run_dir, sample, skip_reason)
+    try:
+        mark_iteration_folder_failed(iteration_path)
+    except FileExistsError:
+        pass
 
 
 def run_code_lineage_stage(

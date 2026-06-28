@@ -1,15 +1,8 @@
 """
 Spec preparation stage (``03-spec/``).
 
-Produces ``spec.yaml`` via LLM + static validation. This stage owns the retry
-loop and failure handling; :mod:`k8s_bench.spec.generation` provides single-attempt
-helpers (``generate_and_write_spec``, ``reuse_deployment_spec_for_iteration``).
-
-- **baseline**: multiple attempts; each successful static validation is followed
-  by a deploy probe (cluster must accept the spec before the stage succeeds).
-- **refinement**: multiple attempts with static validation only; deploy is
-  handled later by :mod:`stages.deploy`.
-- **reuse**: copy ``spec.yaml`` from a prior iteration (code-refinement path).
+Orchestrates retry loops, deploy probes, reuse, and failure handling.
+Single attempts live in :mod:`k8s_bench.spec.attempt` (``run_spec_attempt``).
 """
 
 from __future__ import annotations
@@ -22,11 +15,8 @@ from pathlib import Path
 from ..cluster.capacity import collect_cluster_capacity
 from ..failure import fail_iteration_phase
 from ..orchestration.config import IterationPlan, RunConfig, SampleContext
-from ..spec.generation import (
-    generate_and_write_spec,
-    record_spec_deploy_probe_failure,
-    reuse_deployment_spec_for_iteration,
-)
+from ..spec.attempt import SpecAttemptResult, record_spec_deploy_probe_failure, run_spec_attempt
+from ..spec.reuse import reuse_deployment_spec_for_iteration
 from ..workspace import (
     find_iteration_spec_path,
     resolve_iteration_dir,
@@ -97,7 +87,7 @@ def run_spec_generation_stage(
             sample=ctx.sample,
             iteration_id=plan.iteration_id,
             failure_reason="no spec.yaml after prepare",
-            kind="spec" if not is_baseline else "baseline",
+            kind="spec",
             logger=logger,
         )
         return SpecStageResult(None, abort_sample=is_baseline)
@@ -116,7 +106,7 @@ def _generate_spec_with_retries(
     is_baseline: bool,
     deploy_probe: Callable[[], DeployProbeResult] | None,
 ) -> Path | None:
-    """Retry ``generate_and_write_spec`` until success or attempts exhausted."""
+    """Retry ``run_spec_attempt`` until success or attempts exhausted."""
     capacity = collect_cluster_capacity()
     validation_feedback: str | None = None
     last_err = (
@@ -135,7 +125,7 @@ def _generate_spec_with_retries(
             max_attempts,
             ctx.sample,
         )
-        spec_file, gen_err = generate_and_write_spec(
+        result = run_spec_attempt(
             task=ctx.task,
             results_dir=ctx.results_dir,
             sample=ctx.sample,
@@ -153,9 +143,9 @@ def _generate_spec_with_retries(
             experiment_id=ctx.experiment_id,
             llm_max_cost_usd=ctx.llm_max_cost_usd,
         )
-        if spec_file is None:
-            last_err = gen_err or last_err
-            validation_feedback = gen_err
+        if result.spec_path is None:
+            last_err = result.error or last_err
+            validation_feedback = result.error
             if attempt < max_attempts:
                 logger.warning(
                     "spec generation attempt %d/%d failed: %s",
@@ -164,6 +154,15 @@ def _generate_spec_with_retries(
                     last_err,
                 )
             continue
+
+        spec_file = result.spec_path
+        _append_spec_summary_on_success(
+            ctx=ctx,
+            plan=plan,
+            iteration_path=iteration_path,
+            result=result,
+            logger=logger,
+        )
 
         if deploy_probe is not None:
             probe = deploy_probe()
@@ -200,10 +199,37 @@ def _generate_spec_with_retries(
         sample=ctx.sample,
         iteration_id=plan.iteration_id,
         failure_reason=last_err,
-        kind="baseline" if is_baseline else "spec",
+        kind="spec",
         logger=logger,
     )
     return None
+
+
+def _append_spec_summary_on_success(
+    *,
+    ctx: SampleContext,
+    plan: IterationPlan,
+    iteration_path: Path,
+    result: SpecAttemptResult,
+    logger: logging.Logger,
+) -> None:
+    if result.spec is None or result.spec_path is None:
+        return
+    try:
+        from ..experiment_summary import append_spec_generation_block
+
+        append_spec_generation_block(
+            sample_dir=ctx.sample_dir,
+            iteration_id=plan.iteration_id,
+            iteration_path=iteration_path,
+            spec=result.spec,
+            raw_response=result.raw_response,
+            warnings=list(result.warnings),
+            had_prior_feedback=plan.lineage.bench_feedback is not None,
+            iteration_index=plan.iteration_index,
+        )
+    except Exception as exc:
+        logger.warning("Could not update experiment summary: %s", exc)
 
 
 def run_reuse_spec_stage(

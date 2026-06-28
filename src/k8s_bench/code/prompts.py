@@ -82,9 +82,9 @@ def build_code_refinement_prompt(
         use_stubs=task.use_stubs,
     )
 
-    from ..spec.generation import _format_iteration_progress
+    from ..spec.prompts import format_iteration_progress
 
-    progress = _format_iteration_progress(
+    progress = format_iteration_progress(
         iteration_index=iteration_index, total_iterations=total_iterations
     )
     pointer_block = format_artifact_pointers_block(pointers)
