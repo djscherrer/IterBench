@@ -18,6 +18,7 @@ from typing import Any
 from .feedback import IterationFeedback
 from .workspace import (
     ITERATIONS_DIRNAME,
+    experiment_root_from_iteration_path,
     find_iteration_spec_path,
     iteration_spec_path,
     k8s_workspace_root,
@@ -60,29 +61,42 @@ _ADAPTIVE_V2_STOP_RE = re.compile(
 )
 
 
-def experiment_summary_path(sample_dir: Path) -> Path:
+def experiment_summary_path(
+    sample_dir: Path, *, experiment_id: str | None = None
+) -> Path:
     path = sample_dir.expanduser().resolve()
     if (path / ITERATIONS_DIRNAME).is_dir():
         return path / SUMMARY_FILENAME
-    return k8s_workspace_root(path) / SUMMARY_FILENAME
+    return k8s_workspace_root(path, experiment_id=experiment_id) / SUMMARY_FILENAME
+
+
+def experiment_summary_path_for_iteration(iteration_path: Path) -> Path:
+    """Summary file co-located with the experiment that owns ``iteration_path``."""
+    return experiment_root_from_iteration_path(iteration_path) / SUMMARY_FILENAME
 
 
 def _utc_now_label() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
 
 
-def _ensure_header(path: Path, *, sample_dir: Path, load_profile: str | None = None) -> None:
+def _ensure_header(
+    path: Path,
+    *,
+    sample_dir: Path,
+    load_profile: str | None = None,
+    experiment_id: str | None = None,
+) -> None:
     if path.is_file() and path.stat().st_size > 0:
         return
     path.parent.mkdir(parents=True, exist_ok=True)
-    experiment = resolve_k8s_experiment_id()
+    experiment = resolve_k8s_experiment_id(experiment_id)
     profile = (load_profile or os.environ.get("BAXBENCH_LOAD_PROFILE", "")).strip() or "default"
     header = "\n".join(
         [
             "# K8s experiment summary",
             "",
             f"- **Experiment**: `{experiment}`",
-            f"- **Workspace**: `{k8s_workspace_root(sample_dir)}`",
+            f"- **Workspace**: `{k8s_workspace_root(sample_dir, experiment_id=experiment_id)}`",
             f"- **Started**: {_utc_now_label()}",
             f"- **Load profile**: `{profile}`",
             "",
@@ -90,7 +104,7 @@ def _ensure_header(path: Path, *, sample_dir: Path, load_profile: str | None = N
             "full **Changes vs** prior iteration, rationale) and a **Locust run** block "
             "(adaptive ramp; collapsible utilization + run metrics when collected).",
             "",
-            f"- **LLM cost ledger**: `{k8s_workspace_root(sample_dir) / 'llm_cost_ledger.json'}` "
+            f"- **LLM cost ledger**: `{k8s_workspace_root(sample_dir, experiment_id=experiment_id) / 'llm_cost_ledger.json'}` "
             "(estimated; pass --llm-max-cost to cap spend)",
             "",
             "---",
@@ -960,8 +974,14 @@ def append_baseline_codegen_block(
     code to pass the functional test suite — and which attempts' transcripts
     live under ``02-code/attempts/<NNN>/`` for forensics on the failures.
     """
-    path = experiment_summary_path(sample_dir)
-    _ensure_header(path, sample_dir=sample_dir, load_profile=load_profile)
+    path = experiment_summary_path_for_iteration(iteration_path)
+    experiment_root = experiment_root_from_iteration_path(iteration_path)
+    _ensure_header(
+        path,
+        sample_dir=experiment_root.parent.parent,
+        load_profile=load_profile,
+        experiment_id=experiment_root.name,
+    )
     iid = normalize_iteration_id("iteration-000")
 
     from .workspace import (
@@ -1127,8 +1147,14 @@ def append_spec_generation_block(
     load_profile: str | None = None,
 ) -> Path:
     """Append spec-generation subsection for one iteration."""
-    path = experiment_summary_path(sample_dir)
-    _ensure_header(path, sample_dir=sample_dir, load_profile=load_profile)
+    path = experiment_summary_path_for_iteration(iteration_path)
+    experiment_root = experiment_root_from_iteration_path(iteration_path)
+    _ensure_header(
+        path,
+        sample_dir=experiment_root.parent.parent,
+        load_profile=load_profile,
+        experiment_id=experiment_root.name,
+    )
     iid = normalize_iteration_id(iteration_id)
 
     body = _build_spec_generation_block_text(
@@ -1412,8 +1438,16 @@ def append_perf_run_block(
     load_profile: str | None = None,
 ) -> Path:
     """Append Locust / adaptive perf subsection for one iteration."""
-    path = experiment_summary_path(sample_dir)
-    _ensure_header(path, sample_dir=sample_dir, load_profile=load_profile)
+    del sample_dir
+    iteration_path = perf_run_dir.parent
+    path = experiment_summary_path_for_iteration(iteration_path)
+    experiment_root = experiment_root_from_iteration_path(iteration_path)
+    _ensure_header(
+        path,
+        sample_dir=experiment_root.parent.parent,
+        load_profile=load_profile,
+        experiment_id=experiment_root.name,
+    )
     iid = normalize_iteration_id(iteration_id)
 
     body = _build_perf_run_block_text(perf_run_dir=perf_run_dir, feedback=feedback)
@@ -1536,8 +1570,14 @@ def append_iteration_failure_block(
     and surfaces an explicit **Infrastructure failure** banner when the FT run
     was blocked by the test harness rather than the application.
     """
-    path = experiment_summary_path(sample_dir)
-    _ensure_header(path, sample_dir=sample_dir, load_profile=load_profile)
+    path = experiment_summary_path_for_iteration(iteration_path)
+    experiment_root = experiment_root_from_iteration_path(iteration_path)
+    _ensure_header(
+        path,
+        sample_dir=experiment_root.parent.parent,
+        load_profile=load_profile,
+        experiment_id=experiment_root.name,
+    )
     iid = normalize_iteration_id(iteration_id)
 
     # Load the structured FT report (if any) so we can render the *real* cause
@@ -1679,12 +1719,20 @@ def append_refinement_decision_block(
     *,
     sample_dir: Path,
     iteration_id: str,
+    iteration_path: Path,
     decision: Any,
     load_profile: str | None = None,
 ) -> Path:
     """Append deployment-vs-code decision before a phase's spec generation."""
-    path = experiment_summary_path(sample_dir)
-    _ensure_header(path, sample_dir=sample_dir, load_profile=load_profile)
+    del sample_dir
+    path = experiment_summary_path_for_iteration(iteration_path)
+    experiment_root = experiment_root_from_iteration_path(iteration_path)
+    _ensure_header(
+        path,
+        sample_dir=experiment_root.parent.parent,
+        load_profile=load_profile,
+        experiment_id=experiment_root.name,
+    )
     iid = normalize_iteration_id(iteration_id)
     body = "\n".join(
         [

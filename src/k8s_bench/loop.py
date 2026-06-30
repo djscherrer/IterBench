@@ -271,6 +271,7 @@ def _run_deploy_only_for_task(
                 iteration_id=k8s_iteration,
                 auto_init=k8s_auto_init,
                 iteration_path=k8s_iteration_path,
+                experiment_id=cfg.experiment_id,
             )
         except FileNotFoundError as exc:
             append_k8s_skip(task_run_dir, sample, f"skipped: {exc}")
@@ -311,7 +312,10 @@ def _run_deploy_only_for_task(
             else:
                 source_code_dir = latest_code_dir(
                     ctx.sample_dir,
-                    fallback=k8s_fallback_code_dir(ctx.sample_dir),
+                    fallback=k8s_fallback_code_dir(
+                        ctx.sample_dir, experiment_id=ctx.experiment_id
+                    ),
+                    experiment_id=ctx.experiment_id,
                 )
 
             with task.create_logger(log_file) as logger:

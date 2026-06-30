@@ -17,8 +17,9 @@ def find_latest_prior_failure_report(
     sample_dir: Path,
     *,
     current_iteration_index: int,
+    experiment_id: str | None = None,
 ) -> FunctionalFailureReport | None:
-    root = iterations_root(sample_dir)
+    root = iterations_root(sample_dir, experiment_id=experiment_id)
     if not root.is_dir():
         return None
     best: tuple[int, Path] | None = None

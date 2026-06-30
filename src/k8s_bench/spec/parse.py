@@ -18,6 +18,7 @@ _YAML_FENCE_RE = re.compile(r"```(?:ya?ml)?\s*\n(.*?)```", re.DOTALL | re.IGNORE
 
 
 def parse_spec_fragment(response: str) -> dict[str, Any]:
+    match = _SPEC_BLOCK_RE.search(response)
     text = match.group(1).strip() if match else ""
     if not text:
         fences = _YAML_FENCE_RE.findall(response)
@@ -50,6 +51,7 @@ def merge_fragment_into_spec(
     app_port: int,
     needs_db: bool,
     labels: dict[str, str],
+    experiment_id: str | None = None,
 ) -> K8sWorkloadSpec:
     iid = normalize_iteration_id(iteration_id)
     backend_raw = fragment.get("backend") or {}
@@ -105,7 +107,7 @@ def merge_fragment_into_spec(
     )
     return K8sWorkloadSpec(
         iteration_id=iid,
-        namespace=default_k8s_namespace(iid),
+        namespace=default_k8s_namespace(iid, experiment_id=experiment_id),
         backend=backend,
         database=database,
         pooler=pooler,

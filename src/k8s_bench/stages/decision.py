@@ -84,6 +84,7 @@ def persist_refinement_decision(
         append_refinement_decision_block(
             sample_dir=ctx.sample_dir,
             iteration_id=iteration_id,
+            iteration_path=iteration_path,
             decision=decision,
             load_profile=cfg.load_profile,
         )
@@ -111,9 +112,12 @@ def build_refinement_decision_prompt(
     iteration_index: int,
     next_iteration_id: str,
     total_iterations: int = 0,
+    experiment_id: str | None = None,
 ) -> str:
     sample_dir = task.get_sample_dir(results_dir, sample)
-    pointers = resolve_artifact_pointers(sample_dir)
+    pointers = resolve_artifact_pointers(
+        sample_dir, experiment_id=experiment_id
+    )
     from ..spec.prompts import format_iteration_progress
 
     progress = format_iteration_progress(
@@ -200,6 +204,7 @@ def decide_refinement_action(
     prior_feedback: IterationFeedback,
     iteration_index: int,
     next_iteration_id: str,
+    prompter: "Prompter",
     logger: logging.Logger,
     vllm_port: int = 8000,
     max_retries: int = 3,
@@ -219,23 +224,15 @@ def decide_refinement_action(
         iteration_index=iteration_index,
         next_iteration_id=next_iteration_id,
         total_iterations=total_iterations,
+        experiment_id=experiment_id,
     )
     logger.info("refinement decision prompt:\n%s", prompt)
     decision_dir = iteration_decision_dir(iteration_path)
     decision_dir.mkdir(parents=True, exist_ok=True)
     (decision_dir / PROMPT_LOG_FILENAME).write_text(prompt + "\n", encoding="utf-8")
 
-    from ..session import get_experiment_session, persist_session
-
     sample_dir = task.get_sample_dir(results_dir, sample)
-    prompter = get_experiment_session(
-        task,
-        sample_dir,
-        sample,
-        vllm_port=vllm_port,
-        experiment_id=experiment_id,
-        logger=logger,
-    )
+    from ..session import persist_session
 
     import random
     import time
@@ -317,6 +314,11 @@ def run_decision_stage(
     orchestration applies the folder suffix after this returns.
     """
     from ..workspace import update_iteration_meta
+    if ctx.session is None:
+        raise RuntimeError(
+            "missing LLM session on SampleContext; expected sample_preflight() to "
+            "initialize ctx.session for iterative experiments"
+        )
 
     if lineage.bench_feedback is None:
         # Hard error: for iteration_index >= 1 we expect iteration N-1 to have
@@ -366,6 +368,7 @@ def run_decision_stage(
             prior_feedback=lineage.bench_feedback,
             iteration_index=iteration_index,
             next_iteration_id=iteration_id,
+            prompter=ctx.session,
             logger=logger,
             vllm_port=cfg.vllm_port,
             max_retries=cfg.max_retries,
@@ -390,6 +393,7 @@ def run_decision_stage(
 
 
 if TYPE_CHECKING:
+    from llm import Prompter
     from ..orchestration.config import (
         IterationPlan,
         IterationSetup,

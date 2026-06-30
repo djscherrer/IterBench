@@ -50,7 +50,9 @@ def run_spec_generation_stage(
     if max_attempts < 1:
         raise ValueError(f"max_attempts must be >= 1, got {max_attempts}")
 
-    iteration_path = resolve_iteration_dir(ctx.sample_dir, plan.iteration_id)
+    iteration_path = resolve_iteration_dir(
+        ctx.sample_dir, plan.iteration_id, experiment_id=ctx.experiment_id
+    )
     is_baseline = mode == "baseline"
 
     deploy_probe: Callable[[], DeployProbeResult] | None = None
@@ -118,6 +120,11 @@ def _generate_spec_with_retries(
     label = "Baseline" if is_baseline else "Refinement"
 
     for attempt in range(1, max_attempts + 1):
+        if ctx.session is None:
+            raise RuntimeError(
+                "missing LLM session on SampleContext; expected sample_preflight() to "
+                "initialize ctx.session for iterative experiments"
+            )
         logger.info(
             "%s spec attempt %d/%d for sample %d",
             label,
@@ -131,6 +138,7 @@ def _generate_spec_with_retries(
             sample=ctx.sample,
             iteration_path=iteration_path,
             iteration_id=plan.iteration_id,
+            session=ctx.session,
             logger=logger,
             capacity=capacity,
             prior_feedback=plan.lineage.bench_feedback if not is_baseline else None,
@@ -242,7 +250,9 @@ def run_reuse_spec_stage(
     """Reuse a prior spec.yaml (code refinement path)."""
     from tasks import esc
 
-    iteration_path = resolve_iteration_dir(ctx.sample_dir, plan.iteration_id)
+    iteration_path = resolve_iteration_dir(
+        ctx.sample_dir, plan.iteration_id, experiment_id=ctx.experiment_id
+    )
     bench_labels_dict = {
         "baxbench.dev/model": esc(ctx.task.model),
         "baxbench.dev/scenario": esc(ctx.task.scenario.id),
@@ -262,6 +272,7 @@ def run_reuse_spec_stage(
         target_iteration_id=plan.iteration_id,
         extra_labels=bench_labels_dict,
         logger=logger,
+        experiment_id=ctx.experiment_id,
     )
     update_iteration_meta(
         iteration_path,

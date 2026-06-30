@@ -6,6 +6,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .workspace import k8s_fallback_code_dir, latest_code_dir, latest_spec_path
+
+DECISION_TELEMETRY_POINTER = (
     "Load test results, diagnostics, and failed-attempt anti-examples: see the "
     "**decision-phase user message** immediately above in this conversation."
 )
@@ -13,7 +15,9 @@ from .workspace import k8s_fallback_code_dir, latest_code_dir, latest_spec_path
 DECISION_GUARDRAILS = """\
 If the benchmark feedback below lists **failed attempts since the last successful iteration**, treat them as anti-examples: do not repeat the same change without addressing the recorded failure.
 
-**Do not choose `code`** when a failure is tagged `[INFRASTRUCTURE FAILURE]` (Docker port conflict, container start failure, image pull error, or "Server did not start in time"). The functional-test harness blocked before HTTP reached the application — rewriting application code cannot fix that; pick `deployment` to retry deploy or adjust resources."""
+**Do not choose `code`** when a failure is tagged `[INFRASTRUCTURE FAILURE]` due to the test harness itself (Docker port conflict, container networking failure, image pull error, Postgres test container failing to start). In those cases, rewriting application code will not help; pick `deployment` (or rerun) to adjust resources/config.
+
+Note: **"Server did not start in time" is ambiguous** — it can be true infrastructure (container never started) *or* a fast application crash at import/startup. Use the accompanying container logs/traceback to decide; if it crashed due to a Python exception, choose `code` and fix the crash."""
 
 
 @dataclass(frozen=True)
@@ -24,14 +28,18 @@ class ArtifactPointers:
     spec_iteration_folder: str | None
 
 
-def resolve_artifact_pointers(sample_dir: Path) -> ArtifactPointers:
+def resolve_artifact_pointers(
+    sample_dir: Path, *, experiment_id: str | None = None
+) -> ArtifactPointers:
     """Map on-disk code/spec lineage to iteration folder names for prompt pointers."""
     code_dir = latest_code_dir(
-        sample_dir, fallback=k8s_fallback_code_dir(sample_dir)
+        sample_dir,
+        fallback=k8s_fallback_code_dir(sample_dir, experiment_id=experiment_id),
+        experiment_id=experiment_id,
     )
     code_folder = code_dir.parent.parent.name
 
-    spec_pair = latest_spec_path(sample_dir)
+    spec_pair = latest_spec_path(sample_dir, experiment_id=experiment_id)
     spec_folder = spec_pair[1].name if spec_pair is not None else None
 
     return ArtifactPointers(

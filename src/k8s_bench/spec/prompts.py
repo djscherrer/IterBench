@@ -15,7 +15,6 @@ from ..prompt_helpers import (
     ArtifactPointers,
     format_artifact_pointers_block,
 )
-from .validate import infer_pool_max_from_hints
 
 def _benchmark_load_hint(scenario: Scenario) -> str:
     """Scenario-specific load description (replaces stale generic endpoint examples)."""
@@ -66,28 +65,12 @@ def _safety_performance_text(
     )
 
 
-def read_app_hints(code_dir: pathlib.Path, *, max_chars: int = 4000) -> str:
-    if not code_dir.is_dir():
-        return "(application code not found yet)"
-    candidates = ["app.js", "main.py", "app.py", "server.js", "index.js"]
-    for name in candidates:
-        path = code_dir / name
-        if path.is_file():
-            text = path.read_text(encoding="utf-8", errors="replace")[:max_chars]
-            return f"Excerpt from {name}:\n{text}"
-    files = sorted(code_dir.glob("*"))[:5]
-    if not files:
-        return "(empty code directory)"
-    return "Code files: " + ", ".join(p.name for p in files)
-
-
 def build_k8s_spec_prompt(
     *,
     env: Env,
     scenario: Scenario,
     safety_prompt: str,
     capacity: ClusterCapacity,
-    app_hints: str,
     iteration_id: str,
     iteration_index: int = 0,
     total_iterations: int = 0,
@@ -96,7 +79,6 @@ def build_k8s_spec_prompt(
     artifact_pointers: ArtifactPointers | None = None,
 ) -> str:
     perf = _safety_performance_text(env, scenario, safety_prompt)
-    pool_max = infer_pool_max_from_hints(app_hints)
     progress = format_iteration_progress(
         iteration_index=iteration_index, total_iterations=total_iterations
     )
@@ -157,8 +139,7 @@ Propose deployment parameters for iteration `{iteration_id}` so the application 
 - Scenario: {scenario.id}
 - Environment: {env.id} (listen port {env.port})
 - Database required: {scenario.needs_db}
-- App DB connection pool (per worker process): **{pool_max}** connections (inferred from generated code, unless you set `backend.env.PG_POOL_MAX` or `backend.env.DB_POOL_SIZE`)
-- A replica runs `backend.web_concurrency` worker processes; with `worker_class=gthread`, each process also runs `worker_threads` concurrent requests **but shares one DB pool per process** — effective DB concurrency per pod ≈ `web_concurrency × pool_max`, not `web_concurrency × worker_threads`
+- A replica runs `backend.web_concurrency` worker processes; with `worker_class=gthread`, each process also runs `worker_threads` concurrent requests. DB connection pool sizing is controlled by `backend.env.PG_POOL_MAX` / `backend.env.DB_POOL_SIZE` (if you set them).
 
 ## Cluster capacity
 Schedulable **workers only** (control-plane excluded). Use **requests** for scheduling fit.
@@ -176,18 +157,17 @@ Schedulable **workers only** (control-plane excluded). Use **requests** for sche
 
 ## Scheduling rules (critical — hard limits enforced before deploy)
 1. **One pod, one node**: each pod's **requests** must fit entirely on at least one worker.
-2. **Connection budget (no pooler)**: `backend.replicas × backend.web_concurrency × pool_max ≤ database.max_connections` on the **primary** (pool_max from code or `backend.env.PG_POOL_MAX` / `backend.env.DB_POOL_SIZE`).
-3. **Connection budget (pooler enabled)**: the same product must be ≤ `pooler.max_client_conn` for **writes**; if `read_pooler` is enabled, the same product must also fit `read_pooler.max_client_conn` for **reads**. PgBouncer opens ≤ `default_pool_size` server connections per pooler tier (each must be ≤ `database.max_connections`).
-4. **Cluster budget**: sum of all pod requests (backends + primary + read replicas + `pooler.replicas` + `read_pooler.replicas` (if enabled) + `cache.replicas` + dedicated `database.cache` Redis if `use_shared: false`) must fit cluster capacity after reserve.
-5. Optional **placement**: restrict or pin which workers may run postgres/backends; `spread_replicas: true` spreads backend pods across nodes.
-6. Use worker **`name` values** from the per-worker list (short names like `node3` are accepted).
+2. **Cluster budget**: sum of all pod requests (backends + primary + read replicas + `pooler.replicas` + `read_pooler.replicas` (if enabled) + `cache.replicas` + dedicated `database.cache` Redis if `use_shared: false`) must fit cluster capacity after reserve.
+3. Optional **placement**: restrict or pin which workers may run postgres/backends; `spread_replicas: true` spreads backend pods across nodes.
+4. Use worker **`name` values** from the per-worker list (short names like `node3` are accepted).
+5. **DB connection budget is enforced when explicit**: if you set `backend.env.PG_POOL_MAX` or `backend.env.DB_POOL_SIZE`, the framework estimates app-side DB client connections as `backend.replicas × backend.web_concurrency × pool_max`. If `pooler.enabled`, then `pooler.max_client_conn` (and `read_pooler.max_client_conn` if enabled) must be **≥** that estimate, or the spec will be rejected before deploy. Lower replicas/workers/pool_max or raise `max_client_conn`.
 
 ## Spec fields (semantics — you choose values)
 Use load test results and diagnostics from the decision-phase message above to refine replicas and resources. The framework validates feasibility; it does not prescribe tuning targets.
 
 **`backend`** (horizontally scalable — many stateless pods):
 - `replicas`: pod count behind the Service
-- `web_concurrency`: gunicorn/PM2 **processes** per pod (`--workers`). More processes = more parallelism but more DB client connections (`web_concurrency × pool_max` per replica unless pooler multiplexes).
+- `web_concurrency`: gunicorn/PM2 **processes** per pod (`--workers`). More processes = more parallelism but more DB client connections (bounded by `backend.env.PG_POOL_MAX` / `backend.env.DB_POOL_SIZE` if set; otherwise depends on app code).
 - `worker_class`: gunicorn worker type — `sync` (default, one request per process), `gthread` (threads per process; pair with `worker_threads`), or `gevent` (requires gevent in the image).
 - `worker_threads`: threads per process when `worker_class=gthread` (e.g. `4` processes × `8` threads = 32 in-flight requests per pod with fewer DB pools than 32 sync workers).
 - `preload`: gunicorn `--preload` (default `true`) — loads app once before forking workers (faster startup, shared memory); set `false` to isolate workers after code/config changes.

@@ -19,10 +19,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Literal, NamedTuple
+from typing import Any, Literal, NamedTuple, TYPE_CHECKING
 
 from ..stages.decision import RefinementDecision, RefinementMode
 from .lineage import IterationLineage, SpecRef
+
+if TYPE_CHECKING:
+    from llm import Prompter
 
 
 RefinementAction = Literal["baseline", "code", "deployment"]
@@ -68,6 +71,7 @@ class SampleContext:
     experiment_id: str = "default"
     k8s_cluster: str = ""
     llm_max_cost_usd: float | None = None
+    session: "Prompter | None" = None
 
 
 @dataclass(frozen=True)

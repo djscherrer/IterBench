@@ -33,7 +33,9 @@ def run_outcome_stage(
     logger: logging.Logger,
 ) -> None:
     """Build feedback, persist artifacts, update meta + summary."""
-    iteration_path = resolve_iteration_dir(ctx.sample_dir, plan.iteration_id)
+    iteration_path = resolve_iteration_dir(
+        ctx.sample_dir, plan.iteration_id, experiment_id=ctx.experiment_id
+    )
     try:
         spec = K8sWorkloadSpec.from_yaml_file(spec_file)
         fb = collect_iteration_feedback(

@@ -78,7 +78,7 @@ def refresh_k8s_cost_summary(
     experiment_id: str = "default",
 ) -> None:
     """Insert or update the cost block in ``experiment_summary.md``."""
-    summary = experiment_summary_path(sample_dir)
+    summary = experiment_summary_path(sample_dir, experiment_id=experiment_id)
     if not summary.is_file():
         return
     ensure_cost_section_in_summary(

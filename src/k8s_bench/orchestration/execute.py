@@ -159,7 +159,9 @@ def execute_iteration(
         lineage=lineage,
     )
 
-    iteration_path = resolve_iteration_dir(ctx.sample_dir, plan.iteration_id)
+    iteration_path = resolve_iteration_dir(
+        ctx.sample_dir, plan.iteration_id, experiment_id=ctx.experiment_id
+    )
     _write_iteration_header(iteration_path, plan, cfg)
 
     # -------

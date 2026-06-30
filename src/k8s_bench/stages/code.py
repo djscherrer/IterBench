@@ -61,7 +61,9 @@ def run_codegen_stage(
     if max_attempts < 1:
         raise ValueError(f"max_attempts must be >= 1, got {max_attempts}")
 
-    iteration_path = resolve_iteration_dir(ctx.sample_dir, plan.iteration_id)
+    iteration_path = resolve_iteration_dir(
+        ctx.sample_dir, plan.iteration_id, experiment_id=ctx.experiment_id
+    )
 
     if mode == "baseline" and iteration_path.is_dir() and not cfg.force:
         reused = try_reuse_baseline_codegen(
@@ -85,6 +87,11 @@ def run_codegen_stage(
         iteration_path=iteration_path,
         force=cfg.force,
     )
+    if ctx.session is None:
+        raise RuntimeError(
+            "missing LLM session on SampleContext; expected sample_preflight() to "
+            "initialize ctx.session for iterative experiments"
+        )
 
     image_id = _codegen_with_retries(
         ctx=ctx,
@@ -154,6 +161,7 @@ def _codegen_with_retries(
             mode=mode,
             attempt_index=attempt_idx,
             max_attempts=max_attempts,
+            prompter=ctx.session,
             task=ctx.task,
             results_dir=ctx.results_dir,
             sample=ctx.sample,
@@ -324,7 +332,9 @@ def run_code_lineage_stage(
         raise RuntimeError(
             f"iteration {plan.iteration_id}: no latest_code_dir for code lineage copy"
         )
-    iteration_path = resolve_iteration_dir(ctx.sample_dir, plan.iteration_id)
+    iteration_path = resolve_iteration_dir(
+        ctx.sample_dir, plan.iteration_id, experiment_id=ctx.experiment_id
+    )
     iteration_code_phase_dir(iteration_path).mkdir(parents=True, exist_ok=True)
     image_id = (
         materialize_code_lineage(

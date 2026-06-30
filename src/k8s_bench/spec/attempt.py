@@ -28,19 +28,14 @@ from ..workspace import (
     iteration_spec_attempts_dir,
     iteration_spec_dir,
     iteration_spec_path,
-    latest_code_dir,
-    k8s_fallback_code_dir,
     next_attempt_index,
 )
 from .models import BackendSpec, K8sWorkloadSpec
 from .parse import merge_fragment_into_spec, parse_spec_fragment
-from .prompts import build_k8s_spec_prompt, read_app_hints
+from .placement import normalize_spec_placement
+from .prompts import build_k8s_spec_prompt
 from .render import render_iteration
-from .validate import (
-    SpecValidationError,
-    normalize_spec_placement,
-    validate_spec_against_cluster,
-)
+from .validate import SpecValidationError, validate_spec_against_cluster
 
 
 @dataclass(frozen=True)
@@ -129,7 +124,6 @@ def generate_k8s_workload_spec(
     reasoning_effort: str,
     safety_prompt: str,
     capacity: ClusterCapacity,
-    app_hints: str,
     iteration_id: str,
     logger: logging.Logger,
     vllm_port: int = 8000,
@@ -168,7 +162,6 @@ def generate_k8s_workload_spec(
             scenario=scenario,
             safety_prompt=safety_prompt,
             capacity=capacity,
-            app_hints=app_hints,
             iteration_id=iteration_id,
             iteration_index=iteration_index,
             total_iterations=total_iterations,
@@ -298,6 +291,7 @@ def generate_k8s_workload_spec(
                 app_port=env.port,
                 needs_db=scenario.needs_db,
                 labels={},
+                experiment_id=experiment_id,
             )
         except ValueError as parse_exc:
             if per_attempt_dir is not None:
@@ -341,9 +335,7 @@ def generate_k8s_workload_spec(
                 )
             continue
 
-        result = validate_spec_against_cluster(
-            spec, capacity, app_hints=app_hints
-        )
+        result = validate_spec_against_cluster(spec, capacity)
         if result.errors:
             validation_hint = SpecValidationError(result.errors).to_prompt_text()
             logger.warning(
@@ -477,6 +469,7 @@ def run_spec_attempt(
     sample: int,
     iteration_path: Path,
     iteration_id: str,
+    session: "Prompter",
     logger: logging.Logger,
     capacity: ClusterCapacity,
     prior_feedback: IterationFeedback | None = None,
@@ -496,25 +489,13 @@ def run_spec_attempt(
     ``error`` when static validation fails after ``max_validation_retries``.
     """
     sample_dir = task.get_sample_dir(results_dir, sample)
-    code_dir = latest_code_dir(
-        sample_dir, fallback=k8s_fallback_code_dir(sample_dir)
-    )
-    app_hints = read_app_hints(code_dir)
     from ..prompt_helpers import resolve_artifact_pointers
-    from ..session import get_experiment_session, persist_session
+    from ..session import persist_session
 
     artifact_pointers = (
-        resolve_artifact_pointers(sample_dir)
+        resolve_artifact_pointers(sample_dir, experiment_id=experiment_id)
         if prior_feedback is not None
         else None
-    )
-    spec_session = get_experiment_session(
-        task,
-        sample_dir,
-        sample,
-        vllm_port=vllm_port,
-        experiment_id=experiment_id,
-        logger=logger,
     )
     try:
         spec, raw, warnings = generate_k8s_workload_spec(
@@ -526,7 +507,6 @@ def run_spec_attempt(
             reasoning_effort=task.reasoning_effort,
             safety_prompt=task.safety_prompt,
             capacity=capacity,
-            app_hints=app_hints,
             iteration_id=iteration_id,
             logger=logger,
             vllm_port=vllm_port,
@@ -538,13 +518,13 @@ def run_spec_attempt(
             iteration_index=iteration_index,
             total_iterations=total_iterations,
             enable_attempts=enable_attempts,
-            session=spec_session,
+            session=session,
             artifact_pointers=artifact_pointers,
             experiment_id=experiment_id,
             llm_max_cost_usd=llm_max_cost_usd,
         )
         persist_session(
-            spec_session, sample_dir, experiment_id=experiment_id, logger=logger
+            session, sample_dir, experiment_id=experiment_id, logger=logger
         )
         spec = _apply_task_labels_to_spec(
             spec, task=task, results_dir=results_dir, sample=sample

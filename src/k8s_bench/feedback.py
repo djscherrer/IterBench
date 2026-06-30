@@ -612,6 +612,8 @@ def read_failed_iteration_error_excerpt(
 def load_prior_feedback_for_iteration(
     sample_dir: Path,
     iteration_index: int,
+    *,
+    experiment_id: str | None = None,
 ) -> IterationFeedback | None:
     """
     Load feedback from the **immediately preceding** iteration (``iteration_index - 1``).
@@ -641,12 +643,16 @@ def load_prior_feedback_for_iteration(
 
     prev_idx = iteration_index - 1
     prev_id = iteration_id_for_index(prev_idx)
-    ip = resolve_iteration_dir(sample_dir, prev_id)
+    ip = resolve_iteration_dir(
+        sample_dir, prev_id, experiment_id=experiment_id
+    )
 
     if iteration_is_failed(ip):
         return _failed_iteration_feedback(ip, prev_id)
 
-    bench = resolve_bench_dir(sample_dir, prev_id)
+    bench = resolve_bench_dir(
+        sample_dir, prev_id, experiment_id=experiment_id
+    )
     if bench is None:
         return None
     fb = load_feedback(bench)

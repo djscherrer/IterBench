@@ -34,7 +34,10 @@ def plan_iteration(
     ensure_iteration_core_layout(iteration_path)
 
     lineage = load_iteration_lineage(
-        ctx.sample_dir, iteration_index, is_baseline=is_baseline
+        ctx.sample_dir,
+        iteration_index,
+        is_baseline=is_baseline,
+        experiment_id=ctx.experiment_id,
     )
     based_on = (
         lineage.bench_feedback.iteration_id
@@ -53,6 +56,7 @@ def plan_iteration(
         ctx.sample_dir,
         iteration_id=iteration_id,
         load_profile=cfg.load_profile,
+        experiment_id=ctx.experiment_id,
     ):
         append_k8s_skip(
             ctx.task_run_dir,
@@ -72,10 +76,9 @@ def plan_iteration(
 
 
 def _resolve_iteration_path(ctx: SampleContext, iteration_id: str) -> Path:
-    iteration_path = resolve_iteration_dir(ctx.sample_dir, iteration_id)
-    if not iteration_path.is_dir() and not (iteration_path / "meta.json").is_file():
-        iteration_path = ctx.task.get_k8s_iteration_dir(
-            ctx.results_dir, ctx.sample, iteration_id
-        )
-    return iteration_path
+    return resolve_iteration_dir(
+        ctx.sample_dir,
+        iteration_id,
+        experiment_id=ctx.experiment_id,
+    )
 

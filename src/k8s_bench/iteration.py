@@ -42,6 +42,7 @@ from .workspace import (
     deploy_bench_record_path,
     deploy_probe_record_path,
     ensure_iteration_core_layout,
+    experiment_root_from_iteration_path,
     find_iteration_spec_path,
     iteration_id_for_index,
     iteration_spec_path,
@@ -52,7 +53,6 @@ from .workspace import (
     parse_iteration_folder_name,
     perf_run_dir_for_iteration,
     resolve_iteration_dir,
-    resolve_k8s_experiment_id,
 )
 from .spec.render import render_iteration
 
@@ -223,6 +223,7 @@ def resolve_iterations_to_run(
     iteration_id: str | None,
     auto_init: bool,
     iteration_path: Path | None = None,
+    experiment_id: str | None = None,
 ) -> list[Path]:
     if iteration_path is not None:
         path = Path(iteration_path).expanduser().resolve()
@@ -232,20 +233,24 @@ def resolve_iterations_to_run(
             raise FileNotFoundError(f"Missing spec for iteration: {path}")
         return [path]
     if iteration_id:
-        path = resolve_iteration_dir(sample_dir, iteration_id)
+        path = resolve_iteration_dir(
+            sample_dir, iteration_id, experiment_id=experiment_id
+        )
         if find_iteration_spec_path(path) is None:
             raise FileNotFoundError(f"Missing spec for iteration: {path}")
         return [path]
-    existing = list_iteration_dirs(sample_dir)
+    existing = list_iteration_dirs(sample_dir, experiment_id=experiment_id)
     if existing:
         return existing
     if not auto_init:
         raise FileNotFoundError(
-            f"No k8s iterations under {iterations_root(sample_dir)}; "
+            f"No k8s iterations under {iterations_root(sample_dir, experiment_id=experiment_id)}; "
             "pass --k8s-iteration or enable auto-init."
         )
-    iid = new_iteration_id(sample_dir)
-    path = resolve_iteration_dir(sample_dir, iid)
+    iid = new_iteration_id(sample_dir, experiment_id=experiment_id)
+    path = resolve_iteration_dir(
+        sample_dir, iid, experiment_id=experiment_id
+    )
     ensure_iteration_core_layout(path)
     return [path]
 
@@ -331,7 +336,7 @@ def write_k8s_run_config(
     locust_target: str,
     load_topology: LoadTopology,
 ) -> None:
-    experiment_id = resolve_k8s_experiment_id()
+    experiment_id = experiment_root_from_iteration_path(iteration_path).name
     snapshot: dict[str, Any] = {
         "deploy_target": "kubernetes",
         "requested_profiles": {"load_profile": load_profile},
@@ -455,13 +460,22 @@ def run_k8s_bench_iteration(
         load_master=profile.load_master,
         load_workers=profile.load_workers,
     )
-    load_profile = resolve_load_profile(load_profile)
+    load_profile_name = load_profile
+    resolved_load_profile = resolve_load_profile(load_profile_name)
     run_time_s = (
-        int(bench_run_time) if bench_run_time is not None else int(load_profile.effective_run_time_s)
+        int(bench_run_time)
+        if bench_run_time is not None
+        else int(resolved_load_profile.effective_run_time_s)
     )
-    users = int(bench_users) if bench_users is not None else int(load_profile.effective_users)
+    users = (
+        int(bench_users)
+        if bench_users is not None
+        else int(resolved_load_profile.effective_users)
+    )
     spawn_rate = (
-        int(bench_spawn_rate) if bench_spawn_rate is not None else int(load_profile.effective_spawn_rate)
+        int(bench_spawn_rate)
+        if bench_spawn_rate is not None
+        else int(resolved_load_profile.effective_spawn_rate)
     )
 
     local_locust = prepare_locust_run_dir(run_dir, locustfile)
@@ -471,7 +485,7 @@ def run_k8s_bench_iteration(
         run_dir,
         spec=spec,
         deploy_result=deploy_result,
-        load_profile=load_profile,
+        load_profile=load_profile_name,
         iteration_path=iteration_path,
         image_reference=prepared.reference,
         locust_target=target_base_url,
@@ -489,7 +503,7 @@ def run_k8s_bench_iteration(
         bench_spawn_rate=spawn_rate,
         bench_run_time_s=run_time_s,
         locust_run_time=f"{run_time_s}s",
-        load_profile=load_profile,
+        load_profile=resolved_load_profile,
         target_base_url=target_base_url,
         sample_dir=run_dir,
         sample_slug=_slugify_run_part(sample_slug),

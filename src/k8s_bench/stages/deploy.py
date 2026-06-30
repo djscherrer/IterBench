@@ -312,7 +312,9 @@ def run_deploy_stage(
     ``deployment`` (new spec). Skips baseline iterations that already probed
     during the spec retry loop.
     """
-    iteration_path = resolve_iteration_dir(ctx.sample_dir, plan.iteration_id)
+    iteration_path = resolve_iteration_dir(
+        ctx.sample_dir, plan.iteration_id, experiment_id=ctx.experiment_id
+    )
 
     if not should_run_deploy_stage(plan):
         if probe_record_passed(iteration_path):

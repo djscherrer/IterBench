@@ -90,6 +90,7 @@ def run_code_attempt(
     mode: CodegenMode,
     attempt_index: int,
     max_attempts: int,
+    prompter: "Prompter",
     task: Any,
     results_dir: Path,
     sample: int,
@@ -141,6 +142,7 @@ def run_code_attempt(
     try:
         prompt_text, raw_response, prompter = _llm_call_for_mode(
             mode=mode,
+            prompter=prompter,
             task=task,
             results_dir=results_dir,
             sample=sample,
@@ -381,6 +383,7 @@ def run_code_attempt(
 def _llm_call_for_mode(
     *,
     mode: CodegenMode,
+    prompter: "Prompter",
     task: Any,
     results_dir: Path,
     sample: int,
@@ -401,17 +404,6 @@ def _llm_call_for_mode(
     log_label: str,
     experiment_id: str = "default",
 ) -> tuple[str, str, Any]:
-    from ..session import get_experiment_session
-
-    prompter = get_experiment_session(
-        task,
-        sample_dir,
-        sample,
-        vllm_port=vllm_port,
-        experiment_id=experiment_id,
-        logger=logger,
-    )
-
     if mode == "baseline":
         prompt_text = build_baseline_prompt(
             prompter,
@@ -431,6 +423,7 @@ def _llm_call_for_mode(
             prior_failure_report=prior_failure_report,
             iteration_index=iteration_index,
             total_iterations=total_iterations,
+            experiment_id=experiment_id,
         )
 
     raw_response = call_llm_with_retries(
@@ -444,6 +437,12 @@ def _llm_call_for_mode(
         log_label=log_label,
     )
     return prompt_text, raw_response, prompter
+
+
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from llm import Prompter
 
 
 def _iteration_id_for_llm_cost(iteration_path: Path, iteration_index: int) -> str:

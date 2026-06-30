@@ -25,6 +25,7 @@ def reuse_deployment_spec_for_iteration(
     target_iteration_id: str,
     extra_labels: dict[str, str] | None = None,
     logger: logging.Logger,
+    experiment_id: str | None = None,
 ) -> Path:
     """
     Copy deployment parameters from a prior iteration (no spec LLM).
@@ -32,7 +33,9 @@ def reuse_deployment_spec_for_iteration(
     Used after successful **code** refinement: bench the new image under the
     same replicas/resources/DB settings as the iteration we learned from.
     """
-    source_path = resolve_iteration_dir(sample_dir, source_iteration_id)
+    source_path = resolve_iteration_dir(
+        sample_dir, source_iteration_id, experiment_id=experiment_id
+    )
     src_spec_path = find_iteration_spec_path(source_path)
     if src_spec_path is None:
         raise FileNotFoundError(
@@ -47,7 +50,7 @@ def reuse_deployment_spec_for_iteration(
 
     reused = K8sWorkloadSpec(
         iteration_id=iid,
-        namespace=default_k8s_namespace(iid),
+        namespace=default_k8s_namespace(iid, experiment_id=experiment_id),
         backend=spec.backend,
         database=spec.database,
         pooler=spec.pooler,

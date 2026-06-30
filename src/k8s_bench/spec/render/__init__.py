@@ -10,7 +10,7 @@ from .pgbouncer import build_pgbouncer_manifests
 from ..components.placement import _pod_spec_affinity
 from .postgres import build_postgres_manifests
 from .redis import build_redis_manifests
-from ..workspace.paths import iteration_manifests_dir, iteration_spec_path
+from ...workspace.paths import iteration_manifests_dir, iteration_spec_path
 
 
 def _common_labels(spec: K8sWorkloadSpec) -> dict[str, str]:

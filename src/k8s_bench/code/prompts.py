@@ -70,10 +70,13 @@ def build_code_refinement_prompt(
     prior_failure_report: FunctionalFailureReport | None = None,
     iteration_index: int = 0,
     total_iterations: int = 0,
+    experiment_id: str | None = None,
 ) -> str:
     del prior_feedback  # pointers replace inline feedback in slim prompts
     sample_dir = task.get_sample_dir(results_dir, sample)
-    pointers = resolve_artifact_pointers(sample_dir)
+    pointers = resolve_artifact_pointers(
+        sample_dir, experiment_id=experiment_id
+    )
     base = task.scenario.build_prompt(
         task.env,
         spec_type=task.spec_type,
@@ -114,7 +117,9 @@ def build_code_refinement_prompt(
         DECISION_TELEMETRY_POINTER,
         "",
     ]
-    replica_hint = format_k8s_deployment_context(iteration_path, sample_dir)
+    replica_hint = format_k8s_deployment_context(
+        iteration_path, sample_dir, experiment_id=experiment_id
+    )
     if replica_hint:
         parts.extend([replica_hint, ""])
 

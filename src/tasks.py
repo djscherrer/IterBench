@@ -428,18 +428,36 @@ class Task:
     def get_sample_dir(self, results_dir: pathlib.Path, sample: int) -> pathlib.Path:
         return self.get_save_dir(results_dir) / f"sample{sample}"
 
-    def get_k8s_configs_dir(self, results_dir: pathlib.Path, sample: int) -> pathlib.Path:
+    def get_k8s_configs_dir(
+        self,
+        results_dir: pathlib.Path,
+        sample: int,
+        *,
+        experiment_id: str | None = None,
+    ) -> pathlib.Path:
         """``…/iterations`` root (legacy name kept for callers)."""
         from k8s_bench.workspace import iterations_root
 
-        return iterations_root(self.get_sample_dir(results_dir, sample))
+        return iterations_root(
+            self.get_sample_dir(results_dir, sample),
+            experiment_id=experiment_id,
+        )
 
     def get_k8s_iteration_dir(
-        self, results_dir: pathlib.Path, sample: int, iteration_id: str
+        self,
+        results_dir: pathlib.Path,
+        sample: int,
+        iteration_id: str,
+        *,
+        experiment_id: str | None = None,
     ) -> pathlib.Path:
         from k8s_bench.workspace import iteration_dir
 
-        return iteration_dir(self.get_sample_dir(results_dir, sample), iteration_id)
+        return iteration_dir(
+            self.get_sample_dir(results_dir, sample),
+            iteration_id,
+            experiment_id=experiment_id,
+        )
 
     def get_k8s_bench_run_dir(
         self,
@@ -460,11 +478,14 @@ class Task:
         *,
         iteration_id: str,
         load_profile: str,
+        experiment_id: str | None = None,
     ) -> bool:
         from k8s_bench.workspace import resolve_bench_dir
 
         del load_profile
-        return resolve_bench_dir(sample_dir, iteration_id) is not None
+        return resolve_bench_dir(
+            sample_dir, iteration_id, experiment_id=experiment_id
+        ) is not None
 
     def get_functional_tests_dir(
         self, results_dir: pathlib.Path, sample: int

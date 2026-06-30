@@ -135,6 +135,18 @@ def sample_preflight(
     iterations_root(sample_dir, experiment_id=cfg.experiment_id).mkdir(
         parents=True, exist_ok=True
     )
+    # Build the conversational LLM session once per (sample, experiment) and
+    # thread it through all iterative stages.
+    from ..session import get_experiment_session
+
+    session = get_experiment_session(
+        task,
+        sample_dir,
+        sample,
+        vllm_port=cfg.vllm_port,
+        experiment_id=cfg.experiment_id,
+        logger=logging.getLogger(task.id),
+    )
     return SampleContext(
         task=task,
         results_dir=results_dir,
@@ -144,6 +156,7 @@ def sample_preflight(
         experiment_id=cfg.experiment_id,
         k8s_cluster=cfg.k8s_cluster,
         llm_max_cost_usd=cfg.llm_max_cost_usd,
+        session=session,
     )
 
 
@@ -162,7 +175,7 @@ def sample_context_from_baseline_disk(
     task_run_dir = task.get_save_dir(results_dir)
     sample_dir = task.get_sample_dir(results_dir, sample)
     iteration_path = resolve_iteration_dir(
-        sample_dir, iteration_id_for_index(0)
+        sample_dir, iteration_id_for_index(0), experiment_id=cfg.experiment_id
     )
     sample_logger = logging.getLogger(task.id)
     ctx = _deploy_only_iteration_preflight(
@@ -222,7 +235,11 @@ def deploy_only_preflight(
         return ctx
 
     source_code = latest_code_dir(
-        sample_dir, fallback=k8s_fallback_code_dir(sample_dir)
+        sample_dir,
+        fallback=k8s_fallback_code_dir(
+            sample_dir, experiment_id=cfg.experiment_id
+        ),
+        experiment_id=cfg.experiment_id,
     )
     materialize_code_lineage(iteration_path, source_code)
 

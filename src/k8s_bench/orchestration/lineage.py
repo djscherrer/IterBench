@@ -45,17 +45,22 @@ def load_iteration_lineage(
     iteration_index: int,
     *,
     is_baseline: bool,
+    experiment_id: str | None = None,
 ) -> IterationLineage:
     bench_feedback: IterationFeedback | None = None
     if not is_baseline:
         bench_feedback = load_prior_feedback_for_iteration(
-            sample_dir, iteration_index
+            sample_dir,
+            iteration_index,
+            experiment_id=experiment_id,
         )
 
-    latest_code_dir = find_latest_code_dir(sample_dir)
+    latest_code_dir = find_latest_code_dir(
+        sample_dir, experiment_id=experiment_id
+    )
 
     latest_spec: SpecRef | None = None
-    spec_pair = latest_spec_path(sample_dir)
+    spec_pair = latest_spec_path(sample_dir, experiment_id=experiment_id)
     if spec_pair is not None:
         spec_path, iteration_dir = spec_pair
         latest_spec = SpecRef(
@@ -67,7 +72,9 @@ def load_iteration_lineage(
     code_failure_report: FunctionalFailureReport | None = None
     if not is_baseline:
         code_failure_report = find_latest_prior_failure_report(
-            sample_dir, current_iteration_index=iteration_index
+            sample_dir,
+            current_iteration_index=iteration_index,
+            experiment_id=experiment_id,
         )
 
     return IterationLineage(

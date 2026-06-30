@@ -180,9 +180,17 @@ def mark_iteration_folder_failed(iteration_path: Path) -> Path:
     return target
 
 
-def iteration_dir(sample_dir: Path, iteration_id: str) -> Path:
+def iteration_dir(
+    sample_dir: Path,
+    iteration_id: str,
+    *,
+    experiment_id: str | None = None,
+) -> Path:
     """Canonical write path before kind suffix: ``…/iterations/iteration-001``."""
-    return iterations_root(sample_dir) / normalize_iteration_id(iteration_id)
+    return (
+        iterations_root(sample_dir, experiment_id=experiment_id)
+        / normalize_iteration_id(iteration_id)
+    )
 
 
 def resolve_iteration_dir(
@@ -190,16 +198,19 @@ def resolve_iteration_dir(
     iteration_id: str,
     *,
     exclude_failed: bool = True,
+    experiment_id: str | None = None,
 ) -> Path:
     """Return the best-matching iteration directory for a logical iteration id."""
     iid = normalize_iteration_id(iteration_id)
     m = re.fullmatch(r"iteration-(\d+)", iid)
     if not m:
-        return iteration_dir(sample_dir, iteration_id)
+        return iteration_dir(
+            sample_dir, iteration_id, experiment_id=experiment_id
+        )
 
     phase_slug = m.group(1).zfill(3)
     prefix = f"{ITERATION_PREFIX}{phase_slug}"
-    root = iterations_root(sample_dir)
+    root = iterations_root(sample_dir, experiment_id=experiment_id)
     candidates: list[Path] = []
     if root.is_dir():
         exact = root / prefix
@@ -328,14 +339,16 @@ def iteration_code_snapshot_dir(iteration_path: Path) -> Path:
     return iteration_code_phase_dir(iteration_path) / "code"
 
 
-def find_latest_code_dir(sample_dir: Path) -> Path | None:
+def find_latest_code_dir(
+    sample_dir: Path, *, experiment_id: str | None = None
+) -> Path | None:
     """
     Newest non-failed iteration ``02-code/code/`` snapshot, or ``None``.
 
     Excludes ``-failed`` folders so a broken code-refinement attempt does not
     become the copy source for deployment/spec iterations.
     """
-    root = iterations_root(sample_dir)
+    root = iterations_root(sample_dir, experiment_id=experiment_id)
     if not root.is_dir():
         return None
     best: tuple[int, Path] | None = None
@@ -353,7 +366,9 @@ def find_latest_code_dir(sample_dir: Path) -> Path | None:
     return best[1] if best is not None else None
 
 
-def latest_code_dir(sample_dir: Path, *, fallback: Path) -> Path:
+def latest_code_dir(
+    sample_dir: Path, *, fallback: Path, experiment_id: str | None = None
+) -> Path:
     """
     Return the newest non-failed iteration ``code/`` snapshot, else ``fallback``.
 
@@ -361,17 +376,21 @@ def latest_code_dir(sample_dir: Path, *, fallback: Path) -> Path:
     For k8s bench, pass :func:`k8s_fallback_code_dir` as ``fallback`` — not
     sample-level ``code/`` from distributed bench.
     """
-    return find_latest_code_dir(sample_dir) or fallback
+    return (
+        find_latest_code_dir(sample_dir, experiment_id=experiment_id) or fallback
+    )
 
 
-def k8s_fallback_code_dir(sample_dir: Path) -> Path:
+def k8s_fallback_code_dir(
+    sample_dir: Path, *, experiment_id: str | None = None
+) -> Path:
     """
     Fallback code directory for k8s bench when no iteration snapshot matches yet.
 
     K8s experiments always generate baseline code under ``iteration-000*``; we do
     not use sample-level ``code/`` from ``--mode generate``.
     """
-    root = iterations_root(sample_dir)
+    root = iterations_root(sample_dir, experiment_id=experiment_id)
     if root.is_dir():
         for child in sorted(root.iterdir()):
             if not child.name.startswith(f"{ITERATION_PREFIX}000"):
@@ -382,11 +401,17 @@ def k8s_fallback_code_dir(sample_dir: Path) -> Path:
             if code_dir.is_dir() and any(code_dir.iterdir()):
                 return code_dir
     return iteration_code_snapshot_dir(
-        resolve_iteration_dir(sample_dir, iteration_id_for_index(0))
+        resolve_iteration_dir(
+            sample_dir,
+            iteration_id_for_index(0),
+            experiment_id=experiment_id,
+        )
     )
 
 
-def latest_spec_path(sample_dir: Path) -> tuple[Path, Path] | None:
+def latest_spec_path(
+    sample_dir: Path, *, experiment_id: str | None = None
+) -> tuple[Path, Path] | None:
     """
     Return ``(spec_yaml_path, iteration_dir)`` for the most recent iteration
     that has a ``spec.yaml`` on disk, or ``None`` if no spec was ever written.
@@ -403,7 +428,7 @@ def latest_spec_path(sample_dir: Path) -> tuple[Path, Path] | None:
     and ``iteration-005-spec-failed`` exist transiently during renames), the
     non-failed one is preferred.
     """
-    root = iterations_root(sample_dir)
+    root = iterations_root(sample_dir, experiment_id=experiment_id)
     if not root.is_dir():
         return None
 
@@ -534,8 +559,10 @@ def is_baseline_iteration(iteration_index: int) -> bool:
     return iteration_index == 0
 
 
-def _max_iteration_number(sample_dir: Path) -> int:
-    root = iterations_root(sample_dir)
+def _max_iteration_number(
+    sample_dir: Path, *, experiment_id: str | None = None
+) -> int:
+    root = iterations_root(sample_dir, experiment_id=experiment_id)
     if not root.is_dir():
         return 0
     max_n = 0
@@ -548,15 +575,24 @@ def _max_iteration_number(sample_dir: Path) -> int:
     return max_n
 
 
-def new_iteration_id(sample_dir: Path) -> str:
+def new_iteration_id(
+    sample_dir: Path, *, experiment_id: str | None = None
+) -> str:
     """Return the next ``iteration-NNN`` id."""
-    iterations_root(sample_dir).mkdir(parents=True, exist_ok=True)
-    return f"{ITERATION_PREFIX}{_max_iteration_number(sample_dir) + 1:03d}"
+    iterations_root(sample_dir, experiment_id=experiment_id).mkdir(
+        parents=True, exist_ok=True
+    )
+    return (
+        f"{ITERATION_PREFIX}"
+        f"{_max_iteration_number(sample_dir, experiment_id=experiment_id) + 1:03d}"
+    )
 
 
-def list_iteration_dirs(sample_dir: Path) -> list[Path]:
+def list_iteration_dirs(
+    sample_dir: Path, *, experiment_id: str | None = None
+) -> list[Path]:
     """List successful iteration directories that contain a spec."""
-    root = iterations_root(sample_dir)
+    root = iterations_root(sample_dir, experiment_id=experiment_id)
     if not root.is_dir():
         return []
 
@@ -593,9 +629,16 @@ def _bench_run_complete(bench: Path) -> bool:
     return bench_dir_has_complete_run(bench)
 
 
-def resolve_bench_dir(sample_dir: Path, iteration_id: str) -> Path | None:
+def resolve_bench_dir(
+    sample_dir: Path,
+    iteration_id: str,
+    *,
+    experiment_id: str | None = None,
+) -> Path | None:
     """Return ``iterations/<id>/bench`` when a finished run exists."""
-    ip = resolve_iteration_dir(sample_dir, iteration_id)
+    ip = resolve_iteration_dir(
+        sample_dir, iteration_id, experiment_id=experiment_id
+    )
     bench = iteration_bench_dir(ip)
     if _bench_run_complete(bench):
         return bench
@@ -608,9 +651,12 @@ def perf_run_dir_for_iteration(
     *,
     load_profile: str,
     timestamp: str,
+    experiment_id: str | None = None,
 ) -> Path:
     del load_profile, timestamp
-    ip = resolve_iteration_dir(sample_dir, iteration_id)
+    ip = resolve_iteration_dir(
+        sample_dir, iteration_id, experiment_id=experiment_id
+    )
     from .layout import ensure_iteration_core_layout
 
     ensure_iteration_core_layout(ip)

@@ -10,7 +10,10 @@ from ..workspace import find_iteration_spec_path, latest_spec_path
 
 
 def resolve_active_spec(
-    iteration_path: Path, sample_dir: Path
+    iteration_path: Path,
+    sample_dir: Path,
+    *,
+    experiment_id: str | None = None,
 ) -> tuple[K8sWorkloadSpec, Path, Path] | None:
     own = find_iteration_spec_path(iteration_path)
     if own is not None:
@@ -19,7 +22,7 @@ def resolve_active_spec(
         except Exception:
             pass
 
-    latest = latest_spec_path(sample_dir)
+    latest = latest_spec_path(sample_dir, experiment_id=experiment_id)
     if latest is None:
         return None
     spec_path, source_dir = latest
@@ -30,9 +33,14 @@ def resolve_active_spec(
 
 
 def format_k8s_deployment_context(
-    iteration_path: Path, sample_dir: Path
+    iteration_path: Path,
+    sample_dir: Path,
+    *,
+    experiment_id: str | None = None,
 ) -> str:
-    resolved = resolve_active_spec(iteration_path, sample_dir)
+    resolved = resolve_active_spec(
+        iteration_path, sample_dir, experiment_id=experiment_id
+    )
     if resolved is None:
         return ""
     spec, _spec_path, source_dir = resolved
@@ -42,7 +50,7 @@ def format_k8s_deployment_context(
     read_pooler = spec.read_pooler
     cache = spec.cache
 
-    pool_max = effective_pool_max(spec, "")
+    pool_max = effective_pool_max(spec)
 
     worker_line = (
         f"- **Gunicorn workers**: {backend.web_concurrency} "
@@ -142,7 +150,7 @@ def format_k8s_deployment_context(
     else:
         lines.append("- **Backend env (spec)**: (none)")
 
-    if db.enabled:
+    if db.enabled and pool_max is not None:
         client_conns = backend.replicas * backend.web_concurrency * pool_max
         lines.extend(
             [
@@ -171,5 +179,15 @@ def format_k8s_deployment_context(
                 "- `DB_READ_HOST` / `DB_READ_PORT` are set — route read-only queries "
                 "(GET/list/export) through the read pool; keep writes on `DB_HOST`."
             )
+    elif db.enabled:
+        lines.extend(
+            [
+                "",
+                (
+                    "**Connection budget**: not computed (set `backend.env.PG_POOL_MAX` or "
+                    "`backend.env.DB_POOL_SIZE` in the spec to make pool sizing explicit)."
+                ),
+            ]
+        )
 
     return "\n".join(lines)
