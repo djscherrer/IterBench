@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-from ..util.sample import append_k8s_skip
+from ..workspace.skips import append_k8s_skip
 from ..workspace.meta import update_iteration_meta
 from ..workspace.paths import mark_iteration_folder_failed
 from .build import build_functional_failure_report

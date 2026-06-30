@@ -9,7 +9,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from ..util.sample import ensure_docker_image, functional_tests_passed_at
+from .docker_image import ensure_docker_image
+from .shared import functional_tests_passed_at
 from ..workspace import (
     PROMPT_LOG_FILENAME,
     RESPONSE_LOG_FILENAME,

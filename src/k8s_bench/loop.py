@@ -30,7 +30,7 @@ from .orchestration.preflight import (
     sample_preflight,
 )
 from .stages.bench import run_locust_for_iteration
-from .util.sample import append_k8s_skip
+from .workspace.skips import append_k8s_skip
 from .workspace import (
     bench_dir_has_complete_run,
     ensure_iteration_core_layout,
@@ -69,7 +69,6 @@ def run_k8s_bench(
     max_retries: int = 3,
     base_delay: float = 1.0,
     max_delay: float = 60.0,
-    vllm_port: int = 8000,
     baseline_code_max_attempts: int = 3,
     baseline_spec_max_attempts: int = 5,
 ) -> list[Path]:
@@ -133,7 +132,6 @@ def run_k8s_bench(
                             max_retries=max_retries,
                             base_delay=base_delay,
                             max_delay=max_delay,
-                            vllm_port=vllm_port,
                             baseline_code_max_attempts=baseline_code_max_attempts,
                             baseline_spec_max_attempts=baseline_spec_max_attempts,
                         )
@@ -167,7 +165,6 @@ def _run_iterative_experiment_for_task(
     max_retries: int,
     base_delay: float,
     max_delay: float,
-    vllm_port: int,
     baseline_code_max_attempts: int,
     baseline_spec_max_attempts: int,
 ) -> list[Path]:
@@ -191,7 +188,6 @@ def _run_iterative_experiment_for_task(
         max_retries=max_retries,
         base_delay=base_delay,
         max_delay=max_delay,
-        vllm_port=vllm_port,
         baseline_code_max_attempts=baseline_code_max_attempts,
         baseline_spec_max_attempts=baseline_spec_max_attempts,
     )
@@ -258,7 +254,6 @@ def _run_deploy_only_for_task(
         max_retries=3,
         base_delay=1.0,
         max_delay=60.0,
-        vllm_port=8000,
     )
 
     for sample in samples:

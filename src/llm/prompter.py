@@ -115,6 +115,26 @@ class Prompter:
     def send(self, content: str, logger: logging.Logger) -> str:
         return conversation.send(self, content, logger)
 
+    def send_with_retries(
+        self,
+        content: str,
+        logger: logging.Logger,
+        *,
+        max_retries: int,
+        base_delay: float = 1.0,
+        max_delay: float = 128.0,
+        log_label: str = "LLM",
+    ) -> str:
+        return conversation.send_with_retries(
+            self,
+            content,
+            logger,
+            max_retries=max_retries,
+            base_delay=base_delay,
+            max_delay=max_delay,
+            log_label=log_label,
+        )
+
     # --- Message / cache helpers (thin wrappers for provider modules) --
 
     def _system_role(self) -> str | None:

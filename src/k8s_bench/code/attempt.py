@@ -12,8 +12,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
 
+from llm import Prompter
+
 from ..feedback import IterationFeedback
 from ..failure import FunctionalFailureReport, build_functional_failure_report
+from ..session import persist_session
 from ..workspace import (
     PROMPT_LOG_FILENAME,
     RESPONSE_LOG_FILENAME,
@@ -34,11 +37,7 @@ from .baseline_meta import (
     write_attempt_meta,
 )
 from .parse import parse_code_response
-from .prompts import (
-    build_baseline_prompt,
-    build_code_refinement_prompt,
-    call_llm_with_retries,
-)
+from .prompts import build_baseline_prompt, build_code_refinement_prompt
 from .shared import (
     classify_ft_failure,
     ft_pass_counts,
@@ -90,7 +89,7 @@ def run_code_attempt(
     mode: CodegenMode,
     attempt_index: int,
     max_attempts: int,
-    prompter: "Prompter",
+    prompter: Prompter,
     task: Any,
     results_dir: Path,
     sample: int,
@@ -101,7 +100,6 @@ def run_code_attempt(
     ft_timeout: int,
     num_ports: int,
     min_port: int,
-    vllm_port: int,
     max_retries: int,
     base_delay: float,
     max_delay: float,
@@ -139,30 +137,41 @@ def run_code_attempt(
         logger.error(error)
         return CodegenAttemptResult(error=error, continue_loop=False)
 
+    iteration_id = _iteration_id_for_llm_cost(iteration_path, iteration_index)
     try:
-        prompt_text, raw_response, prompter = _llm_call_for_mode(
-            mode=mode,
-            prompter=prompter,
-            task=task,
-            results_dir=results_dir,
-            sample=sample,
-            sample_dir=sample_dir,
-            iteration_path=iteration_path,
-            logger=logger,
-            vllm_port=vllm_port,
+        if mode == "baseline":
+            prompt_text = build_baseline_prompt(
+                task=task,
+                iteration_id=iteration_id,
+                iteration_index=iteration_index,
+                total_iterations=total_iterations,
+                prior_code=retry_state.last_attempt_code,
+                failure_report=retry_state.last_failure_report,
+            )
+        else:
+            if prior_feedback is None:
+                raise ValueError("refinement codegen requires prior_feedback")
+            prompt_text = build_code_refinement_prompt(
+                task=task,
+                results_dir=results_dir,
+                sample=sample,
+                iteration_id=iteration_id,
+                prior_feedback=prior_feedback,
+                same_iteration_failure_report=retry_state.same_iteration_report,
+                prior_failure_report=prior_failure_report,
+                iteration_index=iteration_index,
+                total_iterations=total_iterations,
+                experiment_id=experiment_id,
+            )
+        raw_response = prompter.send_with_retries(
+            prompt_text,
+            logger,
             max_retries=max_retries,
             base_delay=base_delay,
             max_delay=max_delay,
-            prior_feedback=prior_feedback,
-            prior_failure_report=prior_failure_report,
-            same_iteration_failure_report=retry_state.same_iteration_report,
-            last_attempt_code=retry_state.last_attempt_code,
-            last_failure_report=retry_state.last_failure_report,
-            iteration_index=iteration_index,
-            total_iterations=total_iterations,
             log_label=log_label,
-            experiment_id=experiment_id,
         )
+        persist_session(prompter, sample_dir, logger=logger)
     except Exception as exc:
         error = f"LLM call failed: {exc}"
         if track_attempt_dirs:
@@ -187,14 +196,13 @@ def run_code_attempt(
         raw_response + "\n", encoding="utf-8"
     )
 
-    iter_id = _iteration_id_for_llm_cost(iteration_path, iteration_index)
     record_k8s_llm_call(
         prompter=prompter,
         call_type=llm_call_type,
         sample_dir=sample_dir,
         logger=logger,
         artifact_dir=phase_dir,
-        iteration_id=iter_id,
+        iteration_id=iteration_id,
         note=f"attempt={attempt_index}",
         experiment_id=experiment_id,
         max_cost_usd=llm_max_cost_usd,
@@ -378,71 +386,6 @@ def run_code_attempt(
         )
 
     return CodegenAttemptResult(error=error, infra_failure=is_infra, continue_loop=True)
-
-
-def _llm_call_for_mode(
-    *,
-    mode: CodegenMode,
-    prompter: "Prompter",
-    task: Any,
-    results_dir: Path,
-    sample: int,
-    sample_dir: Path,
-    iteration_path: Path,
-    logger: logging.Logger,
-    vllm_port: int,
-    max_retries: int,
-    base_delay: float,
-    max_delay: float,
-    prior_feedback: IterationFeedback | None,
-    prior_failure_report: FunctionalFailureReport | None,
-    same_iteration_failure_report: FunctionalFailureReport | None,
-    last_attempt_code: str,
-    last_failure_report: FunctionalFailureReport | None,
-    iteration_index: int,
-    total_iterations: int,
-    log_label: str,
-    experiment_id: str = "default",
-) -> tuple[str, str, Any]:
-    if mode == "baseline":
-        prompt_text = build_baseline_prompt(
-            prompter,
-            prior_code=last_attempt_code,
-            failure_report=last_failure_report,
-        )
-    else:
-        if prior_feedback is None:
-            raise ValueError("refinement codegen requires prior_feedback")
-        prompt_text = build_code_refinement_prompt(
-            task=task,
-            results_dir=results_dir,
-            sample=sample,
-            iteration_path=iteration_path,
-            prior_feedback=prior_feedback,
-            same_iteration_failure_report=same_iteration_failure_report,
-            prior_failure_report=prior_failure_report,
-            iteration_index=iteration_index,
-            total_iterations=total_iterations,
-            experiment_id=experiment_id,
-        )
-
-    raw_response = call_llm_with_retries(
-        prompter=prompter,
-        prompt_text=prompt_text,
-        sample_dir=sample_dir,
-        logger=logger,
-        max_retries=max_retries,
-        base_delay=base_delay,
-        max_delay=max_delay,
-        log_label=log_label,
-    )
-    return prompt_text, raw_response, prompter
-
-
-from typing import TYPE_CHECKING
-
-if TYPE_CHECKING:
-    from llm import Prompter
 
 
 def _iteration_id_for_llm_cost(iteration_path: Path, iteration_index: int) -> str:

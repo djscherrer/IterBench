@@ -147,9 +147,11 @@ def _generate_spec_with_retries(
             enable_attempts=is_baseline,
             iteration_index=plan.iteration_index,
             total_iterations=cfg.total_iterations,
-            vllm_port=cfg.vllm_port,
             experiment_id=ctx.experiment_id,
             llm_max_cost_usd=ctx.llm_max_cost_usd,
+            max_retries=cfg.max_retries,
+            base_delay=cfg.base_delay,
+            max_delay=cfg.max_delay,
         )
         if result.spec_path is None:
             last_err = result.error or last_err

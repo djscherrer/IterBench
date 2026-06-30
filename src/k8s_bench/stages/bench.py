@@ -13,16 +13,15 @@ from typing import Any
 
 from locust_bench.paths import locust_csv_prefix
 
+from ..code.docker_image import ensure_docker_image
 from ..iteration import run_k8s_bench_iteration
-from ..util.sample import (
-    append_k8s_skip,
-    bench_labels,
-    ensure_docker_image,
-    performance_test_names,
-    resolve_locustfile,
-)
-from ..workspace import iteration_code_snapshot_dir, resolve_iteration_dir
 from ..orchestration.config import IterationPlan, RunConfig, SampleContext
+from ..workspace import (
+    experiment_root_from_iteration_path,
+    iteration_code_snapshot_dir,
+    resolve_iteration_dir,
+)
+from ..workspace.skips import append_k8s_skip
 
 
 def run_bench_stage(
@@ -90,7 +89,7 @@ def run_locust_for_iteration(
 
     task_run_dir = task.get_save_dir(results_dir)
     iteration_id = iteration_path.name
-    tests = performance_test_names(task)
+    tests = _performance_test_names(task)
     if not tests:
         append_k8s_skip(
             task_run_dir,
@@ -114,7 +113,7 @@ def run_locust_for_iteration(
         )
         return False
 
-    locustfile = resolve_locustfile(task, run_dir)
+    locustfile = _resolve_locustfile(task, run_dir)
     if locustfile is None:
         append_k8s_skip(task_run_dir, sample, "skipped: missing locustfile")
         return False
@@ -123,7 +122,7 @@ def run_locust_for_iteration(
         f"{esc(task.model)}-{esc(task.env.id)}-"
         f"{esc(task.scenario.id)}-sample{sample}"
     )
-    labels = bench_labels(task, iteration_index=iteration_index)
+    labels = _bench_labels(task, iteration_index=iteration_index)
 
     for test in tests:
         csv_prefix = locust_csv_prefix(run_dir, test)
@@ -166,3 +165,43 @@ def run_locust_for_iteration(
         logger=logger,
     )
     return True
+
+
+def _performance_test_names(task: Any) -> list[str]:
+    if task.scenario.performance_tests:
+        return list(task.scenario.performance_tests)
+    from scenario_files import SCENARIO_FILE_PATH
+
+    shared = SCENARIO_FILE_PATH.joinpath(f"locustfiles/{task.scenario.id.lower()}.py")
+    if shared.is_file() or task.scenario.locustfile:
+        return ["default"]
+    return []
+
+
+def _resolve_locustfile(task: Any, run_dir: Path) -> Path | None:
+    from locust_bench.paths import locust_dir
+    from scenario_files import SCENARIO_FILE_PATH
+
+    shared = SCENARIO_FILE_PATH.joinpath(f"locustfiles/{task.scenario.id.lower()}.py")
+    if task.scenario.locustfile:
+        locustfile = locust_dir(run_dir) / f"locustfile-{task.scenario.id.lower()}.py"
+        locustfile.write_text(task.scenario.locustfile, encoding="utf-8")
+        return locustfile
+    if shared.is_file():
+        return shared
+    return None
+
+
+def _bench_labels(task: Any, *, iteration_index: int | None = None) -> dict[str, str]:
+    from tasks import esc
+
+    labels = {
+        "baxbench.dev/model": esc(task.model),
+        "baxbench.dev/scenario": esc(task.scenario.id),
+        "baxbench.dev/env": esc(task.env.id),
+    }
+    if iteration_index is not None:
+        # Kept as ``baxbench.dev/phase`` for back-compat with existing kubectl
+        # filters and dashboards; semantically this is the iteration index.
+        labels["baxbench.dev/phase"] = str(iteration_index)
+    return labels

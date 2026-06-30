@@ -35,6 +35,7 @@ from llm import Prompter
 from .workspace import k8s_workspace_root, resolve_k8s_experiment_id
 
 CONVERSATION_FILENAME = "conversation.json"
+VLLM_PORT = 8000
 
 # In-process cache so every phase within one run reuses the *same* Prompter
 # object (and thus the live, growing history) for a given sample+experiment.
@@ -48,9 +49,7 @@ def conversation_path(
     return k8s_workspace_root(sample_dir, experiment_id=experiment_id) / CONVERSATION_FILENAME
 
 
-def _build_conversational_prompter(
-    task: Any, sample: int, vllm_port: int
-) -> Prompter:
+def _build_conversational_prompter(task: Any, sample: int) -> Prompter:
     prompter = Prompter(
         env=task.env,
         scenario=task.scenario,
@@ -61,7 +60,7 @@ def _build_conversational_prompter(
         offset=sample,
         temperature=task.temperature,
         reasoning_effort=task.reasoning_effort,
-        vllm_port=vllm_port,
+        vllm_port=VLLM_PORT,
         provider=task.provider,
         use_stubs=task.use_stubs,
     )
@@ -106,7 +105,6 @@ def get_experiment_session(
     sample_dir: Path,
     sample: int,
     *,
-    vllm_port: int = 8000,
     experiment_id: str | None = None,
     logger: logging.Logger | None = None,
 ) -> Prompter:
@@ -121,7 +119,7 @@ def get_experiment_session(
     cached = _SESSIONS.get(key)
     if cached is not None:
         return cached
-    prompter = _build_conversational_prompter(task, sample, vllm_port)
+    prompter = _build_conversational_prompter(task, sample)
     # Stable per-conversation key so every call in this experiment routes to the
     # same OpenAI prompt-cache shard (improves hit rate; ignored by other
     # providers).

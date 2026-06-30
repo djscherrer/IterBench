@@ -19,11 +19,9 @@ from typing import Any
 from ..cluster.cleanup import cleanup_baxbench_namespaces_after_bench
 from ..llm_cost import refresh_k8s_cost_summary
 from ..stages.decision import resolve_refinement_mode
-from ..util.sample import (
-    append_k8s_skip,
-    ensure_docker_image,
-    functional_tests_passed_at,
-)
+from ..code.docker_image import ensure_docker_image
+from ..code.shared import functional_tests_passed_at
+from ..workspace.skips import append_k8s_skip
 from ..workspace import (
     image_id_from_test_log,
     iteration_code_snapshot_dir,
@@ -58,7 +56,6 @@ def build_run_config(
     max_retries: int,
     base_delay: float,
     max_delay: float,
-    vllm_port: int,
     load_profile: str = "quick-check",
     k8s_experiment_id: str | None = None,
     llm_max_cost_usd: float | None = None,
@@ -90,7 +87,6 @@ def build_run_config(
         bench_run_time=bench_run_time,
         num_ports=num_ports,
         min_port=min_port,
-        vllm_port=vllm_port,
         max_retries=max_retries,
         base_delay=base_delay,
         max_delay=max_delay,
@@ -143,7 +139,6 @@ def sample_preflight(
         task,
         sample_dir,
         sample,
-        vllm_port=cfg.vllm_port,
         experiment_id=cfg.experiment_id,
         logger=logging.getLogger(task.id),
     )

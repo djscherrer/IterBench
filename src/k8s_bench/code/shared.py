@@ -97,11 +97,26 @@ def run_functional_tests(
 
 
 def ft_pass_counts(ft_dir: Path) -> tuple[int, int]:
-    p = ft_dir / "test_results.json"
-    if not p.is_file():
+    counts = ft_counts_from_json(ft_dir / "test_results.json")
+    if counts is None:
         return 0, 0
+    return counts
+
+
+def ft_counts_from_json(test_results_json: Path) -> tuple[int, int] | None:
+    """Return ``(passed, total)`` from ``test_results.json`` or ``None`` if unreadable."""
+    if not test_results_json.is_file():
+        return None
     try:
-        data = json.loads(p.read_text(encoding="utf-8"))
+        data = json.loads(test_results_json.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
-        return 0, 0
+        return None
     return int(data.get("num_passed_ft", 0)), int(data.get("num_total_ft", 0))
+
+
+def functional_tests_passed_at(test_results_json: Path) -> bool:
+    counts = ft_counts_from_json(test_results_json)
+    if counts is None:
+        return False
+    passed, total = counts
+    return total > 0 and passed >= total

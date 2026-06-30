@@ -15,6 +15,7 @@ from typing import Any
 
 from env.base import Env
 from llm import Prompter
+from llm.conversation import send_with_retries
 from scenarios.base import Scenario
 
 from ..cluster.capacity import ClusterCapacity
@@ -118,15 +119,11 @@ def generate_k8s_workload_spec(
     *,
     env: Env,
     scenario: Scenario,
-    model: str,
-    provider: str | None,
-    temperature: float,
-    reasoning_effort: str,
     safety_prompt: str,
     capacity: ClusterCapacity,
     iteration_id: str,
     logger: logging.Logger,
-    vllm_port: int = 8000,
+    session: "Prompter",
     prior_feedback: IterationFeedback | str | None = None,
     validation_feedback: str | None = None,
     max_validation_retries: int = 3,
@@ -135,10 +132,12 @@ def generate_k8s_workload_spec(
     iteration_index: int = 0,
     total_iterations: int = 0,
     enable_attempts: bool = False,
-    session: "Prompter | None" = None,
     artifact_pointers: ArtifactPointers | None = None,
     experiment_id: str = "default",
     llm_max_cost_usd: float | None = None,
+    max_retries: int = 2,
+    base_delay: float = 1.0,
+    max_delay: float = 128.0,
 ) -> tuple[K8sWorkloadSpec, str, list[str]]:
     """Call the configured LLM and return (spec, raw_response, validation_warnings).
 
@@ -195,54 +194,42 @@ def generate_k8s_workload_spec(
                 (per_attempt_dir / PROMPT_LOG_FILENAME).write_text(
                     prompt + "\n", encoding="utf-8"
                 )
-        if session is not None:
-            # Conversation mode: reuse the shared per-experiment Prompter so the
-            # spec turn is appended to the running thread. Mirror the rollback
-            # semantics of ``Prompter.send`` but keep the user turn long enough
-            # to record an ``empty_response`` attempt below if needed.
-            prompter = session
-            prompter.append_user(prompt)
-            if sample_dir is not None:
-                from ..llm_cost import check_k8s_llm_budget, record_k8s_llm_call
+        if sample_dir is not None:
+            from ..llm_cost import check_k8s_llm_budget, record_k8s_llm_call
 
-                check_k8s_llm_budget(
-                    sample_dir,
-                    experiment_id=experiment_id,
-                    max_cost_usd=llm_max_cost_usd,
-                )
-            try:
-                responses = prompter.prompt_model(logger)
-            except Exception:
-                prompter.history.pop()
-                raise
-        else:
-            prompter = Prompter(
-                env=env,
-                scenario=scenario,
-                model=model,
-                spec_type="openapi",
-                safety_prompt=safety_prompt,
-                batch_size=1,
-                offset=0,
-                temperature=temperature,
-                reasoning_effort=reasoning_effort,
-                vllm_port=vllm_port,
-                provider=provider,
-                use_stubs=False,
+            check_k8s_llm_budget(
+                sample_dir,
+                experiment_id=experiment_id,
+                max_cost_usd=llm_max_cost_usd,
             )
-            prompter.prompt = prompt
-            if sample_dir is not None:
-                from ..llm_cost import check_k8s_llm_budget, record_k8s_llm_call
 
-                check_k8s_llm_budget(
-                    sample_dir,
-                    experiment_id=experiment_id,
-                    max_cost_usd=llm_max_cost_usd,
-                )
-            responses = prompter.prompt_model(logger)
+        empty_response_error = "LLM returned no completion for k8s spec generation"
+        try:
+            last_raw = send_with_retries(
+                session,
+                prompt,
+                logger,
+                max_retries=max_retries,
+                base_delay=base_delay,
+                max_delay=max_delay,
+                log_label="K8s spec generation",
+            )
+        except RuntimeError as exc:
+            if "no completion" in str(exc).lower():
+                if per_attempt_dir is not None:
+                    _write_spec_attempt_meta(
+                        per_attempt_dir,
+                        attempt_index=attempt,
+                        global_attempt_index=global_attempt_idx,
+                        status="empty_response",
+                        error=empty_response_error,
+                        validation_feedback=validation_hint,
+                    )
+                raise RuntimeError(empty_response_error) from exc
+            raise
         if sample_dir is not None:
             record_k8s_llm_call(
-                prompter=prompter,
+                prompter=session,
                 call_type="k8s_spec_generation",
                 sample_dir=sample_dir,
                 logger=logger,
@@ -253,23 +240,6 @@ def generate_k8s_workload_spec(
                 experiment_id=experiment_id,
                 max_cost_usd=llm_max_cost_usd,
             )
-        if not responses:
-            if session is not None and session.history:
-                # Drop the dangling user turn so a retry re-appends cleanly.
-                session.history.pop()
-            if per_attempt_dir is not None:
-                _write_spec_attempt_meta(
-                    per_attempt_dir,
-                    attempt_index=attempt,
-                    global_attempt_index=global_attempt_idx,
-                    status="empty_response",
-                    error="LLM returned no completion for k8s spec generation",
-                    validation_feedback=validation_hint,
-                )
-            raise RuntimeError("LLM returned no completion for k8s spec generation")
-        last_raw = responses[0]
-        if session is not None:
-            session.append_assistant(last_raw)
         if per_attempt_dir is not None:
             (per_attempt_dir / RESPONSE_LOG_FILENAME).write_text(
                 last_raw + "\n", encoding="utf-8"
@@ -477,10 +447,12 @@ def run_spec_attempt(
     max_validation_retries: int = 1,
     iteration_index: int = 0,
     total_iterations: int = 0,
-    vllm_port: int = 8000,
     enable_attempts: bool = False,
     experiment_id: str = "default",
     llm_max_cost_usd: float | None = None,
+    max_retries: int = 2,
+    base_delay: float = 1.0,
+    max_delay: float = 128.0,
 ) -> SpecAttemptResult:
     """
     Run one spec generation attempt: LLM → parse → validate → write artifacts.
@@ -501,15 +473,10 @@ def run_spec_attempt(
         spec, raw, warnings = generate_k8s_workload_spec(
             env=task.env,
             scenario=task.scenario,
-            model=task.model,
-            provider=task.provider,
-            temperature=task.temperature,
-            reasoning_effort=task.reasoning_effort,
             safety_prompt=task.safety_prompt,
             capacity=capacity,
             iteration_id=iteration_id,
             logger=logger,
-            vllm_port=vllm_port,
             prior_feedback=prior_feedback,
             validation_feedback=validation_feedback,
             max_validation_retries=max_validation_retries,
@@ -522,6 +489,9 @@ def run_spec_attempt(
             artifact_pointers=artifact_pointers,
             experiment_id=experiment_id,
             llm_max_cost_usd=llm_max_cost_usd,
+            max_retries=max_retries,
+            base_delay=base_delay,
+            max_delay=max_delay,
         )
         persist_session(
             session, sample_dir, experiment_id=experiment_id, logger=logger

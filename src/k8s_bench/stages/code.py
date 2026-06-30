@@ -25,7 +25,7 @@ from ..code.baseline_meta import (
 )
 from ..failure import fail_iteration_phase
 from ..orchestration.config import IterationPlan, RunConfig, SampleContext
-from ..util.sample import append_k8s_skip
+from ..workspace.skips import append_k8s_skip
 from ..workspace import (
     iteration_code_attempts_dir,
     iteration_code_phase_dir,
@@ -172,7 +172,6 @@ def _codegen_with_retries(
             ft_timeout=cfg.ft_timeout,
             num_ports=cfg.num_ports,
             min_port=cfg.min_port,
-            vllm_port=cfg.vllm_port,
             max_retries=cfg.max_retries,
             base_delay=cfg.base_delay,
             max_delay=cfg.max_delay,

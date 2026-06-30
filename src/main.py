@@ -309,7 +309,6 @@ def main(args: Any) -> None:
             max_retries=args.max_retries,
             base_delay=args.base_delay,
             max_delay=args.max_delay,
-            vllm_port=args.vllm_port,
             baseline_code_max_attempts=getattr(
                 args, "baseline_code_max_attempts", 3
             ),

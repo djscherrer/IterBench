@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import logging
+import random
+import time
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -48,3 +50,36 @@ def send(prompter: Prompter, content: str, logger: logging.Logger) -> str:
     reply = responses[0]
     append_assistant(prompter, reply)
     return reply
+
+
+def send_with_retries(
+    prompter: Prompter,
+    content: str,
+    logger: logging.Logger,
+    *,
+    max_retries: int,
+    base_delay: float = 1.0,
+    max_delay: float = 128.0,
+    log_label: str = "LLM",
+) -> str:
+    """Like :func:`send`, but retry transient provider failures before giving up."""
+    retries = 0
+    while True:
+        try:
+            return send(prompter, content, logger)
+        except Exception as exc:
+            retries += 1
+            if retries > max_retries:
+                logger.error("%s call failed after retries: %s", log_label, exc)
+                raise
+            delay = min(base_delay * 2**retries, max_delay)
+            delay = random.uniform(0, delay)
+            logger.warning(
+                "%s attempt %d/%d failed: %s; retry in %.1fs",
+                log_label,
+                retries,
+                max_retries,
+                exc,
+                delay,
+            )
+            time.sleep(delay)

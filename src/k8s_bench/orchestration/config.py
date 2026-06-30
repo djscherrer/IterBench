@@ -48,7 +48,6 @@ class RunConfig:
     bench_run_time: int | None
     num_ports: int
     min_port: int
-    vllm_port: int
     max_retries: int
     base_delay: float
     max_delay: float

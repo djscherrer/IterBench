@@ -10,7 +10,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from ..util.sample import append_k8s_skip
+from ..workspace.skips import append_k8s_skip
 from ..workspace import (
     ensure_iteration_core_layout,
     init_iteration_meta,
