@@ -35,7 +35,7 @@ N_SAMPLES=""
 # --- 2. Project Scope ---
 ENVS="Python-Flask"
 EXCLUDE_ENVS=""
-SCENARIOS="Petstore"
+SCENARIOS="BranchWeave_InteractiveStoryGraph LexiTally_WordCountDatasets TextWeaver_PatternRewriter"
 EXCLUDE_SCENARIOS=""
 TEMPERATURE="0.2"
 SAFETY_PROMPT="high_performance"
@@ -51,10 +51,10 @@ BENCH_RUN_TIME=""
 BAXBENCH_K8S_CLUSTER="baxbench-emulab"
 KUBECONFIG_PATH=""              # empty = path from cluster profile
 K8S_ITERATION=""                # pin one iteration; empty = use K8S_ITERATIONS
-K8S_EXPERIMENT="28-6-Refactoring-Check"               # e.g. adaptive-may20 → sampleN/k8s-experiments/<slug>/
+K8S_EXPERIMENT=""               # e.g. adaptive-may20 → sampleN/k8s-experiments/<slug>/
 K8S_ITERATIONS="20"              # phases: iteration-001 .. iteration-NNN
 K8S_DEPLOY_ONLY="false"          # true = deploy+bench existing iterations only (no LLM)
-K8S_WAIT_TIMEOUT="600"
+K8S_WAIT_TIMEOUT="1200"
 # Locust runs on profile load_master/workers; backend exposed via NodePort
 K8S_AUTO_INIT="false"           # only used with K8S_DEPLOY_ONLY=true
 K8S_REFINEMENT="auto"               # auto | deployment | code
@@ -78,7 +78,7 @@ BAXBENCH_LLM_MAX_COST="10"            # e.g. "10.00" — stop when estimated exp
 
 
 # --- 5. Bench configuration ---
-TIMEOUT="600"
+TIMEOUT="1200"
 FORCE="false"
 MAX_CONCURRENT_RUNS=""
 PORT="5001"
@@ -166,7 +166,6 @@ for _model in $MODELS; do
     add_arg "--k8s-iterations" "$K8S_ITERATIONS"
     add_arg "--k8s-wait-timeout" "$K8S_WAIT_TIMEOUT"
     add_arg "--k8s-refinement" "$K8S_REFINEMENT"
-    add_arg "--load-profile" "$profile"
     add_arg "--baseline-code-max-attempts" "$BASELINE_CODE_MAX_ATTEMPTS"
     add_arg "--baseline-spec-max-attempts" "$BASELINE_SPEC_MAX_ATTEMPTS"
     add_arg "--llm-max-cost" "$BAXBENCH_LLM_MAX_COST"
@@ -194,10 +193,14 @@ for _model in $MODELS; do
       if [ -n "${KUBECONFIG:-}" ]; then
         EXTRA_ENV+=("KUBECONFIG=$KUBECONFIG")
       fi
+      PROFILE_ARGS=("${ARGS[@]}")
+      if [ -n "$profile" ]; then
+        PROFILE_ARGS+=("--load-profile" "$profile")
+      fi
       echo ""
       echo "=== K8s iterative bench run #$RUN_I: model='${_model}' openhands='${_openhands}' load_profile='$profile' iterations=$K8S_ITERATIONS ==="
-      echo "Command: pipenv run python src/main.py ${ARGS[*]}"
-      (cd "$ROOT" && env "${EXTRA_ENV[@]}" pipenv run python src/main.py "${ARGS[@]}")
+      echo "Command: pipenv run python src/main.py ${PROFILE_ARGS[*]}"
+      (cd "$ROOT" && env "${EXTRA_ENV[@]}" pipenv run python src/main.py "${PROFILE_ARGS[@]}")
       RC=$?
       if [ $RC -ne 0 ]; then
         echo "K8s bench run #$RUN_I failed (exit=$RC). Stopping."
