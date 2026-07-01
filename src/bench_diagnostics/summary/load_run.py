@@ -27,7 +27,14 @@ def load_profile_from_config(config: dict) -> str:
         prof = profiles.get("load_profile")
         if prof:
             return str(prof)
-    return str(config.get("resolved_load_profile") or config.get("load_profile") or "")
+    resolved = config.get("resolved_load_profile")
+    if isinstance(resolved, dict):
+        name = resolved.get("name")
+        if name:
+            return str(name)
+    if isinstance(resolved, str):
+        return resolved
+    return str(config.get("load_profile") or "")
 
 
 def _shorten_action(action: str) -> str:

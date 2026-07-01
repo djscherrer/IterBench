@@ -29,7 +29,7 @@ from bench_diagnostics import diagnostics_session_for_distributed
 
 from .paths import locust_dir, locust_logs_dir
 from .load_profiles import LoadProfile
-from .load_profiles.env import format_baxbench_locust_env_shell
+from .load_profiles.manifest import LOAD_PROFILE_MANIFEST_FILENAME
 from .load_topology import LoadTopology
 
 _BAXBENCH_SHAPE = Path(__file__).resolve().parent / "load_profiles" / "_baxbench_shape.py"
@@ -48,14 +48,30 @@ def resolve_locust_user_class(locustfile: Path, requested: str = "default") -> s
     return requested
 
 
-def prepare_locust_run_dir(run_dir: Path, locustfile: Path) -> Path:
+def prepare_locust_run_dir(
+    run_dir: Path,
+    locustfile: Path,
+    *,
+    load_profile: LoadProfile | None = None,
+    bench_run_time_s: int | None = None,
+    bench_users: int | None = None,
+) -> Path:
     """Stage the locustfile + shape under ``<run_dir>/locust/``."""
+    from .load_profiles.manifest import write_load_profile_manifest
+
     staging = locust_dir(run_dir)
     dest_locust = staging / locustfile.name
     if locustfile.resolve() != dest_locust.resolve():
         shutil.copy2(locustfile, dest_locust)
     if _BAXBENCH_SHAPE.is_file():
         shutil.copy2(_BAXBENCH_SHAPE, staging / "_baxbench_shape.py")
+    if load_profile is not None and bench_run_time_s is not None:
+        write_load_profile_manifest(
+            staging / LOAD_PROFILE_MANIFEST_FILENAME,
+            load_profile,
+            bench_run_time_s=int(bench_run_time_s),
+            bench_users=bench_users,
+        )
     return dest_locust
 
 
@@ -107,6 +123,14 @@ class _LocustStaging:
                     f"{cfg.remote_load_dir}/_baxbench_shape.py",
                     log,
                 )
+            manifest = cfg.locustfile.parent / LOAD_PROFILE_MANIFEST_FILENAME
+            if manifest.is_file():
+                remote_exec.scp_to_remote(
+                    manifest,
+                    host,
+                    f"{cfg.remote_load_dir}/{LOAD_PROFILE_MANIFEST_FILENAME}",
+                    log,
+                )
             remote_exec.ensure_remote_python_env(host, cfg.remote_env_dir, log)
 
         hosts = self._cfg.topology.all_hosts
@@ -140,11 +164,6 @@ class LocustWorker:
         log = self._cfg.logger or logging.getLogger(__name__)
         cfg = self._cfg
         locust_bin = remote_exec.ensure_remote_python_env(self.host, cfg.remote_env_dir, log)
-        env_prefix = format_baxbench_locust_env_shell(
-            cfg.load_profile,
-            bench_run_time_s=int(cfg.bench_run_time_s),
-            bench_users=int(cfg.bench_users),
-        )
         ts = cfg.load_taskset_cpus
         worker_exec = (
             f"nohup taskset -c {shlex.quote(ts)} {shlex.quote(locust_bin)} "
@@ -155,7 +174,7 @@ class LocustWorker:
             "set -euo pipefail; "
             f"cd {shlex.quote(cfg.remote_load_dir)}; "
             f"rm -f {shlex.quote(self.pidfile)} {shlex.quote(self.logfile)} || true; "
-            f"{env_prefix}{worker_exec}"
+            f"{worker_exec}"
             f"--worker --master-host {shlex.quote(self._master_ip)} "
             f"--master-port {int(self._master_port)} "
             f"--locustfile {shlex.quote(cfg.locustfile.name)} "
@@ -221,12 +240,6 @@ class LocustMaster:
         log = cfg.logger or logging.getLogger(__name__)
         master_host = cfg.topology.master
 
-        env_prefix = format_baxbench_locust_env_shell(
-            cfg.load_profile,
-            bench_run_time_s=int(cfg.bench_run_time_s),
-            bench_users=int(cfg.bench_users),
-        )
-
         master_args = (
             f"--master --headless "
             f"--master-bind-host 0.0.0.0 --master-bind-port {int(master_bind_port)} "
@@ -245,7 +258,7 @@ class LocustMaster:
         locust_cmd = (
             "set -euo pipefail; "
             f"cd {shlex.quote(cfg.remote_load_dir)}; "
-            f"{env_prefix}{locust_exec} {master_args}"
+            f"{locust_exec} {master_args}"
             f"--locustfile {shlex.quote(cfg.locustfile.name)} "
             f"--host {shlex.quote(locust_host)} "
             f"--users {int(cfg.bench_users)} "

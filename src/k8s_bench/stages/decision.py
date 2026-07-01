@@ -9,11 +9,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
 from ..feedback import IterationFeedback
-from ..prompt_helpers import (
-    DECISION_GUARDRAILS,
-    format_artifact_pointers_block,
-    resolve_artifact_pointers,
-)
+from ..prompt_helpers import format_artifact_pointers_block, resolve_artifact_pointers
 
 RefinementAction = Literal["deployment", "code"]
 RefinementMode = Literal["auto", "deployment", "code"]
@@ -136,8 +132,6 @@ You may choose **exactly one** path:
 1. **`deployment`** — tune Kubernetes deployment parameters only. Levers include backend replicas, concurrency, and CPU/memory; database replicas and resources/GUCs; PgBouncer `pooler` and `read_pooler`; optional Redis `cache`; and pod `placement`. The application source code stays unchanged.
 2. **`code`** — improve the **application source code** (performance, error handling, DB usage, concurrency). New code must pass functional tests. The deployment spec stays unchanged in this iteration.
 
-{DECISION_GUARDRAILS}
-
 ## Context
 
 - Scenario: {task.scenario.id}
@@ -155,7 +149,7 @@ You may choose **exactly one** path:
 Return exactly:
 
 <DECISION>
-deployment
+deployment|code
 </DECISION>
 
 <RATIONALE>

@@ -164,7 +164,7 @@ def generate_k8s_workload_spec(
             iteration_id=iteration_id,
             iteration_index=iteration_index,
             total_iterations=total_iterations,
-            prior_feedback=prior_feedback,
+            refinement=prior_feedback is not None,
             validation_feedback=validation_hint,
             artifact_pointers=artifact_pointers,
         )
@@ -285,6 +285,8 @@ def generate_k8s_workload_spec(
                 parse_exc,
             )
             continue
+
+        # Resolve placement names in the spec.
         spec, placement_errors = normalize_spec_placement(spec, capacity)
         if placement_errors:
             validation_hint = SpecValidationError(placement_errors).to_prompt_text()
@@ -305,6 +307,7 @@ def generate_k8s_workload_spec(
                 )
             continue
 
+        # Validate the spec against the cluster capacity and scheduling rules.
         result = validate_spec_against_cluster(spec, capacity)
         if result.errors:
             validation_hint = SpecValidationError(result.errors).to_prompt_text()

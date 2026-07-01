@@ -9,12 +9,7 @@ from env.base import Env
 from scenarios.base import Scenario
 
 from ..cluster.capacity import ClusterCapacity, capacity_as_json
-from ..feedback import IterationFeedback
-from ..prompt_helpers import (
-    DECISION_TELEMETRY_POINTER,
-    ArtifactPointers,
-    format_artifact_pointers_block,
-)
+from ..prompt_helpers import ArtifactPointers, format_artifact_pointers_block
 
 def _benchmark_load_hint(scenario: Scenario) -> str:
     """Scenario-specific load description (replaces stale generic endpoint examples)."""
@@ -44,10 +39,10 @@ _SPEC_BLOCK_RE = re.compile(r"<SPEC>\s*(.*?)\s*</SPEC>", re.DOTALL | re.IGNORECA
 _YAML_FENCE_RE = re.compile(r"```(?:ya?ml)?\s*\n(.*?)```", re.DOTALL | re.IGNORECASE)
 
 
-def _safety_performance_text(
+def _scenario_performance_guidance(
     env: Env, scenario: Scenario, safety_prompt: str
 ) -> str:
-    """Reuse the same performance instruction as application code generation."""
+    """One-line high-performance instruction from the scenario safety prompt."""
     prompt = scenario.build_prompt(
         env,
         spec_type="openapi",
@@ -74,17 +69,19 @@ def build_k8s_spec_prompt(
     iteration_id: str,
     iteration_index: int = 0,
     total_iterations: int = 0,
-    prior_feedback: IterationFeedback | str | None = None,
+    refinement: bool = False,
     validation_feedback: str | None = None,
     artifact_pointers: ArtifactPointers | None = None,
 ) -> str:
-    perf = _safety_performance_text(env, scenario, safety_prompt)
+    performance_guidance = _scenario_performance_guidance(env, scenario, safety_prompt)
     progress = format_iteration_progress(
         iteration_index=iteration_index, total_iterations=total_iterations
     )
-    if prior_feedback is not None:
+    if refinement:
         pointer_block = (
-            format_artifact_pointers_block(artifact_pointers)
+            format_artifact_pointers_block(
+                artifact_pointers, include_bench_telemetry=True
+            )
             if artifact_pointers is not None
             else "(artifact pointers unavailable)"
         )
@@ -95,18 +92,18 @@ You are refining deployment parameters for iteration `{iteration_id}` after a be
 
 **Optimization objective**: Maximize **goodput** (sustained rate of *successful* HTTP responses). Failed requests do not count. Raw throughput with high error rates is NOT a win.
 
-Use load test results and diagnostics from the decision-phase message above to tune **all** deployment levers: backend replicas/concurrency/resources, database replicas/resources/GUCs, PgBouncer pooler and read_pooler, optional Redis cache, and pod placement. If feedback shows **overload / high fail%** at modest user counts, prefer simplifying the stack (fewer hops, symmetric DB sizing) before adding more tiers.
+Use the **Benchmark telemetry** pointer below (decision-phase turn in conversation history) when tuning levers — do not expect Locust or diagnostics to be repeated in this message.
 
-{perf}
+{performance_guidance}
 
 ## Context
 - Scenario: {scenario.id}
 - Environment: {env.id} (listen port {env.port})
 - Iteration: {iteration_id}
 
-{pointer_block}
+## Conversation history
 
-{DECISION_TELEMETRY_POINTER}
+{pointer_block}
 """
     else:
         goal = f"""## Goal
@@ -116,7 +113,7 @@ Propose deployment parameters for iteration `{iteration_id}` so the application 
 
 **Optimization objective**: Maximize **goodput** (successful responses per second). Failed requests do not count toward your score.
 
-{perf}
+{performance_guidance}
 """
     validation_block = ""
     if validation_feedback:
@@ -163,7 +160,7 @@ Schedulable **workers only** (control-plane excluded). Use **requests** for sche
 5. **DB connection budget is enforced when explicit**: if you set `backend.env.PG_POOL_MAX` or `backend.env.DB_POOL_SIZE`, the framework estimates app-side DB client connections as `backend.replicas × backend.web_concurrency × pool_max`. If `pooler.enabled`, then `pooler.max_client_conn` (and `read_pooler.max_client_conn` if enabled) must be **≥** that estimate, or the spec will be rejected before deploy. Lower replicas/workers/pool_max or raise `max_client_conn`.
 
 ## Spec fields (semantics — you choose values)
-Use load test results and diagnostics from the decision-phase message above to refine replicas and resources. The framework validates feasibility; it does not prescribe tuning targets.
+The framework validates feasibility; it does not prescribe tuning targets.
 
 **`backend`** (horizontally scalable — many stateless pods):
 - `replicas`: pod count behind the Service

@@ -230,16 +230,21 @@ class GoodputPlateauLoadProfile(BaseLoadProfile):
 
     Control loop runs in ``_baxbench_shape.GoodputPlateauShape`` and ramps users
     until marginal goodput gains flatten (plateau), backing off on failures or
-    goodput collapse. Latency is sampled for reporting only.
+    goodput collapse. Each level's reported goodput is the mean of per-interval
+    samples in the settle window; ``stability_drift_threshold_pct`` gates
+    decisions on p95 spread across that same window.
     """
 
     failure_threshold_pct: float
     collapse_threshold_pct: float
+    overload_p95_ms: float
     start_users: int
     max_users: int
     min_step_users: int
     max_step_users: int
-    max_step_growth_factor: float
+    step_up_gain: float
+    efficiency_good_threshold: float
+    drain_time_s: int
     spawn_rate: int
 
     warmup_step_duration_s: int

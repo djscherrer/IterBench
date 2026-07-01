@@ -65,11 +65,6 @@ class IterationFeedback:
 
     def _to_prompt_text_success(self) -> str:
         parts = [
-            f"Most recent successful iteration: {self.iteration_id}",
-            "",
-            "## Context",
-            self.benchmark_context.strip() or "(context unavailable)",
-            "",
             "## Load test results",
             "",
             "### Adaptive ramp",

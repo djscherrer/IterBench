@@ -19,6 +19,7 @@ from locust_bench.locust_run import (
 )
 from bench_diagnostics import diagnostics_session_for_k8s
 from locust_bench.load_profiles import resolve_load_profile
+from locust_bench.load_profiles.manifest import build_load_profile_manifest
 from locust_bench.load_topology import LoadTopology
 
 from .cluster.deploy import DeployResult, deploy_iteration
@@ -331,6 +332,7 @@ def write_k8s_run_config(
     spec: K8sWorkloadSpec,
     deploy_result: DeployResult,
     load_profile: str,
+    resolved_load_profile: dict[str, Any],
     iteration_path: Path,
     image_reference: str,
     locust_target: str,
@@ -340,6 +342,7 @@ def write_k8s_run_config(
     snapshot: dict[str, Any] = {
         "deploy_target": "kubernetes",
         "requested_profiles": {"load_profile": load_profile},
+        "resolved_load_profile": resolved_load_profile,
         "k8s_experiment": experiment_id,
         "k8s_iteration": {
             "id": spec.iteration_id,
@@ -478,14 +481,26 @@ def run_k8s_bench_iteration(
         else int(resolved_load_profile.effective_spawn_rate)
     )
 
-    local_locust = prepare_locust_run_dir(run_dir, locustfile)
+    local_locust = prepare_locust_run_dir(
+        run_dir,
+        locustfile,
+        load_profile=resolved_load_profile,
+        bench_run_time_s=run_time_s,
+        bench_users=users if bench_users is not None else None,
+    )
     remote_load_dir, remote_env_dir = _remote_load_paths(sample_slug)
+    load_profile_manifest = build_load_profile_manifest(
+        resolved_load_profile,
+        bench_run_time_s=run_time_s,
+        bench_users=users if bench_users is not None else None,
+    )
 
     write_k8s_run_config(
         run_dir,
         spec=spec,
         deploy_result=deploy_result,
         load_profile=load_profile_name,
+        resolved_load_profile=load_profile_manifest,
         iteration_path=iteration_path,
         image_reference=prepared.reference,
         locust_target=target_base_url,

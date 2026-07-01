@@ -1,53 +1,46 @@
 from __future__ import annotations
 
+import json
 import logging
-import os
 import statistics
 from dataclasses import dataclass
+from pathlib import Path
 
 from locust import LoadTestShape, between
 
+_LOAD_PROFILE_MANIFEST = "baxbench_load_profile.json"
+
 _LOG = logging.getLogger("baxbench.adaptive")
 
-
-def _get_int(name: str, default: int) -> int:
-    v = os.getenv(name, "").strip()
-    if not v:
-        return int(default)
-    try:
-        return int(float(v))
-    except Exception:
-        return int(default)
+_manifest: dict | None = None
 
 
-def _get_float(name: str, default: float) -> float:
-    v = os.getenv(name, "").strip()
-    if not v:
-        return float(default)
-    try:
-        return float(v)
-    except Exception:
-        return float(default)
+def _load_manifest() -> dict:
+    global _manifest
+    if _manifest is not None:
+        return _manifest
+    candidates = [
+        Path(__file__).resolve().parent / _LOAD_PROFILE_MANIFEST,
+        Path.cwd() / _LOAD_PROFILE_MANIFEST,
+        Path.cwd() / "locust" / _LOAD_PROFILE_MANIFEST,
+    ]
+    for path in candidates:
+        if path.is_file():
+            _manifest = json.loads(path.read_text(encoding="utf-8"))
+            return _manifest
+    raise FileNotFoundError(
+        f"Missing {_LOAD_PROFILE_MANIFEST} beside the locustfile. "
+        "Stage it with prepare_locust_run_dir()."
+    )
 
 
 def baxbench_wait_time():
-    """
-    Locust wait_time callable configured via:
-      - BAXBENCH_LOCUST_WAIT_MIN_S
-      - BAXBENCH_LOCUST_WAIT_MAX_S
-    """
-    wmin = _get_float("BAXBENCH_LOCUST_WAIT_MIN_S", 0.5)
-    wmax = _get_float("BAXBENCH_LOCUST_WAIT_MAX_S", 1.5)
-    # Guard against swapped inputs
+    """Locust wait_time callable configured via the load profile manifest."""
+    cfg = _load_manifest()
+    wmin = float(cfg["wait_min_s"])
+    wmax = float(cfg["wait_max_s"])
     lo, hi = (wmin, wmax) if wmin <= wmax else (wmax, wmin)
     return between(lo, hi)
-
-
-def _env_bool(name: str, default: bool) -> bool:
-    v = os.getenv(name, "").strip().lower()
-    if not v:
-        return default
-    return v in ("1", "true", "yes", "on")
 
 
 @dataclass(frozen=True)
@@ -67,28 +60,29 @@ class _AdaptiveParams:
     abort_on_no_users: bool
 
 
-def _adaptive_params_from_env() -> _AdaptiveParams:
-    trim_s = max(0, _get_int("BAXBENCH_ADAPTIVE_TRIM_S", 20))
+def _adaptive_params_from_manifest() -> _AdaptiveParams:
+    cfg = _load_manifest()
+    trim_s = max(0, int(cfg["trim_s"]))
     return _AdaptiveParams(
-        sla_ms=float(_get_float("BAXBENCH_ADAPTIVE_SLA_MS", 300.0)),
-        start_users=max(0, _get_int("BAXBENCH_ADAPTIVE_START_USERS", 500)),
-        max_users=max(1, _get_int("BAXBENCH_ADAPTIVE_MAX_USERS", 20_000)),
-        min_step_users=max(1, _get_int("BAXBENCH_ADAPTIVE_MIN_STEP_USERS", 50)),
-        max_step_users=max(1, _get_int("BAXBENCH_ADAPTIVE_MAX_STEP_USERS", 400)),
-        spawn_rate=max(1, _get_int("BAXBENCH_ADAPTIVE_SPAWN_RATE", 50)),
-        step_duration_s=max(5, _get_int("BAXBENCH_ADAPTIVE_STEP_DURATION_S", 45)),
+        sla_ms=float(cfg["sla_ms"]),
+        start_users=max(0, int(cfg["start_users"])),
+        max_users=max(1, int(cfg["max_users"])),
+        min_step_users=max(1, int(cfg["min_step_users"])),
+        max_step_users=max(1, int(cfg["max_step_users"])),
+        spawn_rate=max(1, int(cfg["spawn_rate"])),
+        step_duration_s=max(5, int(cfg["step_duration_s"])),
         trim_s=trim_s,
-        sample_every_s=max(1, _get_int("BAXBENCH_ADAPTIVE_SAMPLE_EVERY_S", 5)),
-        settle_samples=max(1, _get_int("BAXBENCH_ADAPTIVE_SETTLE_SAMPLES", 3)),
-        quantile=float(_get_float("BAXBENCH_ADAPTIVE_QUANTILE", 0.95)),
-        health_grace_s=max(5, _get_int("BAXBENCH_ADAPTIVE_HEALTH_GRACE_S", max(15, trim_s))),
-        abort_on_no_users=_env_bool("BAXBENCH_ADAPTIVE_ABORT_NO_USERS", True),
+        sample_every_s=max(1, int(cfg["sample_every_s"])),
+        settle_samples=max(1, int(cfg["settle_samples"])),
+        quantile=float(cfg["quantile"]),
+        health_grace_s=max(5, int(cfg["health_grace_s"])),
+        abort_on_no_users=bool(cfg["abort_on_no_users"]),
     )
 
 
 class _BaseShape(LoadTestShape):
     def _should_stop(self) -> bool:
-        run_time_s = max(1, _get_int("BAXBENCH_RUN_TIME_S", 1))
+        run_time_s = max(1, int(_load_manifest()["run_time_s"]))
         return float(self.get_run_time()) >= float(run_time_s)
 
 
@@ -96,7 +90,8 @@ class SteadyShape(_BaseShape):
     def tick(self):
         if self._should_stop():
             return None
-        steady_users = max(0, _get_int("BAXBENCH_STEADY_USERS", 0))
+        cfg = _load_manifest()
+        steady_users = max(0, int(cfg.get("steady_users", cfg["users"])))
         return steady_users, max(1, steady_users)
 
 
@@ -104,10 +99,11 @@ class ContinuousShape(_BaseShape):
     def tick(self):
         if self._should_stop():
             return None
-        run_time_s = max(1, _get_int("BAXBENCH_RUN_TIME_S", 1))
-        spawn_rate = max(1, _get_int("BAXBENCH_CONTINUOUS_SPAWN_RATE", 1))
-        start = max(0, _get_int("BAXBENCH_CONTINUOUS_START_USERS", 0))
-        target = max(start, _get_int("BAXBENCH_CONTINUOUS_TARGET_USERS", start))
+        cfg = _load_manifest()
+        run_time_s = max(1, int(cfg["run_time_s"]))
+        spawn_rate = max(1, int(cfg["spawn_rate"]))
+        start = max(0, int(cfg["start_users"]))
+        target = max(start, int(cfg["target_users"]))
         t = float(self.get_run_time())
         if run_time_s <= 1:
             return target, spawn_rate
@@ -120,13 +116,14 @@ class StairsShape(_BaseShape):
     def tick(self):
         if self._should_stop():
             return None
-        start = max(0, _get_int("BAXBENCH_STAIRS_START_USERS", 0))
-        step_users = max(0, _get_int("BAXBENCH_STAIRS_STEP_USERS", 100))
-        step_dur = max(1, _get_int("BAXBENCH_STAIRS_STEP_DURATION_S", 30))
-        steps = max(1, _get_int("BAXBENCH_STAIRS_STEPS", 10))
+        cfg = _load_manifest()
+        start = max(0, int(cfg["start_users"]))
+        step_users = max(0, int(cfg["step_users"]))
+        step_dur = max(1, int(cfg["step_duration_s"]))
+        steps = max(1, int(cfg["steps"]))
         t = float(self.get_run_time())
         idx = int(t // float(step_dur))
-        idx = min(idx, steps)  # allow last step to persist until stop
+        idx = min(idx, steps)
         users = start + (step_users * idx)
         return max(0, users), max(1, step_users)
 
@@ -135,10 +132,11 @@ class SpikeShape(_BaseShape):
     def tick(self):
         if self._should_stop():
             return None
-        base = max(0, _get_int("BAXBENCH_SPIKE_BASE_USERS", 500))
-        spike = max(base, _get_int("BAXBENCH_SPIKE_USERS", 1000))
-        interval = max(1, _get_int("BAXBENCH_SPIKE_INTERVAL_S", 30))
-        dur = max(1, _get_int("BAXBENCH_SPIKE_DURATION_S", 10))
+        cfg = _load_manifest()
+        base = max(0, int(cfg["base_users"]))
+        spike = max(base, int(cfg["spike_users"]))
+        interval = max(1, int(cfg["interval_s"]))
+        dur = max(1, int(cfg["duration_s"]))
         t = float(self.get_run_time())
         in_spike = (t % float(interval)) < float(dur)
         users = spike if in_spike else base
@@ -154,7 +152,7 @@ class AdaptiveShape(_BaseShape):
 
     def __init__(self):
         super().__init__()
-        self._p = _adaptive_params_from_env()
+        self._p = _adaptive_params_from_manifest()
         self._level_start_t = 0.0
         self._next_sample_t = 0.0
         self._p95_samples: list[float] = []
@@ -382,44 +380,31 @@ class _AdaptiveV2Params:
     abort_on_no_users: bool
 
 
-def _adaptive_v2_params_from_env() -> _AdaptiveV2Params:
-    trim_s = max(0, _get_int("BAXBENCH_ADAPTIVE_V2_TRIM_S", 10))
-    min_step_s = max(5, _get_int("BAXBENCH_ADAPTIVE_V2_MIN_STEP_DURATION_S", 30))
-    max_step_s = max(min_step_s, _get_int("BAXBENCH_ADAPTIVE_V2_MAX_STEP_DURATION_S", 60))
+def _adaptive_v2_params_from_manifest() -> _AdaptiveV2Params:
+    cfg = _load_manifest()
+    trim_s = max(0, int(cfg["trim_s"]))
+    min_step_s = max(5, int(cfg["min_step_duration_s"]))
+    max_step_s = max(min_step_s, int(cfg["max_step_duration_s"]))
     return _AdaptiveV2Params(
-        sla_ms=float(_get_float("BAXBENCH_ADAPTIVE_V2_SLA_MS", 300.0)),
-        failure_threshold_pct=float(
-            _get_float("BAXBENCH_ADAPTIVE_V2_FAILURE_THRESHOLD_PCT", 5.0)
-        ),
-        start_users=max(1, _get_int("BAXBENCH_ADAPTIVE_V2_START_USERS", 100)),
-        max_users=max(1, _get_int("BAXBENCH_ADAPTIVE_V2_MAX_USERS", 10_000)),
-        min_step_users=max(1, _get_int("BAXBENCH_ADAPTIVE_V2_MIN_STEP_USERS", 25)),
-        max_step_users=max(1, _get_int("BAXBENCH_ADAPTIVE_V2_MAX_STEP_USERS", 500)),
-        spawn_rate=max(1, _get_int("BAXBENCH_ADAPTIVE_V2_SPAWN_RATE", 50)),
-        warmup_step_duration_s=max(
-            0, _get_int("BAXBENCH_ADAPTIVE_V2_WARMUP_STEP_DURATION_S", 20)
-        ),
+        sla_ms=float(cfg["sla_ms"]),
+        failure_threshold_pct=float(cfg["failure_threshold_pct"]),
+        start_users=max(1, int(cfg["start_users"])),
+        max_users=max(1, int(cfg["max_users"])),
+        min_step_users=max(1, int(cfg["min_step_users"])),
+        max_step_users=max(1, int(cfg["max_step_users"])),
+        spawn_rate=max(1, int(cfg["spawn_rate"])),
+        warmup_step_duration_s=max(0, int(cfg["warmup_step_duration_s"])),
         min_step_duration_s=min_step_s,
         max_step_duration_s=max_step_s,
         trim_s=trim_s,
-        sample_every_s=max(1, _get_int("BAXBENCH_ADAPTIVE_V2_SAMPLE_EVERY_S", 5)),
-        min_settle_samples=max(
-            2, _get_int("BAXBENCH_ADAPTIVE_V2_MIN_SETTLE_SAMPLES", 3)
-        ),
-        quantile=float(_get_float("BAXBENCH_ADAPTIVE_V2_QUANTILE", 0.95)),
-        stability_drift_threshold_pct=float(
-            _get_float("BAXBENCH_ADAPTIVE_V2_STABILITY_DRIFT_PCT", 5.0)
-        ),
-        plateau_stop_steps=max(
-            2, _get_int("BAXBENCH_ADAPTIVE_V2_PLATEAU_STOP_STEPS", 3)
-        ),
-        plateau_goodput_threshold_pct=float(
-            _get_float("BAXBENCH_ADAPTIVE_V2_PLATEAU_PCT", 5.0)
-        ),
-        health_grace_s=max(
-            5, _get_int("BAXBENCH_ADAPTIVE_V2_HEALTH_GRACE_S", max(15, trim_s))
-        ),
-        abort_on_no_users=_env_bool("BAXBENCH_ADAPTIVE_V2_ABORT_NO_USERS", True),
+        sample_every_s=max(1, int(cfg["sample_every_s"])),
+        min_settle_samples=max(2, int(cfg["min_settle_samples"])),
+        quantile=float(cfg["quantile"]),
+        stability_drift_threshold_pct=float(cfg["stability_drift_threshold_pct"]),
+        plateau_stop_steps=max(2, int(cfg["plateau_stop_steps"])),
+        plateau_goodput_threshold_pct=float(cfg["plateau_goodput_threshold_pct"]),
+        health_grace_s=max(5, int(cfg["health_grace_s"])),
+        abort_on_no_users=bool(cfg["abort_on_no_users"]),
     )
 
 
@@ -432,6 +417,18 @@ def _latency_drift_pct(samples: list[float]) -> float:
     if first <= 0:
         return 0.0 if last <= 0 else 100.0
     return abs(last - first) / first * 100.0
+
+
+def _sample_spread_pct(samples: list[float]) -> float:
+    """Peak-to-trough spread relative to the mean, as a percentage (0–100+)."""
+    if len(samples) < 2:
+        return 0.0
+    lo = float(min(samples))
+    hi = float(max(samples))
+    mean = float(statistics.mean(samples))
+    if mean <= 0:
+        return 100.0 if hi > 0 else 0.0
+    return (hi - lo) / mean * 100.0
 
 
 class AdaptiveV2Shape(_BaseShape):
@@ -465,7 +462,7 @@ class AdaptiveV2Shape(_BaseShape):
 
     def __init__(self):
         super().__init__()
-        self._p = _adaptive_v2_params_from_env()
+        self._p = _adaptive_v2_params_from_manifest()
         self._users = int(self._p.start_users)
         self._step = int(self._p.max_step_users)
         self._level_start_t = 0.0
@@ -891,11 +888,14 @@ class AdaptiveV2Shape(_BaseShape):
 class _GoodputPlateauParams:
     failure_threshold_pct: float
     collapse_threshold_pct: float
+    overload_p95_ms: float
     start_users: int
     max_users: int
     min_step_users: int
     max_step_users: int
-    max_step_growth_factor: float
+    step_up_gain: float
+    efficiency_good_threshold: float
+    drain_time_s: int
     spawn_rate: int
 
     warmup_step_duration_s: int
@@ -914,33 +914,37 @@ class _GoodputPlateauParams:
     abort_on_no_users: bool
 
 
-def _goodput_plateau_params_from_env() -> _GoodputPlateauParams:
-    trim_s = max(0, _get_int("BAXBENCH_GOODPUT_TRIM_S", 10))
-    min_step_s = max(5, _get_int("BAXBENCH_GOODPUT_MIN_STEP_DURATION_S", 30))
-    max_step_s = max(min_step_s, _get_int("BAXBENCH_GOODPUT_MAX_STEP_DURATION_S", 60))
+def _goodput_plateau_params_from_manifest() -> _GoodputPlateauParams:
+    cfg = _load_manifest()
+    trim_s = max(0, int(cfg["trim_s"]))
+    min_step_s = max(5, int(cfg["min_step_duration_s"]))
+    max_step_s = max(min_step_s, int(cfg["max_step_duration_s"]))
     return _GoodputPlateauParams(
-        failure_threshold_pct=float(_get_float("BAXBENCH_GOODPUT_FAILURE_THRESHOLD_PCT", 2.0)),
-        collapse_threshold_pct=float(_get_float("BAXBENCH_GOODPUT_COLLAPSE_THRESHOLD_PCT", 10.0)),
-        start_users=max(1, _get_int("BAXBENCH_GOODPUT_START_USERS", 100)),
-        max_users=max(1, _get_int("BAXBENCH_GOODPUT_MAX_USERS", 10_000)),
-        min_step_users=max(1, _get_int("BAXBENCH_GOODPUT_MIN_STEP_USERS", 25)),
-        max_step_users=max(1, _get_int("BAXBENCH_GOODPUT_MAX_STEP_USERS", 500)),
-        max_step_growth_factor=max(
-            1.0, _get_float("BAXBENCH_GOODPUT_MAX_STEP_GROWTH_FACTOR", 1.5)
+        failure_threshold_pct=float(cfg["failure_threshold_pct"]),
+        collapse_threshold_pct=float(cfg["collapse_threshold_pct"]),
+        overload_p95_ms=float(cfg["overload_p95_ms"]),
+        start_users=max(1, int(cfg["start_users"])),
+        max_users=max(1, int(cfg["max_users"])),
+        min_step_users=max(1, int(cfg["min_step_users"])),
+        max_step_users=max(1, int(cfg["max_step_users"])),
+        step_up_gain=max(1.0, float(cfg["step_up_gain"])),
+        efficiency_good_threshold=max(
+            0.0, min(1.0, float(cfg["efficiency_good_threshold"]))
         ),
-        spawn_rate=max(1, _get_int("BAXBENCH_GOODPUT_SPAWN_RATE", 50)),
-        warmup_step_duration_s=max(0, _get_int("BAXBENCH_GOODPUT_WARMUP_STEP_DURATION_S", 20)),
+        drain_time_s=max(0, int(cfg["drain_time_s"])),
+        spawn_rate=max(1, int(cfg["spawn_rate"])),
+        warmup_step_duration_s=max(0, int(cfg["warmup_step_duration_s"])),
         min_step_duration_s=min_step_s,
         max_step_duration_s=max_step_s,
         trim_s=trim_s,
-        sample_every_s=max(1, _get_int("BAXBENCH_GOODPUT_SAMPLE_EVERY_S", 1)),
-        min_settle_samples=max(2, _get_int("BAXBENCH_GOODPUT_MIN_SETTLE_SAMPLES", 5)),
-        quantile=float(_get_float("BAXBENCH_GOODPUT_QUANTILE", 0.95)),
-        stability_drift_threshold_pct=float(_get_float("BAXBENCH_GOODPUT_STABILITY_DRIFT_PCT", 5.0)),
-        plateau_stop_steps=max(2, _get_int("BAXBENCH_GOODPUT_PLATEAU_STOP_STEPS", 3)),
-        plateau_goodput_threshold_pct=float(_get_float("BAXBENCH_GOODPUT_PLATEAU_PCT", 5.0)),
-        health_grace_s=max(5, _get_int("BAXBENCH_GOODPUT_HEALTH_GRACE_S", max(15, trim_s))),
-        abort_on_no_users=_env_bool("BAXBENCH_GOODPUT_ABORT_NO_USERS", True),
+        sample_every_s=max(1, int(cfg["sample_every_s"])),
+        min_settle_samples=max(2, int(cfg["min_settle_samples"])),
+        quantile=float(cfg["quantile"]),
+        stability_drift_threshold_pct=float(cfg["stability_drift_threshold_pct"]),
+        plateau_stop_steps=max(2, int(cfg["plateau_stop_steps"])),
+        plateau_goodput_threshold_pct=float(cfg["plateau_goodput_threshold_pct"]),
+        health_grace_s=max(5, int(cfg["health_grace_s"])),
+        abort_on_no_users=bool(cfg["abort_on_no_users"]),
     )
 
 
@@ -948,32 +952,49 @@ class GoodputPlateauShape(_BaseShape):
     """
     Goodput plateau controller.
 
-    - Settles on goodput stability (not latency).
-    - Ramps by marginal goodput efficiency.
-    - Backs off on step-local failure-rate breaches or goodput collapse.
+    Per level, after trim (+ optional drain):
+    - Sample interval goodput and p95 every ``sample_every_s``.
+    - Once ``min_settle_samples`` readings exist and p95 spread in that window is
+      ≤ ``stability_drift_threshold_pct``, end the step (or at ``max_step_duration_s``).
+    - ``step_goodput`` logged at phase end = mean of those window samples (not the
+      full-step average including trim/spawn).
+    - Ramps by marginal goodput efficiency between consecutive level goodputs.
+    - Backs off on overload by subtracting the last ramp step, scaling the
+      drop by ``step_up_gain`` on each consecutive overload.
+    - After backoff, waits an extra ``drain_time_s`` before sampling/measuring
+      so in-flight queue can drain.
 
     Emits the same log grammar as AdaptiveV2Shape so existing parsing/plots work.
     """
 
     def __init__(self):
         super().__init__()
-        self._p = _goodput_plateau_params_from_env()
+        self._p = _goodput_plateau_params_from_manifest()
         self._users = int(self._p.start_users)
         self._step = int(self._p.max_step_users)
         self._last_ramp_step = 0
+        self._backoff_streak = 0
+        self._efficiency_reset = False
+        self._pending_drain_s = 0
+        self._level_drain_s = 0
         self._level_start_t = 0.0
         self._next_sample_t = 0.0
 
-        # Keep latency samples for reporting/plots (not control).
+        # Per-interval samples in the settle / decision window (after trim+drain).
         self._lat_samples: list[float] = []
-        # Goodput samples for stability/settling.
         self._goodput_samples: list[float] = []
 
         self._level_start_reqs = 0
         self._level_start_fails = 0
+        self._last_sample_reqs = 0
+        self._last_sample_fails = 0
+        self._last_sample_t: float | None = None
+        self._window_start_reqs: int | None = None
+        self._window_start_fails: int | None = None
+        self._sample_ticks: list[tuple[float, int, int]] = []
         self._is_warmup = self._p.warmup_step_duration_s > 0
 
-        self._goodput_history: list[tuple[int, float]] = []  # (users, step goodput rps)
+        self._goodput_history: list[tuple[int, float]] = []  # (users, level goodput rps)
         self._best_goodput: float = 0.0
 
         self._low_ok: int | None = None
@@ -988,7 +1009,7 @@ class GoodputPlateauShape(_BaseShape):
             "adaptive-v2 start: users=%s spawn_rate=%s sla_ms=%s failure_thr_pct=%s "
             "warmup_s=%s step_duration_s=[%s..%s] trim_s=%s quantile=%s "
             "stability_drift_pct=%s plateau_stop_steps=%s plateau_pct=%s "
-            "max_step_growth=%s max_users=%s",
+            "step_up_gain=%s eff_good_thr=%s drain_s=%s max_users=%s",
             self._users,
             self._p.spawn_rate,
             "n/a",
@@ -1001,7 +1022,9 @@ class GoodputPlateauShape(_BaseShape):
             self._p.stability_drift_threshold_pct,
             self._p.plateau_stop_steps,
             self._p.plateau_goodput_threshold_pct,
-            self._p.max_step_growth_factor,
+            self._p.step_up_gain,
+            self._p.efficiency_good_threshold,
+            self._p.drain_time_s,
             self._p.max_users,
         )
 
@@ -1089,12 +1112,50 @@ class GoodputPlateauShape(_BaseShape):
     def _enter_level(self, t: float) -> None:
         self._level_start_t = t
         self._next_sample_t = t
+        self._level_drain_s = int(self._pending_drain_s)
+        self._pending_drain_s = 0
         self._lat_samples = []
         self._goodput_samples = []
         reqs, fails = self._totals()
         self._level_start_reqs = reqs
         self._level_start_fails = fails
+        self._last_sample_reqs = reqs
+        self._last_sample_fails = fails
+        self._last_sample_t = None
+        self._window_start_reqs = None
+        self._window_start_fails = None
+        self._sample_ticks = []
         self._abort_logged = False
+
+    def _decision_window_size(self) -> int:
+        return int(self._p.min_settle_samples)
+
+    def _level_goodput_from_window(self) -> float:
+        """
+        Mean successful RPS over the settle window.
+
+        Uses request-counter boundaries (not the mean of per-tick deltas) so
+        bursty Locust master stat updates do not insert false zero intervals.
+        """
+        n = self._decision_window_size()
+        ticks = self._sample_ticks[-(n + 1) :]
+        if len(ticks) < 2:
+            return 0.0
+        t0, r0, f0 = ticks[0]
+        t1, r1, f1 = ticks[-1]
+        dt = max(0.001, float(t1) - float(t0))
+        succ0 = max(0, int(r0) - int(f0))
+        succ1 = max(0, int(r1) - int(f1))
+        return max(0.0, float(succ1 - succ0) / dt)
+
+    def _measure_start_s(self) -> float:
+        return float(self._p.trim_s) + float(self._level_drain_s)
+
+    def _min_level_duration_s(self) -> float:
+        return float(self._p.min_step_duration_s) + float(self._level_drain_s)
+
+    def _max_level_duration_s(self) -> float:
+        return float(self._p.max_step_duration_s) + float(self._level_drain_s)
 
     def _spawn_rate(self) -> int:
         return max(1, min(int(self._p.spawn_rate), int(self._step), int(self._users)))
@@ -1105,19 +1166,8 @@ class GoodputPlateauShape(_BaseShape):
             min(int(self._p.max_step_users), int(step_users)),
         )
 
-    def _cap_ramp_step_growth(self, raw_step: int) -> int:
-        """Limit how much the step size can grow vs the previous ramp step."""
-        step_users = self._clamp_step_users(raw_step)
-        last = int(self._last_ramp_step)
-        if last <= 0:
-            return step_users
-        growth_cap = self._clamp_step_users(
-            int(round(last * float(self._p.max_step_growth_factor)))
-        )
-        return min(step_users, growth_cap)
-
     def _apply_ramp_step(self, raw_step: int) -> int:
-        step_users = self._cap_ramp_step_growth(raw_step)
+        step_users = self._clamp_step_users(raw_step)
         self._step = step_users
         self._last_ramp_step = step_users
         return step_users
@@ -1184,26 +1234,57 @@ class GoodputPlateauShape(_BaseShape):
             history,
         )
 
+    def _backoff_drop_users(self) -> int:
+        """How many users to subtract on this overload backoff.
+
+        First backoff undoes the last ramp step; each subsequent consecutive
+        backoff scales the drop by ``step_up_gain`` (symmetric to ramp-up).
+        """
+        base = int(self._last_ramp_step) or int(self._step) or int(self._p.min_step_users)
+        mult = float(self._p.step_up_gain) ** int(self._backoff_streak)
+        drop = int(round(base * mult))
+        return max(
+            int(self._p.min_step_users),
+            min(int(self._p.max_step_users), drop),
+        )
+
     def _backoff(self, *, reason: str) -> str:
         prev_users = int(self._users)
-        self._high_bad = int(self._users) if self._high_bad is None else min(self._high_bad, int(self._users))
-        self._step = max(int(self._p.min_step_users), int(self._step // 2))
-        self._last_ramp_step = int(self._step)
-        new_users = max(0, int(self._users - self._step))
+        self._high_bad = (
+            int(self._users)
+            if self._high_bad is None
+            else min(self._high_bad, int(self._users))
+        )
+        drop = self._backoff_drop_users()
+        self._backoff_streak += 1
+        new_users = max(0, int(self._users - drop))
         if new_users <= 0:
             self._done = True
             self._stop_reason = "goodput-floor"
-            return f"overload ({reason}) at minimum users={prev_users}; cannot back off further; stopping"
+            return (
+                f"overload ({reason}) at minimum users={prev_users}; "
+                "cannot back off further; stopping"
+            )
         self._users = new_users
-        return f"overload ({reason}) backoff -> users={self._users} step={self._step}"
+        self._step = int(self._p.min_step_users)
+        self._efficiency_reset = True
+        self._pending_drain_s = int(self._p.drain_time_s)
+        return (
+            f"overload ({reason}) backoff -{drop} (streak={self._backoff_streak}) "
+            f"-> users={self._users} step={self._step} drain_s={self._p.drain_time_s}"
+        )
 
-    def _decide_and_advance(self, *, fail_pct: float, goodput_rps: float, stable: bool) -> str:
+    def _decide_and_advance(
+        self, *, fail_pct: float, goodput_rps: float, stable: bool, p95_ms: float | None
+    ) -> str:
         thr = float(self._p.failure_threshold_pct)
         collapse_thr = float(self._p.collapse_threshold_pct) / 100.0
 
         overloaded_reasons: list[str] = []
         if fail_pct > thr:
             overloaded_reasons.append(f"fail%={fail_pct:.1f}>thr={thr:.1f}")
+        if p95_ms is not None and p95_ms > float(self._p.overload_p95_ms):
+            overloaded_reasons.append(f"p95={p95_ms:.0f}>{float(self._p.overload_p95_ms):.0f}ms")
         if self._best_goodput > 0 and goodput_rps < (1.0 - collapse_thr) * self._best_goodput:
             overloaded_reasons.append(
                 f"goodput={goodput_rps:.1f}<{(1.0 - collapse_thr) * self._best_goodput:.1f}"
@@ -1213,6 +1294,7 @@ class GoodputPlateauShape(_BaseShape):
             return self._backoff(reason=" ".join(overloaded_reasons))
 
         # Passing step.
+        self._backoff_streak = 0
         self._low_ok = max(self._low_ok or 0, int(self._users))
         self._goodput_history.append((int(self._users), float(goodput_rps)))
         self._best_goodput = max(self._best_goodput, float(goodput_rps))
@@ -1251,24 +1333,59 @@ class GoodputPlateauShape(_BaseShape):
 
         prev_users, prev_goodput = self._goodput_history[-2]
         eff = self._goodput_efficiency(prev_users, prev_goodput, int(self._users), float(goodput_rps))
-        factor, band = self._ramp_factor_from_efficiency(eff)
-        if factor <= 0:
-            # Very low marginal returns (or negative): hold users to reduce overshoot risk.
-            # Plateau detection still runs on per-step goodput history.
-            return f"goodput hold eff={eff:.2f} band={band} fail%={fail_pct:.1f} -> users={self._users} step=0"
-        raw_step = int(round(self._users * factor))
-        capped_note = ""
-        if self._last_ramp_step > 0:
-            uncapped = self._clamp_step_users(raw_step)
-            capped = self._cap_ramp_step_growth(raw_step)
-            if capped < uncapped:
-                capped_note = f" step_cap={capped}<{uncapped}"
-        self._apply_ramp_step(raw_step)
+        if self._efficiency_reset:
+            self._efficiency_reset = False
+            self._step = int(self._p.min_step_users)
+            self._last_ramp_step = int(self._step)
+            self._users = min(int(self._p.max_users), int(self._users + self._step))
+            stab_note = "" if stable else " unstable-cap"
+            return f"goodput ramp reset{stab_note} -> users={self._users} step={self._step}"
+
+        if eff < 0:
+            # Negative marginal returns without a collapse/latency trigger: undo the last step,
+            # reset to min-step exploration, and re-measure from the last known-good point.
+            self._high_bad = (
+                int(self._users)
+                if self._high_bad is None
+                else min(self._high_bad, int(self._users))
+            )
+            self._users = int(prev_users)
+            self._step = int(self._p.min_step_users)
+            self._last_ramp_step = int(self._step)
+            self._efficiency_reset = True
+            return (
+                f"goodput negative-eff eff={eff:.2f} undo -> users={self._users} step={self._step}"
+            )
+
+        # Step-relative ramp: grow with step_up_gain when efficient, else shrink with eff³.
+        base_step = float(self._last_ramp_step or self._step or self._p.min_step_users)
+        eff_thr = float(self._p.efficiency_good_threshold)
+        if eff >= eff_thr:
+            band = "high-eff"
+            factor = float(self._p.step_up_gain)
+            uncapped = int(round(base_step * factor))
+        else:
+            band = "low-eff"
+            e = max(0.0, min(1.0, float(eff)))
+            factor = e * e * e
+            if factor <= 0:
+                return (
+                    f"goodput hold eff={eff:.2f} band={band} factor={factor:.3f} "
+                    f"fail%={fail_pct:.1f} -> users={self._users} step=0"
+                )
+            uncapped = int(round(base_step * factor))
+        if uncapped < int(self._p.min_step_users):
+            return (
+                f"goodput hold eff={eff:.2f} band={band} uncapped={uncapped}"
+                f"<min={self._p.min_step_users} fail%={fail_pct:.1f} -> "
+                f"users={self._users} step=0"
+            )
+        self._apply_ramp_step(uncapped)
         self._users = min(int(self._p.max_users), int(self._users + self._step))
         stab_note = "" if stable else " unstable-cap"
         return (
-            f"goodput ramp eff={eff:.2f} band={band} fail%={fail_pct:.1f}{stab_note}{capped_note} -> "
-            f"users={self._users} step={self._step}"
+            f"goodput ramp eff={eff:.2f} band={band} factor={factor:.3f} "
+            f"fail%={fail_pct:.1f}{stab_note} -> users={self._users} step={self._step}"
         )
 
     def tick(self):
@@ -1289,27 +1406,49 @@ class GoodputPlateauShape(_BaseShape):
             self._emit_final()
             return None
 
-        # Sample latency (for reporting) and goodput (for stability) periodically after trim.
+        # Sample p95 and per-interval goodput after trim (+ drain), not during spawn-in.
         if t >= self._next_sample_t:
             elapsed = t - self._level_start_t
-            if elapsed >= float(self._p.trim_s):
-                v = self._read_latency_ms()
-                if v is not None and v > 0:
-                    self._lat_samples.append(v)
-                    _LOG.info("adaptive p95 sample t=%.0fs users=%s p95=%.0fms", t, self._users, v)
-
+            if elapsed >= self._measure_start_s():
                 reqs_now, fails_now = self._totals()
-                delta_reqs = max(0, reqs_now - self._level_start_reqs)
-                delta_fails = max(0, fails_now - self._level_start_fails)
-                measured_s = max(1.0, float(elapsed))
-                step_goodput = max(0.0, (delta_reqs - delta_fails) / measured_s)
-                self._goodput_samples.append(float(step_goodput))
-                _LOG.info(
-                    "adaptive goodput sample t=%.0fs users=%s goodput=%.1f/s",
-                    t,
-                    self._users,
-                    step_goodput,
-                )
+                if self._window_start_reqs is None:
+                    self._window_start_reqs = reqs_now
+                    self._window_start_fails = fails_now
+                    self._last_sample_reqs = reqs_now
+                    self._last_sample_fails = fails_now
+                    self._last_sample_t = float(t)
+                    self._sample_ticks.append((float(t), int(reqs_now), int(fails_now)))
+                    v = self._read_latency_ms()
+                    if v is not None and v > 0:
+                        self._lat_samples.append(v)
+                        _LOG.info(
+                            "adaptive p95 sample t=%.0fs users=%s p95=%.0fms", t, self._users, v
+                        )
+                else:
+                    v = self._read_latency_ms()
+                    if v is not None and v > 0:
+                        self._lat_samples.append(v)
+                        _LOG.info(
+                            "adaptive p95 sample t=%.0fs users=%s p95=%.0fms", t, self._users, v
+                        )
+
+                    if len(self._sample_ticks) >= 1:
+                        t_prev, r_prev, f_prev = self._sample_ticks[-1]
+                        dt = max(0.001, float(t) - float(t_prev))
+                        succ_prev = max(0, int(r_prev) - int(f_prev))
+                        succ_now = max(0, int(reqs_now) - int(fails_now))
+                        interval_goodput = max(0.0, float(succ_now - succ_prev) / dt)
+                        self._goodput_samples.append(float(interval_goodput))
+                        _LOG.info(
+                            "adaptive goodput sample t=%.0fs users=%s goodput=%.1f/s",
+                            t,
+                            self._users,
+                            interval_goodput,
+                        )
+                    self._sample_ticks.append((float(t), int(reqs_now), int(fails_now)))
+                    self._last_sample_reqs = reqs_now
+                    self._last_sample_fails = fails_now
+                    self._last_sample_t = float(t)
 
             self._next_sample_t = t + float(self._p.sample_every_s)
 
@@ -1323,15 +1462,17 @@ class GoodputPlateauShape(_BaseShape):
                 self._enter_level(t)
             return int(self._users), self._spawn_rate()
 
-        if elapsed < float(self._p.min_step_duration_s):
+        if elapsed < self._min_level_duration_s():
             return int(self._users), self._spawn_rate()
 
-        recent_goodput = self._goodput_samples[-int(self._p.min_settle_samples) :]
-        have_enough = len(recent_goodput) >= int(self._p.min_settle_samples)
-        drift_pct = _latency_drift_pct(recent_goodput)
-        stable = drift_pct <= float(self._p.stability_drift_threshold_pct)
+        n = self._decision_window_size()
+        recent_lat = self._lat_samples[-n:]
+        recent_ticks = self._sample_ticks[-(n + 1) :]
+        have_enough = len(recent_lat) >= n and len(recent_ticks) >= n + 1
+        p95_spread_pct = _sample_spread_pct(recent_lat)
+        stable = p95_spread_pct <= float(self._p.stability_drift_threshold_pct)
 
-        at_cap = elapsed >= float(self._p.max_step_duration_s)
+        at_cap = elapsed >= self._max_level_duration_s()
         if not have_enough and not at_cap:
             return int(self._users), self._spawn_rate()
         if have_enough and not stable and not at_cap:
@@ -1339,10 +1480,13 @@ class GoodputPlateauShape(_BaseShape):
 
         if not have_enough:
             _LOG.warning(
-                "adaptive phase end t=%.0fs: insufficient samples (%d/%d) at users=%s after %ds | %s",
+                "adaptive phase end t=%.0fs: insufficient decision-window samples "
+                "(p95=%d/%d ticks=%d/%d) at users=%s after %ds | %s",
                 t,
-                len(recent_goodput),
-                int(self._p.min_settle_samples),
+                len(recent_lat),
+                n,
+                len(recent_ticks),
+                n + 1,
                 self._users,
                 int(elapsed),
                 self._stats_snapshot(),
@@ -1350,25 +1494,33 @@ class GoodputPlateauShape(_BaseShape):
             self._enter_level(t)
             return int(self._users), self._spawn_rate()
 
+        level_goodput_rps = self._level_goodput_from_window()
+        recent_goodput = self._goodput_samples[-n:]
         reqs_now, fails_now = self._totals()
-        delta_reqs = max(0, reqs_now - self._level_start_reqs)
-        delta_fails = max(0, fails_now - self._level_start_fails)
-        fail_pct = (100.0 * delta_fails / delta_reqs) if delta_reqs > 0 else 0.0
-        measured_s = max(1.0, float(elapsed))
-        success_rps = max(0.0, (delta_reqs - delta_fails) / measured_s)
-
-        action = self._decide_and_advance(fail_pct=float(fail_pct), goodput_rps=float(success_rps), stable=bool(stable))
+        win_reqs = max(0, reqs_now - int(self._window_start_reqs or reqs_now))
+        win_fails = max(0, fails_now - int(self._window_start_fails or fails_now))
+        fail_pct = (100.0 * win_fails / win_reqs) if win_reqs > 0 else 0.0
+        step_p95_ms = max(recent_lat) if recent_lat else None
+        action = self._decide_and_advance(
+            fail_pct=float(fail_pct),
+            goodput_rps=float(level_goodput_rps),
+            stable=bool(stable),
+            p95_ms=step_p95_ms,
+        )
         _LOG.info(
-            "adaptive phase end t=%.0fs: %s | %s | step_goodput=%.1f/s drift=%.1f%% "
-            "step_reqs=%d step_fail=%d samples=%s",
+            "adaptive phase end t=%.0fs: %s | %s | step_goodput=%.1f/s "
+            "p95_spread=%.1f%% drift=%.1f%% step_reqs=%d step_fail=%d "
+            "goodput_window=%s samples=%s",
             t,
             action,
             self._stats_snapshot(),
-            success_rps,
-            drift_pct,
-            delta_reqs,
-            delta_fails,
-            [round(v, 1) for v in self._lat_samples[-int(self._p.min_settle_samples) :]],
+            level_goodput_rps,
+            p95_spread_pct,
+            p95_spread_pct,
+            win_reqs,
+            win_fails,
+            [round(v, 1) for v in recent_goodput],
+            [round(v, 1) for v in recent_lat],
         )
         if self._done:
             self._emit_final()
@@ -1378,7 +1530,7 @@ class GoodputPlateauShape(_BaseShape):
 
 
 def _selected_shape_class() -> type[_BaseShape]:
-    mode = (os.getenv("BAXBENCH_LOAD_MODE", "steady") or "steady").strip().lower()
+    mode = (_load_manifest().get("mode") or "steady").strip().lower()
     mapping: dict[str, type[_BaseShape]] = {
         "steady": SteadyShape,
         "continuous": ContinuousShape,

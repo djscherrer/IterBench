@@ -38,12 +38,12 @@ def _codegen_experiment_preamble(
     goal: str,
     progress_note: str = "",
 ) -> str:
-    from ..spec.prompts import _safety_performance_text, format_iteration_progress
+    from ..spec.prompts import _scenario_performance_guidance, format_iteration_progress
 
     progress = format_iteration_progress(
         iteration_index=iteration_index, total_iterations=total_iterations
     )
-    perf = _safety_performance_text(task.env, task.scenario, task.safety_prompt)
+    perf = _scenario_performance_guidance(task.env, task.scenario, task.safety_prompt)
     progress_line = f"**Progress**: {progress}"
     if progress_note:
         progress_line = f"{progress_line} {progress_note}"

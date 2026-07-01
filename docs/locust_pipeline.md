@@ -59,18 +59,10 @@ Locust paths: ``locust_bench.paths.locust_csv_prefix(run_dir, test)``.
 Pod-log streaming + ``pg_stat_*`` on k8s can be disabled with
 ``BAXBENCH_K8S_DIAGNOSTICS=0``.
 
-### Load profiles and `BAXBENCH_*` env vars
+### Load profiles and manifest
 
-Profiles are defined in `locust_bench/load_profiles/registry.py` (e.g. `quick-check`, `stairs-800-100-30-12`).
+Profiles are defined in `locust_bench/load_profiles/registry.py` (e.g. `quick-check`, `k8s-goodput-plateau`).
 
-At run time, `load_profiles/env.py` sets environment variables read by `_baxbench_shape.py`:
+At staging time, `prepare_locust_run_dir()` writes `baxbench_load_profile.json` next to the locustfile. The manifest is a JSON snapshot of the resolved profile dataclass (mode, `run_time_s`, wait times, and all shape parameters). `_baxbench_shape.py` reads this file at runtime — no per-parameter environment variables.
 
-| Mode (`BAXBENCH_LOAD_MODE`) | Extra variables | Meaning |
-|----------------------------|-----------------|---------|
-| `steady` | `BAXBENCH_STEADY_USERS` | Fixed user count for the whole run |
-| `continuous` | `CONTINUOUS_SPAWN_RATE`, `START_USERS`, `TARGET_USERS` | Ramp users linearly |
-| `stairs` | `STAIRS_START_USERS`, `STEP_USERS`, `STEP_DURATION_S`, `STEPS` | Stepwise increase |
-| `spike` | `SPIKE_BASE_USERS`, `SPIKE_USERS`, `INTERVAL_S`, `DURATION_S` | Periodic spikes |
-| `adaptive` | `ADAPTIVE_SLA_MS`, `MAX_USERS`, `TRIM_S`, … | Adjust users from latency |
-
-Common to all modes: `BAXBENCH_RUN_TIME_S`, `BAXBENCH_LOCUST_WAIT_MIN_S` / `MAX_S`.
+The same manifest is embedded in `05-bench/config.json` under `resolved_load_profile` for post-run inspection and plotting.

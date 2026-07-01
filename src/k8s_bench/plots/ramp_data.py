@@ -112,12 +112,25 @@ def load_adaptive_plot_params(bench_dir: Path) -> AdaptivePlotParams:
         return defaults
 
     from bench_diagnostics.summary.load_run import load_profile_from_config
+    from locust_bench.load_profiles.manifest import resolved_profile_from_bench_config
     from locust_bench.load_profiles.models import (
         AdaptiveLoadProfile,
         AdaptiveV2LoadProfile,
         GoodputPlateauLoadProfile,
     )
     from locust_bench.load_profiles.registry import resolve_load_profile
+
+    resolved = resolved_profile_from_bench_config(config)
+    if resolved is not None:
+        mode = str(resolved.get("mode") or "")
+        if mode in ("adaptive_v2", "goodput_plateau", "adaptive"):
+            settle = resolved.get("min_settle_samples", resolved.get("settle_samples"))
+            return AdaptivePlotParams(
+                trim_s=int(resolved["trim_s"]),
+                sample_every_s=int(resolved["sample_every_s"]),
+                min_settle_samples=int(settle),
+                sla_ms=float(resolved.get("sla_ms", _DEFAULT_V2_SLA_MS)),
+            )
 
     name = load_profile_from_config(config)
     if not name:
@@ -167,8 +180,20 @@ def load_sustained_goodput_params(bench_dir: Path) -> SustainedGoodputParams:
         return defaults
 
     from bench_diagnostics.summary.load_run import load_profile_from_config
+    from locust_bench.load_profiles.manifest import resolved_profile_from_bench_config
     from locust_bench.load_profiles.models import AdaptiveV2LoadProfile, GoodputPlateauLoadProfile
     from locust_bench.load_profiles.registry import resolve_load_profile
+
+    resolved = resolved_profile_from_bench_config(config)
+    if resolved is not None and str(resolved.get("mode") or "") in (
+        "goodput_plateau",
+        "adaptive_v2",
+    ):
+        return SustainedGoodputParams(
+            window_s=_DEFAULT_SUSTAINED_WINDOW_S,
+            failure_threshold_pct=float(resolved["failure_threshold_pct"]),
+            stability_drift_threshold_pct=float(resolved["stability_drift_threshold_pct"]),
+        )
 
     name = load_profile_from_config(config)
     if not name:

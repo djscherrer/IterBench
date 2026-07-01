@@ -208,7 +208,6 @@ def deploy_only_preflight(
     Prefer iteration-local functional tests under ``02-code/``; materialize code
     from the latest prior iteration snapshot if needed.
     """
-    del cfg
     task_run_dir = task.get_save_dir(results_dir)
     sample_dir = task.get_sample_dir(results_dir, sample)
     sample_logger = logging.getLogger(task.id)

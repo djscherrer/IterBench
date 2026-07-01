@@ -73,7 +73,6 @@ def run_bench_with_timeout(
     import subprocess
 
     from locust_bench.load_profiles import resolve_load_profile
-    from locust_bench.load_profiles.env import build_baxbench_locust_env
     from locust_bench.locust_run import prepare_locust_run_dir, resolve_locust_user_class
 
     profile = resolve_load_profile(os.environ.get("BAXBENCH_LOAD_PROFILE", "default"))
@@ -86,12 +85,14 @@ def run_bench_with_timeout(
     )
     target_host = host if host is not None else f"http://localhost:{port}"
     run_dir = csv_prefix.parent
-    locustfile = prepare_locust_run_dir(run_dir, locustfile)
-    user_class = resolve_locust_user_class(locustfile, user)
-    proc_env = os.environ.copy()
-    proc_env.update(
-        build_baxbench_locust_env(profile, bench_run_time_s=run_time_s, bench_users=users)
+    locustfile = prepare_locust_run_dir(
+        run_dir,
+        locustfile,
+        load_profile=profile,
+        bench_run_time_s=run_time_s,
+        bench_users=users if bench_users is not None else None,
     )
+    user_class = resolve_locust_user_class(locustfile, user)
     try:
         result = subprocess.run(
             [
@@ -116,8 +117,7 @@ def run_bench_with_timeout(
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             timeout=timeout,
-            env=proc_env,
-            cwd=str(run_dir),
+            cwd=str(run_dir / "locust"),
         )
         return result.stdout
     except subprocess.TimeoutExpired:
