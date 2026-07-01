@@ -15,7 +15,7 @@ from .validators import (
     SPEC_VALIDATORS,
     effective_pool_max,
     estimate_app_client_connections,
-    validate_backend_concurrency,
+    validate_backend_env,
     validate_database_connections,
 )
 
@@ -24,7 +24,7 @@ __all__ = [
     "SpecValidationResult",
     "effective_pool_max",
     "estimate_app_client_connections",
-    "validate_backend_concurrency",
+    "validate_backend_env",
     "validate_database_connections",
     "validate_spec_against_cluster",
 ]

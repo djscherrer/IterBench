@@ -6,7 +6,7 @@ import re
 from typing import Any
 
 # Keys agents may set under ``backend.env``. Framework-injected vars (PORT,
-# WEB_CONCURRENCY, DB_*) are merged separately and cannot be overridden here.
+# DB_*) are merged separately and cannot be overridden here.
 ALLOWED_BACKEND_ENV_KEYS: frozenset[str] = frozenset(
     {
         "DB_POOL_SIZE",
@@ -35,7 +35,6 @@ def parse_backend_env(raw: Any) -> tuple[dict[str, str], list[str]]:
             continue
         if name in {
             "PORT",
-            "WEB_CONCURRENCY",
             "DB_HOST",
             "DB_PORT",
             "DB_USER",
@@ -45,8 +44,6 @@ def parse_backend_env(raw: Any) -> tuple[dict[str, str], list[str]]:
             "DB_READ_PORT",
             "REDIS_URL",
             "DB_REDIS_URL",
-            "GUNICORN_WORKER_CLASS",
-            "GUNICORN_THREADS",
         }:
             errors.append(
                 f"backend.env.{name}: reserved — set via spec fields, not env"

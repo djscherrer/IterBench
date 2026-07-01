@@ -60,7 +60,7 @@ def _codegen_experiment_preamble(
             "Maximize **goodput** (successful HTTP responses per second). The app runs in "
             "a container on Kubernetes under adaptive Locust load with many concurrent users. "
             "Failed requests do not count toward your score. Write for sustained throughput — "
-            "efficient DB access, safe schema init under gunicorn `--preload`, connection "
+            "efficient DB access, safe schema init at startup, connection "
             "pooling — not just minimal correctness.",
             "",
             perf,

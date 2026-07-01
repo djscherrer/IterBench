@@ -136,7 +136,7 @@ Propose deployment parameters for iteration `{iteration_id}` so the application 
 - Scenario: {scenario.id}
 - Environment: {env.id} (listen port {env.port})
 - Database required: {scenario.needs_db}
-- A replica runs `backend.web_concurrency` worker processes; with `worker_class=gthread`, each process also runs `worker_threads` concurrent requests. DB connection pool sizing is controlled by `backend.env.PG_POOL_MAX` / `backend.env.DB_POOL_SIZE` (if you set them).
+- Each backend pod runs a single app process; scale throughput with `backend.replicas` and per-pod `resources`. DB connection pool sizing is controlled by `backend.env.PG_POOL_MAX` / `backend.env.DB_POOL_SIZE` (if you set them).
 
 ## Cluster capacity
 Schedulable **workers only** (control-plane excluded). Use **requests** for scheduling fit.
@@ -157,27 +157,21 @@ Schedulable **workers only** (control-plane excluded). Use **requests** for sche
 2. **Cluster budget**: sum of all pod requests (backends + primary + read replicas + `pooler.replicas` + `read_pooler.replicas` (if enabled) + `cache.replicas` + dedicated `database.cache` Redis if `use_shared: false`) must fit cluster capacity after reserve.
 3. Optional **placement**: restrict or pin which workers may run postgres/backends; `spread_replicas: true` spreads backend pods across nodes.
 4. Use worker **`name` values** from the per-worker list (short names like `node3` are accepted).
-5. **DB connection budget is enforced when explicit**: if you set `backend.env.PG_POOL_MAX` or `backend.env.DB_POOL_SIZE`, the framework estimates app-side DB client connections as `backend.replicas × backend.web_concurrency × pool_max`. If `pooler.enabled`, then `pooler.max_client_conn` (and `read_pooler.max_client_conn` if enabled) must be **≥** that estimate, or the spec will be rejected before deploy. Lower replicas/workers/pool_max or raise `max_client_conn`.
+5. **DB connection budget is enforced when explicit**: if you set `backend.env.PG_POOL_MAX` or `backend.env.DB_POOL_SIZE`, the framework estimates app-side DB client connections as `backend.replicas × pool_max`. If `pooler.enabled`, then `pooler.max_client_conn` (and `read_pooler.max_client_conn` if enabled) must be **≥** that estimate, or the spec will be rejected before deploy. Lower replicas, pool_max, or raise `max_client_conn`.
 
 ## Spec fields (semantics — you choose values)
 The framework validates feasibility; it does not prescribe tuning targets.
 
 **`backend`** (horizontally scalable — many stateless pods):
-- `replicas`: pod count behind the Service
-- `web_concurrency`: gunicorn/PM2 **processes** per pod (`--workers`). More processes = more parallelism but more DB client connections (bounded by `backend.env.PG_POOL_MAX` / `backend.env.DB_POOL_SIZE` if set; otherwise depends on app code).
-- `worker_class`: gunicorn worker type — `sync` (default, one request per process), `gthread` (threads per process; pair with `worker_threads`), or `gevent` (requires gevent in the image).
-- `worker_threads`: threads per process when `worker_class=gthread` (e.g. `4` processes × `8` threads = 32 in-flight requests per pod with fewer DB pools than 32 sync workers).
-- `preload`: gunicorn `--preload` (default `true`) — loads app once before forking workers (faster startup, shared memory); set `false` to isolate workers after code/config changes.
-- `max_requests` / `max_requests_jitter`: recycle gunicorn workers after N requests (± jitter) to curb memory leaks under sustained load.
-- `backlog`: socket listen backlog for burst connection acceptance.
-- `env`: optional **allow-listed** tuning knobs (see below). Framework sets `DB_*`, `PORT`, `WEB_CONCURRENCY`, `REDIS_URL`, `DB_REDIS_URL`; do not duplicate those.
+- `replicas`: pod count behind the Service (primary scaling lever — one app process per pod)
+- `env`: optional **allow-listed** tuning knobs (see below). Framework sets `DB_*`, `PORT`, `REDIS_URL`, `DB_REDIS_URL`; do not duplicate those.
 - `resources`: per-pod CPU/memory requests & limits (scheduling uses **requests**)
 - `placement.workers`: optional node allow-list (omit = any worker)
 - `placement.spread_replicas`: prefer spreading pods across nodes (default true)
 
 **`pooler`** (PgBouncer — optional connection multiplexer in front of Postgres **primary**):
 - Sits between app pods and the primary. Framework sets `DB_HOST`/`DB_PORT` to the pooler when enabled.
-- `enabled`: `true` to deploy PgBouncer (recommended when scaling `replicas` or `web_concurrency` risks exhausting `max_connections`).
+- `enabled`: `true` to deploy PgBouncer (recommended when scaling `replicas` risks exhausting `max_connections`).
 - `mode`:
   - `transaction` (**recommended**): multiplexes many short client connections onto a small server pool; best for typical REST handlers that commit per request.
   - `session`: one server connection per client session; use only if the app needs session-pinned features (prepared statements, temp tables, `LISTEN`).
@@ -260,13 +254,6 @@ Return exactly one block:
 <SPEC>
 backend:
   replicas: <int>
-  web_concurrency: <int>             # gunicorn/PM2 processes per pod
-  worker_class: sync                 # sync | gthread | gevent (optional; default sync)
-  worker_threads: <int>              # required when worker_class=gthread
-  preload: true                      # optional; default true
-  max_requests: <int>                 # optional; gunicorn worker recycle
-  max_requests_jitter: <int>           # optional
-  backlog: <int>                      # optional; listen backlog
   env:                               # optional allow-listed knobs only
     PG_POOL_MAX: "<int>"              # or DB_POOL_SIZE for SQLAlchemy apps
     # DB_POOL_OVERFLOW: "<int>"

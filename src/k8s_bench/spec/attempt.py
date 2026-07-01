@@ -407,13 +407,6 @@ def _apply_task_labels_to_spec(
                 "image": spec.backend.image,
                 "replicas": spec.backend.replicas,
                 "port": task.env.port,
-                "web_concurrency": spec.backend.web_concurrency,
-                "worker_class": spec.backend.worker_class,
-                "worker_threads": spec.backend.worker_threads,
-                "preload": spec.backend.preload,
-                "max_requests": spec.backend.max_requests,
-                "max_requests_jitter": spec.backend.max_requests_jitter,
-                "backlog": spec.backend.backlog,
                 "resources": {
                     "cpu_request": spec.backend.resources.cpu_request,
                     "cpu_limit": spec.backend.resources.cpu_limit,

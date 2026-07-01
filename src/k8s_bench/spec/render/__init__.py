@@ -57,29 +57,20 @@ def _backend_container(spec: K8sWorkloadSpec, *, port: int, env_list: list[dict[
     }
     env_id = (spec.labels.get("baxbench.dev/env") or "").lower()
     if "flask" in env_id or env_id.startswith("python"):
-        preload = "--preload " if spec.backend.preload else ""
         container["command"] = [
             "sh",
             "-c",
-            "exec gunicorn "
-            f"{preload}"
-            "--workers=${WEB_CONCURRENCY:-2} "
-            "--worker-class=${GUNICORN_WORKER_CLASS:-sync} "
-            "${GUNICORN_THREADS:+--threads=$GUNICORN_THREADS} "
+            "exec gunicorn --preload --workers=1 "
+            "--worker-class=sync "
             "${GUNICORN_TIMEOUT:+--timeout=$GUNICORN_TIMEOUT} "
             "${GUNICORN_KEEPALIVE:+--keep-alive=$GUNICORN_KEEPALIVE} "
-            "${GUNICORN_MAX_REQUESTS:+--max-requests=$GUNICORN_MAX_REQUESTS} "
-            "${GUNICORN_MAX_REQUESTS_JITTER:+--max-requests-jitter=$GUNICORN_MAX_REQUESTS_JITTER} "
-            "${GUNICORN_BACKLOG:+--backlog=$GUNICORN_BACKLOG} "
             "--bind 0.0.0.0:${PORT:-5001} app:app",
         ]
     elif "express" in env_id or "javascript" in env_id or "node" in env_id:
-        # Pin PM2 cluster size to WEB_CONCURRENCY instead of the image default
-        # (``-i max`` = one worker per CPU), so concurrency is controlled by the spec.
         container["command"] = [
             "sh",
             "-c",
-            "exec npx --no-install pm2-runtime start app.js -i ${WEB_CONCURRENCY:-2}",
+            "exec npx --no-install pm2-runtime start app.js -i 1",
         ]
     return container
 

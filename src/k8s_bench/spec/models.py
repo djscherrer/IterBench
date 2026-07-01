@@ -18,13 +18,6 @@ POSTGRES_USER = "postgres"
 POSTGRES_PASSWORD = "postgres"
 POSTGRES_DATABASE = "testdb"
 
-# Default number of app worker processes per backend pod when a spec does not
-# set ``backend.web_concurrency``. Propagated as the ``WEB_CONCURRENCY`` env var
-# (gunicorn ``--workers`` for Python, PM2 ``-i`` for JavaScript).
-DEFAULT_WEB_CONCURRENCY = 2
-ALLOWED_GUNICORN_WORKER_CLASSES = frozenset({"sync", "gthread", "gevent"})
-
-
 @dataclass(frozen=True)
 class ResourceSpec:
     cpu_request: str = "250m"
@@ -62,15 +55,6 @@ class BackendSpec:
     replicas: int = 1
     port: int = 8080
     resources: ResourceSpec = field(default_factory=ResourceSpec)
-    # App worker processes per pod. Propagated as WEB_CONCURRENCY
-    # (gunicorn --workers for Python, PM2 -i for JavaScript).
-    web_concurrency: int = DEFAULT_WEB_CONCURRENCY
-    worker_class: str = "sync"
-    worker_threads: int | None = None
-    preload: bool = True
-    max_requests: int | None = None
-    max_requests_jitter: int | None = None
-    backlog: int | None = None
     env: dict[str, str] = field(default_factory=dict)
     # Kubernetes node hostnames (from cluster capacity) allowed for backend pods.
     placement_workers: tuple[str, ...] = ()
@@ -91,36 +75,12 @@ class BackendSpec:
             if isinstance(raw_workers, (list, tuple)):
                 workers = [str(w) for w in raw_workers if str(w).strip()]
             spread = bool(placement_raw.get("spread_replicas", True))
-        worker_class = str(data.get("worker_class", "sync")).strip().lower()
-        if worker_class not in ALLOWED_GUNICORN_WORKER_CLASSES:
-            worker_class = "sync"
-        threads_raw = data.get("worker_threads")
-        worker_threads: int | None = None
-        if threads_raw is not None and str(threads_raw).strip() != "":
-            worker_threads = max(1, int(threads_raw))
-
-        def _optional_nonneg_int(key: str) -> int | None:
-            raw = data.get(key)
-            if raw is None or str(raw).strip() == "":
-                return None
-            return max(0, int(raw))
-
         env, _env_errors = parse_backend_env(data.get("env"))
         return cls(
             image=str(data["image"]),
             replicas=int(data.get("replicas", 1)),
             port=int(data.get("port", 8080)),
             resources=ResourceSpec.from_mapping(data.get("resources")),
-            web_concurrency=max(
-                1,
-                int(data.get("web_concurrency", DEFAULT_WEB_CONCURRENCY)),
-            ),
-            worker_class=worker_class,
-            worker_threads=worker_threads,
-            preload=bool(data.get("preload", True)),
-            max_requests=_optional_nonneg_int("max_requests"),
-            max_requests_jitter=_optional_nonneg_int("max_requests_jitter"),
-            backlog=_optional_nonneg_int("backlog"),
             env=env,
             placement_workers=tuple(workers),
             spread_replicas=spread,
@@ -305,37 +265,6 @@ class K8sWorkloadSpec:
                 "image": self.backend.image,
                 "replicas": self.backend.replicas,
                 "port": self.backend.port,
-                "web_concurrency": self.backend.web_concurrency,
-                **(
-                    {"worker_class": self.backend.worker_class}
-                    if self.backend.worker_class != "sync"
-                    else {}
-                ),
-                **(
-                    {"worker_threads": self.backend.worker_threads}
-                    if self.backend.worker_threads is not None
-                    else {}
-                ),
-                **(
-                    {"preload": False}
-                    if not self.backend.preload
-                    else {}
-                ),
-                **(
-                    {"max_requests": self.backend.max_requests}
-                    if self.backend.max_requests is not None
-                    else {}
-                ),
-                **(
-                    {"max_requests_jitter": self.backend.max_requests_jitter}
-                    if self.backend.max_requests_jitter is not None
-                    else {}
-                ),
-                **(
-                    {"backlog": self.backend.backlog}
-                    if self.backend.backlog is not None
-                    else {}
-                ),
                 "resources": asdict(self.backend.resources),
                 **({"env": dict(self.backend.env)} if self.backend.env else {}),
                 "placement": {
@@ -400,19 +329,6 @@ class K8sWorkloadSpec:
     def backend_env(self) -> dict[str, str]:
         env = dict(self.backend.env)
         env.setdefault("PORT", str(self.backend.port))
-        env.setdefault("WEB_CONCURRENCY", str(self.backend.web_concurrency))
-        env.setdefault("GUNICORN_WORKER_CLASS", self.backend.worker_class)
-        if self.backend.worker_threads is not None:
-            env.setdefault("GUNICORN_THREADS", str(self.backend.worker_threads))
-        if self.backend.max_requests is not None:
-            env.setdefault("GUNICORN_MAX_REQUESTS", str(self.backend.max_requests))
-        if self.backend.max_requests_jitter is not None:
-            env.setdefault(
-                "GUNICORN_MAX_REQUESTS_JITTER",
-                str(self.backend.max_requests_jitter),
-            )
-        if self.backend.backlog is not None:
-            env.setdefault("GUNICORN_BACKLOG", str(self.backend.backlog))
         if self.cache.enabled:
             env.setdefault("REDIS_URL", self.cache.redis_url(self.namespace))
         if self.database.cache.enabled:

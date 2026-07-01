@@ -243,9 +243,6 @@ def _spec_bullets(spec: K8sWorkloadSpec) -> list[str]:
     lines = [
         f"- **Namespace**: `{spec.namespace}`",
         f"- **Backend replicas**: {b.replicas}",
-        f"- **Backend web_concurrency**: {b.web_concurrency}",
-        f"- **Backend worker**: `{b.worker_class}`"
-        + (f" × {b.worker_threads} threads" if b.worker_threads else ""),
         f"- **Backend** {_format_resources('resources', b.resources)}",
     ]
     if b.env:
@@ -477,27 +474,6 @@ def _spec_diff_markdown(prev: K8sWorkloadSpec, cur: K8sWorkloadSpec) -> str:
     changes: list[str] = []
     for line in (
         _diff_field("backend replicas", prev.backend.replicas, cur.backend.replicas),
-        _diff_field(
-            "backend web_concurrency",
-            prev.backend.web_concurrency,
-            cur.backend.web_concurrency,
-        ),
-        _diff_field("backend worker_class", prev.backend.worker_class, cur.backend.worker_class),
-        _diff_optional_int(
-            "backend worker_threads",
-            prev.backend.worker_threads,
-            cur.backend.worker_threads,
-        ),
-        _diff_field("backend preload", prev.backend.preload, cur.backend.preload),
-        _diff_optional_int("backend backlog", prev.backend.backlog, cur.backend.backlog),
-        _diff_optional_int(
-            "backend max_requests", prev.backend.max_requests, cur.backend.max_requests
-        ),
-        _diff_optional_int(
-            "backend max_requests_jitter",
-            prev.backend.max_requests_jitter,
-            cur.backend.max_requests_jitter,
-        ),
         _diff_field(
             "backend cpu limit",
             prev.backend.resources.cpu_limit,

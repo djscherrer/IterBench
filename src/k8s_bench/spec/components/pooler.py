@@ -143,7 +143,7 @@ def validate_pooler(
         errors.append(
             f"pooler.max_client_conn={pooler.max_client_conn} is too low for "
             f"estimated app client connections ({client_connections_needed}). "
-            "Raise max_client_conn or lower backend replicas / web_concurrency / "
+            "Raise max_client_conn or lower backend replicas / "
             "DB_POOL_SIZE."
         )
 

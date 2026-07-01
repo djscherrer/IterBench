@@ -89,15 +89,11 @@ def effective_pool_max(spec: K8sWorkloadSpec) -> int | None:
 def estimate_app_client_connections(
     spec: K8sWorkloadSpec,
 ) -> tuple[int | None, int, int | None]:
-    """Return ``(pool_max_per_worker, workers_per_pod, total_client_connections)``."""
+    """Return ``(pool_max_per_pod, pods, total_client_connections)``."""
     pool_max = effective_pool_max(spec)
-    workers_per_pod = spec.backend.web_concurrency
-    total = (
-        spec.backend.replicas * workers_per_pod * pool_max
-        if pool_max is not None
-        else None
-    )
-    return pool_max, workers_per_pod, total
+    pods = spec.backend.replicas
+    total = pods * pool_max if pool_max is not None else None
+    return pool_max, pods, total
 
 
 def validate_backend_replica_minimum(
@@ -168,34 +164,11 @@ def validate_backend_scale_warnings(
     return [], warnings
 
 
-def validate_backend_concurrency(
+def validate_backend_env(
     spec: K8sWorkloadSpec, _capacity: ClusterCapacity
 ) -> ValidatorResult:
-    from .models import ALLOWED_GUNICORN_WORKER_CLASSES
-
     errors: list[str] = []
     warnings: list[str] = []
-    wc = spec.backend.worker_class
-    if wc not in ALLOWED_GUNICORN_WORKER_CLASSES:
-        errors.append(
-            f"backend.worker_class must be one of: "
-            f"{', '.join(sorted(ALLOWED_GUNICORN_WORKER_CLASSES))}"
-        )
-    if spec.backend.worker_threads is not None and wc != "gthread":
-        errors.append("backend.worker_threads requires backend.worker_class=gthread")
-    if (
-        spec.backend.max_requests is not None
-        and spec.backend.max_requests_jitter is not None
-        and spec.backend.max_requests_jitter > spec.backend.max_requests
-    ):
-        errors.append(
-            "backend.max_requests_jitter cannot exceed backend.max_requests"
-        )
-    if wc == "gevent":
-        warnings.append(
-            "backend.worker_class=gevent requires gevent in the app image; "
-            "use gthread unless the codebase already depends on gevent."
-        )
     _, env_errors = parse_backend_env(spec.backend.env)
     errors.extend(env_errors)
     return errors, warnings
@@ -209,7 +182,7 @@ def validate_database_connections(
 
     errors: list[str] = []
     warnings: list[str] = []
-    pool_max, workers_per_pod, client_connections = estimate_app_client_connections(spec)
+    pool_max, pods, client_connections = estimate_app_client_connections(spec)
     max_conn = spec.database.max_connections
 
     if pool_max is None:
@@ -234,11 +207,10 @@ def validate_database_connections(
     elif client_connections is not None and client_connections > max_conn:
         errors.append(
             f"Direct Postgres connection budget exceeded: "
-            f"{spec.backend.replicas} replicas × {workers_per_pod} workers/pod × "
-            f"pool≤{pool_max} = {client_connections} client connections, but "
-            f"database.max_connections={max_conn}. Lower replicas, lower "
-            f"backend.web_concurrency, enable pooler, raise max_connections, "
-            f"or set backend.env.DB_POOL_SIZE smaller."
+            f"{pods} backend pods × pool≤{pool_max} = {client_connections} client "
+            f"connections, but database.max_connections={max_conn}. Lower replicas, "
+            f"enable pooler, raise max_connections, or set backend.env.DB_POOL_SIZE "
+            f"smaller."
         )
 
     if spec.read_pooler.enabled:
@@ -553,7 +525,7 @@ SPEC_VALIDATORS: tuple[ValidatorFn, ...] = (
     validate_backend_replica_minimum,
     validate_database_topology_warnings,
     validate_backend_scale_warnings,
-    validate_backend_concurrency,
+    validate_backend_env,
     validate_database_connections,
     validate_database_postgres_tuning,
     validate_application_cache,
