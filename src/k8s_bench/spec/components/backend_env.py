@@ -12,8 +12,6 @@ ALLOWED_BACKEND_ENV_KEYS: frozenset[str] = frozenset(
         "DB_POOL_SIZE",
         "DB_POOL_OVERFLOW",
         "PG_POOL_MAX",
-        "GUNICORN_TIMEOUT",
-        "GUNICORN_KEEPALIVE",
         "SQLALCHEMY_POOL_RECYCLE",
     }
 )
@@ -63,8 +61,6 @@ def parse_backend_env(raw: Any) -> tuple[dict[str, str], list[str]]:
             "DB_POOL_SIZE",
             "DB_POOL_OVERFLOW",
             "PG_POOL_MAX",
-            "GUNICORN_TIMEOUT",
-            "GUNICORN_KEEPALIVE",
             "SQLALCHEMY_POOL_RECYCLE",
         } and not _POSITIVE_INT_RE.match(text):
             errors.append(f"backend.env.{name}: must be a positive integer")

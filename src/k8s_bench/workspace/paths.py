@@ -17,8 +17,9 @@ _ITERATION_FOLDER_RE = re.compile(
 # encodes execution order: decision → code (optional) → spec → deploy → bench.
 # This makes ``ls iteration-007-code/`` self-documenting and lets a human (or a
 # parser) tell *where* an iteration failed by inspecting which phase folder is
-# the last one populated. ``failure_report.json`` lives next to the phase that
-# produced it (e.g. ``02-code/failure_report.json`` for an FT failure).
+# the last one populated. Terminal phase failures live in ``failure.json``
+# (e.g. ``02-code/failure.json``). Per-attempt failures live under
+# ``attempts/NNN/failure.json``.
 PHASE_DECISION_DIRNAME = "01-decision"
 PHASE_CODE_DIRNAME = "02-code"
 PHASE_SPEC_DIRNAME = "03-spec"
@@ -328,8 +329,7 @@ def iteration_code_phase_dir(iteration_path: Path) -> Path:
 
     Holds the regenerated code under ``code/`` plus the LLM transcript
     (``prompt.log``, ``response.log``), the ``functional_tests/`` outputs
-    from validating that regeneration, and ``failure_report.json`` if the
-    tests did not pass.
+    from validating that regeneration, and ``failure.json`` when the phase fails.
     """
     return iteration_path / PHASE_CODE_DIRNAME
 
@@ -339,74 +339,61 @@ def iteration_code_snapshot_dir(iteration_path: Path) -> Path:
     return iteration_code_phase_dir(iteration_path) / "code"
 
 
-def find_latest_code_dir(
+def nonempty_code_snapshot_dir(iteration_path: Path) -> Path | None:
+    """Return ``02-code/code/`` when it exists and is non-empty, else ``None``."""
+    code_dir = iteration_code_snapshot_dir(iteration_path)
+    if code_dir.is_dir() and any(code_dir.iterdir()):
+        return code_dir
+    return None
+
+
+def prior_iteration_code_dir(
+    sample_dir: Path,
+    iteration_index: int,
+    *,
+    experiment_id: str | None = None,
+) -> Path | None:
+    """
+    Return ``02-code/code/`` from the immediately preceding iteration (N−1).
+
+    Deployment/spec refinements copy application code from N−1; code refinement
+    on N also starts from whatever code N−1 materialized on disk.
+    """
+    if iteration_index <= 0:
+        return None
+    prev_path = resolve_iteration_dir(
+        sample_dir,
+        iteration_id_for_index(iteration_index - 1),
+        experiment_id=experiment_id,
+    )
+    return nonempty_code_snapshot_dir(prev_path)
+
+
+def find_latest_code_snapshot_iteration(
     sample_dir: Path, *, experiment_id: str | None = None
 ) -> Path | None:
     """
-    Newest non-failed iteration ``02-code/code/`` snapshot, or ``None``.
+    Newest iteration directory with a non-empty ``02-code/code/`` tree.
 
-    Excludes ``-failed`` folders so a broken code-refinement attempt does not
-    become the copy source for deployment/spec iterations.
+    Includes ``*-failed`` folders so LLM prompts can point at the most recent
+    codegen attempt (even when it broke). Used only for conversation-history
+    artifact pointers — not for lineage copy (see :func:`prior_iteration_code_dir`).
     """
     root = iterations_root(sample_dir, experiment_id=experiment_id)
     if not root.is_dir():
         return None
     best: tuple[int, Path] | None = None
     for child in root.iterdir():
-        if not child.is_dir() or iteration_folder_is_failed(child.name):
+        if not child.is_dir():
             continue
-        code_dir = iteration_code_snapshot_dir(child)
-        if not code_dir.is_dir() or not any(code_dir.iterdir()):
+        if not nonempty_code_snapshot_dir(child):
             continue
         idx = parse_iteration_index(child.name)
         if idx is None:
             continue
         if best is None or idx > best[0]:
-            best = (idx, code_dir)
+            best = (idx, child)
     return best[1] if best is not None else None
-
-
-def latest_code_dir(
-    sample_dir: Path, *, fallback: Path, experiment_id: str | None = None
-) -> Path:
-    """
-    Return the newest non-failed iteration ``code/`` snapshot, else ``fallback``.
-
-    Refined code lives under ``iterations/iteration-NNN-*/02-code/code/``.
-    For k8s bench, pass :func:`k8s_fallback_code_dir` as ``fallback`` — not
-    sample-level ``code/`` from distributed bench.
-    """
-    return (
-        find_latest_code_dir(sample_dir, experiment_id=experiment_id) or fallback
-    )
-
-
-def k8s_fallback_code_dir(
-    sample_dir: Path, *, experiment_id: str | None = None
-) -> Path:
-    """
-    Fallback code directory for k8s bench when no iteration snapshot matches yet.
-
-    K8s experiments always generate baseline code under ``iteration-000*``; we do
-    not use sample-level ``code/`` from ``--mode generate``.
-    """
-    root = iterations_root(sample_dir, experiment_id=experiment_id)
-    if root.is_dir():
-        for child in sorted(root.iterdir()):
-            if not child.name.startswith(f"{ITERATION_PREFIX}000"):
-                continue
-            if iteration_folder_is_failed(child.name):
-                continue
-            code_dir = iteration_code_snapshot_dir(child)
-            if code_dir.is_dir() and any(code_dir.iterdir()):
-                return code_dir
-    return iteration_code_snapshot_dir(
-        resolve_iteration_dir(
-            sample_dir,
-            iteration_id_for_index(0),
-            experiment_id=experiment_id,
-        )
-    )
 
 
 def latest_spec_path(

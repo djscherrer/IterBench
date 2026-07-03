@@ -854,37 +854,19 @@ class Task:
     ) -> str | None:
         files: dict[pathlib.Path, str] = self.load_code_from_dir(code_dir, logger)
         try:
-            image_id = self.env.build_docker_image(
+            return self.env.build_docker_image(
                 files,
                 COMMON_DOCKER_RUN_COMMANDS
                 + self.scenario.needed_packages.get("_all_", [])
                 + self.scenario.needed_packages.get(self.env.language, []),
                 logger,
-                no_cache=False,
             )
-            return image_id
         except Exception as e:
             logger.exception(
-                f"Failed to build docker image with cache, got exception:\n{str(e)}",
+                f"Failed to build docker image, got exception:\n{str(e)}",
                 exc_info=e,
             )
-            try:
-                logger.info("Retrying without cache")
-                image_id = self.env.build_docker_image(
-                    files,
-                    COMMON_DOCKER_RUN_COMMANDS
-                    + self.scenario.needed_packages.get("_all_", [])
-                    + self.scenario.needed_packages.get(self.env.language, []),
-                    logger,
-                    no_cache=True,
-                )
-                return image_id
-            except Exception as e:
-                logger.exception(
-                    f"Failed to build docker image without cache, got exception:\n{str(e)}",
-                    exc_info=e,
-                )
-                return None
+            return None
 
     def test_functional_tests_at(
         self,
@@ -918,6 +900,9 @@ class Task:
 
             image_id = self._build_image_from_code_dir(code_dir, logger)
             if image_id is None:
+                logger.error(
+                    "Docker image build failed — functional tests were not run"
+                )
                 result = TestResult()
                 for _ in range(len(self.scenario.functional_tests)):
                     result.record_ft_result(passed=False, had_exception=True)

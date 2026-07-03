@@ -23,8 +23,6 @@ from ..workspace import (
     iteration_functional_tests_dir,
     next_attempt_index,
 )
-from .snapshot import read_full_code_for_refinement
-
 _ATTEMPT_META_FILENAME = "attempt.json"
 
 
@@ -215,35 +213,6 @@ def reset_baseline_phase_on_force(iteration_path: Path) -> None:
             shutil.rmtree(child)
         else:
             child.unlink()
-
-
-def capture_baseline_retry_state(
-    *,
-    iteration_path: Path,
-    code_dir: Path,
-    iteration_id: str,
-    logger: logging.Logger,
-) -> tuple[str, Any]:
-    from ..failure import (
-        FunctionalFailureReport,
-        build_functional_failure_report,
-    )
-
-    try:
-        prior_code = read_full_code_for_refinement(code_dir)
-        failure_report = build_functional_failure_report(
-            iteration_path,
-            iteration_id=iteration_id,
-            logger=logger,
-        )
-        return prior_code, failure_report
-    except Exception as exc:
-        logger.warning(
-            "could not build baseline FT failure feedback: %s",
-            exc,
-        )
-        return "", None
-
 
 def append_baseline_summary(
     *,

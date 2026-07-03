@@ -144,11 +144,11 @@ def execute_iteration(
     iteration_path = apply_iteration_folder_suffix(setup.iteration_path, folder_kind)
     update_iteration_meta(iteration_path, folder=iteration_path.name)
 
-    if refinement_action == "deployment" and lineage.latest_code_dir is None:
+    if refinement_action == "deployment" and lineage.prior_code_dir is None:
         raise RuntimeError(
             f"No application code snapshot found for {setup.iteration_id} "
-            "(deployment/spec refinement requires a prior `02-code/code/` tree from a "
-            "non-failed iteration)."
+            "(deployment/spec refinement requires `02-code/code/` from the "
+            "previous iteration)."
         )
 
     plan = IterationPlan(

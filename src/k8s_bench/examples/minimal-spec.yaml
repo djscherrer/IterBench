@@ -12,7 +12,6 @@ backend:
   port: 8080
   env:
     DB_POOL_SIZE: "10"
-    GUNICORN_TIMEOUT: "120"
   resources:
     cpu_request: "250m"
     cpu_limit: "1"

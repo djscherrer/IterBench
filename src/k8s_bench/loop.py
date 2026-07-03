@@ -35,9 +35,9 @@ from .workspace import (
     bench_dir_has_complete_run,
     ensure_iteration_core_layout,
     iteration_bench_dir,
-    iteration_code_snapshot_dir,
-    k8s_fallback_code_dir,
-    latest_code_dir,
+    nonempty_code_snapshot_dir,
+    parse_iteration_index,
+    prior_iteration_code_dir,
     resolve_bench_dir,
 )
 
@@ -301,17 +301,26 @@ def _run_deploy_only_for_task(
             run_dirs.append(run_dir)
             log_file = run_dir / "bench.log"
 
-            code_snap = iteration_code_snapshot_dir(iteration_path)
-            if code_snap.is_dir() and any(code_snap.iterdir()):
+            code_snap = nonempty_code_snapshot_dir(iteration_path)
+            if code_snap is not None:
                 source_code_dir = code_snap
             else:
-                source_code_dir = latest_code_dir(
-                    ctx.sample_dir,
-                    fallback=k8s_fallback_code_dir(
-                        ctx.sample_dir, experiment_id=ctx.experiment_id
-                    ),
-                    experiment_id=ctx.experiment_id,
+                idx = parse_iteration_index(iteration_path.name)
+                source_code_dir = (
+                    prior_iteration_code_dir(
+                        ctx.sample_dir, idx, experiment_id=ctx.experiment_id
+                    )
+                    if idx is not None and idx > 0
+                    else None
                 )
+                if source_code_dir is None:
+                    append_k8s_skip(
+                        ctx.task_run_dir,
+                        ctx.sample,
+                        f"skipped: no code snapshot on {iteration_path.name} "
+                        "and none on the previous iteration",
+                    )
+                    continue
 
             with task.create_logger(log_file) as logger:
                 run_locust_for_iteration(

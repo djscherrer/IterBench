@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from ..failure import fail_iteration_phase
+from ..failure import FailureRecord, IterationFailure, fail_iteration_phase
 from ..orchestration.config import IterationPlan, RunConfig, SampleContext
 from ..workspace import (
     deploy_probe_record_path,
@@ -352,14 +352,27 @@ def run_deploy_stage(
         return DeployStageResult(ok=True)
 
     logger.error("deploy stage failed: %s", probe.reason)
+    deploy_record = FailureRecord(
+        phase="deploy",
+        kind="deploy_probe",
+        iteration_id=plan.iteration_id,
+        summary=probe.reason,
+        deploy_probe_reason=probe.reason,
+        deploy_probe_details=dict(probe.details or {}),
+        generic_excerpt=probe.to_prompt_feedback(),
+    )
     fail_iteration_phase(
         iteration_path=iteration_path,
         task_run_dir=ctx.task_run_dir,
         sample_dir=ctx.sample_dir,
         sample=ctx.sample,
         iteration_id=plan.iteration_id,
-        failure_reason=probe.reason,
         kind=failure_kind,
         logger=logger,
+        iteration_failure=IterationFailure(
+            iteration_id=plan.iteration_id,
+            phase="deploy",
+            terminal=deploy_record,
+        ),
     )
     return DeployStageResult(ok=False, reason=probe.reason)

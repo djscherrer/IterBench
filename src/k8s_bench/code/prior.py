@@ -1,24 +1,23 @@
-"""Load prior code-refinement failure reports from disk."""
+"""Load prior code-refinement failure records from disk."""
 
 from __future__ import annotations
 
 from pathlib import Path
 
-from ..failure import FunctionalFailureReport
+from ..failure import FailureRecord, load_terminal_failure_record
 from ..workspace import (
     iteration_folder_is_failed,
     iterations_root,
-    load_failure_report,
     parse_iteration_index,
 )
 
 
-def find_latest_prior_failure_report(
+def find_latest_prior_code_failure(
     sample_dir: Path,
     *,
     current_iteration_index: int,
     experiment_id: str | None = None,
-) -> FunctionalFailureReport | None:
+) -> FailureRecord | None:
     root = iterations_root(sample_dir, experiment_id=experiment_id)
     if not root.is_dir():
         return None
@@ -37,4 +36,4 @@ def find_latest_prior_failure_report(
             best = (idx, child)
     if best is None:
         return None
-    return load_failure_report(best[1])
+    return load_terminal_failure_record(best[1], phase="code")

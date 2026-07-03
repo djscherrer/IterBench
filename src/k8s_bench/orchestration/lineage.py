@@ -5,11 +5,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from ..code.prior import find_latest_prior_failure_report
+from ..code.prior import find_latest_prior_code_failure
 from ..feedback import IterationFeedback, load_prior_feedback_for_iteration
-from ..failure import FunctionalFailureReport
+from ..failure import FailureRecord
 from ..workspace import (
-    find_latest_code_dir,
     iteration_id_for_index,
     latest_spec_path,
     parse_iteration_index,
@@ -29,15 +28,15 @@ class IterationLineage:
     Snapshot of experiment disk state before routing this iteration.
 
     - ``bench_feedback``: iteration N−1 summary for the decision prompt.
-    - ``latest_code_dir``: newest **successful** ``02-code/code/`` (deployment copy).
+    - ``prior_code_dir``: ``02-code/code/`` from iteration N−1 (deployment copy).
     - ``latest_spec``: newest ``spec.yaml`` on disk (incl. failed folders).
-    - ``code_failure_report``: structured FT failure from a prior ``*-code-failed`` iter.
+    - ``prior_code_failure``: terminal code failure from a prior ``*-code-failed`` iter.
     """
 
     bench_feedback: IterationFeedback | None
-    latest_code_dir: Path | None
+    prior_code_dir: Path | None
     latest_spec: SpecRef | None
-    code_failure_report: FunctionalFailureReport | None
+    prior_code_failure: FailureRecord | None
 
 
 def load_iteration_lineage(
@@ -55,8 +54,10 @@ def load_iteration_lineage(
             experiment_id=experiment_id,
         )
 
-    latest_code_dir = find_latest_code_dir(
-        sample_dir, experiment_id=experiment_id
+    from ..workspace import prior_iteration_code_dir
+
+    prior_code_dir = prior_iteration_code_dir(
+        sample_dir, iteration_index, experiment_id=experiment_id
     )
 
     latest_spec: SpecRef | None = None
@@ -69,9 +70,9 @@ def load_iteration_lineage(
             iteration_id=_logical_iteration_id(iteration_dir.name),
         )
 
-    code_failure_report: FunctionalFailureReport | None = None
+    prior_code_failure: FailureRecord | None = None
     if not is_baseline:
-        code_failure_report = find_latest_prior_failure_report(
+        prior_code_failure = find_latest_prior_code_failure(
             sample_dir,
             current_iteration_index=iteration_index,
             experiment_id=experiment_id,
@@ -79,9 +80,9 @@ def load_iteration_lineage(
 
     return IterationLineage(
         bench_feedback=bench_feedback,
-        latest_code_dir=latest_code_dir,
+        prior_code_dir=prior_code_dir,
         latest_spec=latest_spec,
-        code_failure_report=code_failure_report,
+        prior_code_failure=prior_code_failure,
     )
 
 

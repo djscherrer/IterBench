@@ -28,11 +28,12 @@ from ..workspace import (
     iteration_functional_tests_dir,
     iteration_id_for_index,
     iterations_root,
-    k8s_fallback_code_dir,
     k8s_workspace_root,
-    latest_code_dir,
     materialize_code_lineage,
     normalize_experiment_id,
+    nonempty_code_snapshot_dir,
+    parse_iteration_index,
+    prior_iteration_code_dir,
     resolve_iteration_dir,
 )
 from .config import RunConfig, SampleContext
@@ -206,7 +207,7 @@ def deploy_only_preflight(
     Preflight for ``--k8s-iteration-path`` deploy-only runs.
 
     Prefer iteration-local functional tests under ``02-code/``; materialize code
-    from the latest prior iteration snapshot if needed.
+    from the previous iteration snapshot if needed.
     """
     task_run_dir = task.get_save_dir(results_dir)
     sample_dir = task.get_sample_dir(results_dir, sample)
@@ -228,14 +229,16 @@ def deploy_only_preflight(
     if ctx is not None:
         return ctx
 
-    source_code = latest_code_dir(
-        sample_dir,
-        fallback=k8s_fallback_code_dir(
-            sample_dir, experiment_id=cfg.experiment_id
-        ),
-        experiment_id=cfg.experiment_id,
+    idx = parse_iteration_index(iteration_path.name)
+    source_code = (
+        prior_iteration_code_dir(
+            sample_dir, idx, experiment_id=cfg.experiment_id
+        )
+        if idx is not None and idx > 0
+        else None
     )
-    materialize_code_lineage(iteration_path, source_code)
+    if source_code is not None:
+        materialize_code_lineage(iteration_path, source_code)
 
     ctx = _deploy_only_iteration_preflight(
         task,

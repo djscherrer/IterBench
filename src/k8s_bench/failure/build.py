@@ -1,4 +1,4 @@
-"""Build :class:`FunctionalFailureReport` from functional-test log artifacts."""
+"""Build :class:`FailureRecord` from functional-test log artifacts."""
 
 from __future__ import annotations
 
@@ -7,16 +7,19 @@ import logging
 from pathlib import Path
 
 from ..workspace.paths import iteration_functional_tests_dir
+from .failure_models import FunctionalFailure
 from .infra import detect_infrastructure_failure
-from .models import FunctionalFailure, FunctionalFailureReport
 from .patterns import (
+    COMPILE_DIAGNOSTIC_RE,
     CONTAINER_ERROR_HINT_RE,
+    DOCKER_BUILD_FAILED_RE,
     FT_STATUS_RE,
     HARNESS_LINE_RE,
     INFRA_FAILURE_PATTERNS,
     PM2_NOISE_RE,
 )
-from .text import tail, trim
+from .record import FailureKind, FailureRecord
+from .text import filter_compile_diagnostics, strip_harness_noise, tail, trim
 
 _PER_TEST_TAIL_LINES = 6
 _CONTAINER_ERROR_TAIL_LINES = 14
@@ -35,7 +38,6 @@ def _read_test_results(ft_dir: Path) -> tuple[int, int]:
 
 
 def _scan_test_log_for_results(test_log: str) -> tuple[list[str], list[str]]:
-    """Collect ordered (passed, failed) test names from ``test.log``."""
     passed: list[str] = []
     failed: list[str] = []
     for line in test_log.splitlines():
@@ -53,7 +55,6 @@ def _container_error_excerpt_for_test(
     test_log: str,
     failed_test_name: str,
 ) -> str:
-    """Extract application error output from ``test.log`` for one failed test."""
     lines = test_log.splitlines()
 
     failed_idx: int | None = None
@@ -115,33 +116,116 @@ def _container_error_excerpt_for_test(
     return trim(body, max_chars=_MAX_CONTAINER_ERROR_CHARS)
 
 
+def _compile_excerpt_from_test_log(test_log: str) -> str:
+    if not test_log:
+        return ""
+    tail_marker = "Docker build failed. Compiler output (tail):"
+    if tail_marker in test_log:
+        tail_section = test_log.rsplit(tail_marker, maxsplit=1)[-1].strip()
+        filtered = filter_compile_diagnostics(tail_section)
+        if filtered:
+            return tail(filtered, max_lines=40, max_chars=2000)
+
+    lines = test_log.splitlines()
+    compile_lines: list[str] = []
+    in_build = False
+    for line in lines:
+        stripped = strip_harness_noise(line).strip()
+        if not stripped:
+            continue
+        if stripped.startswith("docker build:"):
+            in_build = True
+            compile_lines.append(stripped.removeprefix("docker build:").strip())
+            continue
+        if in_build:
+            if HARNESS_LINE_RE.match(line) and "docker build:" not in line:
+                in_build = False
+                continue
+            compile_lines.append(stripped)
+        elif COMPILE_DIAGNOSTIC_RE.search(stripped):
+            compile_lines.append(stripped)
+    if compile_lines:
+        filtered = filter_compile_diagnostics("\n".join(compile_lines))
+        if filtered:
+            return tail(filtered, max_lines=40, max_chars=2000)
+    return ""
+
+
+def docker_build_failed_in_test_log(test_log: str) -> bool:
+    return bool(test_log and DOCKER_BUILD_FAILED_RE.search(test_log))
+
+
 def _generic_excerpt_from_test_log(test_log: str) -> str:
     if not test_log:
         return ""
+    compile_excerpt = _compile_excerpt_from_test_log(test_log)
+    if compile_excerpt:
+        return compile_excerpt
     lines = test_log.splitlines()
     error_lines = [
-        line
+        strip_harness_noise(line)
         for line in lines
         if CONTAINER_ERROR_HINT_RE.search(line)
         and not HARNESS_LINE_RE.match(line)
         and not PM2_NOISE_RE.match(line)
+        and "error::" not in line
     ]
+    error_lines = [ln for ln in error_lines if ln.strip()]
     if error_lines:
         return tail("\n".join(error_lines), max_lines=20, max_chars=1200)
-    return tail("\n".join(lines), max_lines=20, max_chars=1200)
+    return tail(strip_harness_noise(test_log), max_lines=20, max_chars=1200)
 
 
-def build_functional_failure_report(
+def _infer_code_kind(
+    *,
+    infra,
+    failed_names: list[str],
+    generic_excerpt: str,
+) -> FailureKind:
+    if infra is not None:
+        return "infrastructure"
+    if not failed_names and generic_excerpt and (
+        DOCKER_BUILD_FAILED_RE.search(generic_excerpt)
+        or any(
+            m in generic_excerpt
+            for m in ("error[E", "could not compile", "rustc --", "npm ERR")
+        )
+    ):
+        return "docker_build"
+    return "functional_test"
+
+
+def _build_summary(
+    *,
+    kind: FailureKind,
+    iteration_id: str,
+    attempt: int | None,
+    passed_n: int,
+    total_n: int,
+    failed_names: list[str],
+    infra,
+) -> str:
+    attempt_bit = f" (attempt {attempt})" if attempt is not None else ""
+    if kind == "infrastructure" and infra is not None:
+        return f"Infrastructure failure{attempt_bit}: {infra.description}"
+    if kind == "docker_build":
+        return f"Docker image build failed{attempt_bit} (code did not compile)"
+    if failed_names:
+        return (
+            f"Functional tests{attempt_bit}: {passed_n}/{total_n} passed; "
+            f"failed: {', '.join(failed_names)}"
+        )
+    return f"Functional tests{attempt_bit}: {passed_n}/{total_n} passed"
+
+
+def build_code_failure_record(
     iteration_path: Path,
     *,
     iteration_id: str | None = None,
+    attempt: int | None = None,
     logger: logging.Logger | None = None,
-) -> FunctionalFailureReport:
-    """
-    Inspect the iteration's ``functional_tests/`` directory and build a report.
-
-    Tolerant of missing files: returns a best-effort report rather than raising.
-    """
+) -> FailureRecord:
+    """Inspect ``functional_tests/`` and build a code-phase :class:`FailureRecord`."""
     log = logger or logging.getLogger(__name__)
     ft_dir = iteration_functional_tests_dir(iteration_path)
     iid = iteration_id or iteration_path.name
@@ -193,8 +277,27 @@ def build_functional_failure_report(
             infra.evidence,
         )
 
-    return FunctionalFailureReport(
+    kind = _infer_code_kind(
+        infra=infra,
+        failed_names=failed_names,
+        generic_excerpt=generic_excerpt,
+    )
+    summary = _build_summary(
+        kind=kind,
         iteration_id=iid,
+        attempt=attempt,
+        passed_n=passed_n,
+        total_n=total_n,
+        failed_names=failed_names,
+        infra=infra,
+    )
+
+    return FailureRecord(
+        phase="code",
+        kind=kind,
+        iteration_id=iid,
+        attempt=attempt,
+        summary=summary,
         num_passed_ft=passed_n,
         num_total_ft=total_n,
         failed_tests=tuple(failures),

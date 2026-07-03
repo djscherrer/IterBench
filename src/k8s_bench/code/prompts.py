@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from ..feedback import IterationFeedback
-from ..failure import FunctionalFailureReport
+from ..failure import FailureRecord
 from ..prompt_helpers import (
     format_artifact_pointers_block,
     resolve_artifact_pointers,
@@ -74,28 +74,15 @@ def _codegen_experiment_preamble(
     )
 
 
-def baseline_retry_feedback_block(
+def _attempt_failure_feedback_block(
     *,
-    prior_code: str,
-    failure_report: FunctionalFailureReport,
-) -> str:
-    block = failure_report.to_prompt_block()
-    parts = [
-        "## Your previous attempt failed the functional tests — fix it",
-        "",
-        "The program you generated on the previous attempt is shown below. It "
-        "did not pass the functional tests. Produce a **complete corrected "
-        "program** (same output format as before). The functional test source "
-        "is intentionally withheld — implement the behaviour the API spec "
-        "requires; do not try to special-case the tests.",
-        "",
-        "### Your previous code",
-        prior_code.strip() or "(previous code unavailable)",
-        "",
-        "### What failed",
-        block or "(no structured failure detail captured)",
-    ]
-    return "\n".join(parts)
+    failure: FailureRecord,
+    heading: str,
+) -> list[str]:
+    block = failure.to_prompt_block()
+    if not block:
+        return []
+    return ["", heading, "", block]
 
 
 def build_baseline_prompt(
@@ -104,8 +91,7 @@ def build_baseline_prompt(
     iteration_id: str,
     iteration_index: int = 0,
     total_iterations: int = 0,
-    prior_code: str = "",
-    failure_report: FunctionalFailureReport | None = None,
+    prior_attempt_failure: FailureRecord | None = None,
 ) -> str:
     parts = [
         _codegen_experiment_preamble(
@@ -121,14 +107,22 @@ def build_baseline_prompt(
         "",
         _application_requirements(task),
     ]
-    if failure_report is not None:
+    if prior_attempt_failure is not None:
         parts.extend(
-            [
-                "",
-                baseline_retry_feedback_block(
-                    prior_code=prior_code, failure_report=failure_report
+            _attempt_failure_feedback_block(
+                failure=prior_attempt_failure,
+                heading="\n".join(
+                    [
+                        "## Your previous attempt failed — fix it",
+                        "",
+                        "Starting point: your **most recent** `<CODE>` assistant response in this "
+                        "conversation (the baseline codegen attempt that just failed). Produce a "
+                        "**complete corrected** program in the same output format as before.",
+                        "",
+                        "### What failed",
+                    ]
                 ),
-            ]
+            )
         )
     return "\n".join(parts)
 
@@ -140,8 +134,8 @@ def build_code_refinement_prompt(
     sample: int,
     iteration_id: str,
     prior_feedback: IterationFeedback,
-    same_iteration_failure_report: FunctionalFailureReport | None = None,
-    prior_failure_report: FunctionalFailureReport | None = None,
+    prior_attempt_failure: FailureRecord | None = None,
+    prior_iteration_failure: FailureRecord | None = None,
     iteration_index: int = 0,
     total_iterations: int = 0,
     experiment_id: str | None = None,
@@ -173,39 +167,39 @@ def build_code_refinement_prompt(
         "",
         "Keep the same API contract and scenario requirements. Output a complete "
         "replacement codebase using the same `<FILEPATH>` / `<CODE>` format as initial "
-        "generation.",
+        "generation. Use the referenced `<CODE>` response as your starting point.",
         "",
         pointer_block,
         "",
         _application_requirements(task),
     ]
 
-    if prior_failure_report is not None:
-        prior_block = prior_failure_report.to_prompt_block()
-        if prior_block:
-            parts.extend(
-                [
-                    "",
-                    "### Previous code-refinement attempt failed (this is a "
-                    "**must-fix** signal — do not produce another revision "
-                    "that breaks the same tests)",
-                    "",
-                    prior_block,
-                ]
+    if prior_iteration_failure is not None:
+        parts.extend(
+            _attempt_failure_feedback_block(
+                failure=prior_iteration_failure,
+                heading="\n".join(
+                    [
+                        "### Previous code-refinement attempt failed (this is a "
+                        "**must-fix** signal — do not produce another revision "
+                        "that breaks the same tests)",
+                    ]
+                ),
             )
+        )
 
-    if same_iteration_failure_report is not None:
-        same_block = same_iteration_failure_report.to_prompt_block()
-        if same_block:
-            parts.extend(
-                [
-                    "",
-                    "### Functional test feedback from this iteration's previous codegen attempt",
-                    "(your most recent regeneration within this same iteration failed "
-                    "these tests; fix them)",
-                    "",
-                    same_block,
-                ]
+    if prior_attempt_failure is not None:
+        parts.extend(
+            _attempt_failure_feedback_block(
+                failure=prior_attempt_failure,
+                heading="\n".join(
+                    [
+                        "### Functional test feedback from this iteration's previous codegen attempt",
+                        "(your most recent regeneration within this same iteration failed "
+                        "these tests; fix them)",
+                    ]
+                ),
             )
+        )
 
     return "\n".join(parts)

@@ -553,13 +553,9 @@ def read_failed_iteration_error_excerpt(
 
     Preference order:
 
-    1. **Structured ``failure_report.json``** (written by
-       :func:`fail_iteration_phase` when functional tests failed). This is a
-       one-paragraph summary like
-       ``"Functional tests: 4/5 passed. Failed: func_test_simulate_… First
-       failure evidence: …"`` — far more useful than a random log tail and
-       does not change across reruns.
-    2. ``bench/bench.log`` — last 40 lines for spec-refinement failures.
+    1. **Structured ``failure.json``** (terminal :class:`IterationFailure` on disk).
+    2. Legacy ``failure_report.json`` (v1 code failures).
+    3. ``bench/bench.log`` — last 40 lines for spec-refinement failures.
     3. ``deploy/probe.json`` — full content for failed deploy probes.
     4. ``functional_tests/test.log`` — last-resort tail; almost always the
        *last* test (often a passing one) and therefore mostly noise. Kept only
@@ -567,13 +563,13 @@ def read_failed_iteration_error_excerpt(
        something non-empty.
     """
     try:
-        from .workspace import load_failure_report
+        from .failure import load_terminal_failure_record
 
-        report = load_failure_report(iteration_path)
+        record = load_terminal_failure_record(iteration_path)
     except Exception:
-        report = None
-    if report is not None and (report.failed_tests or report.num_total_ft > 0):
-        return report.short_excerpt()[:max_chars]
+        record = None
+    if record is not None:
+        return record.short_excerpt()[:max_chars]
 
     bench_log = iteration_bench_dir(iteration_path) / "bench.log"
     if bench_log.is_file():

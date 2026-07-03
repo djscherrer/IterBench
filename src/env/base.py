@@ -4,12 +4,35 @@ import io
 import logging
 import os
 import pathlib
+import re
 import tarfile
 import uuid
 from dataclasses import dataclass
 from typing import Any, Callable, cast
 
 _docker_client: Any = None
+
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+_BUILD_DIAGNOSTIC_LINE_RE = re.compile(
+    r"(error\[E\d+\]|^error:|warning:|could not compile|"
+    r"Some errors have|For more information|"
+    r"^\s*-->|^\s*\d+\s*\||^\s*\||^\s*\^|^\s*=\s*(note|help):)",
+    re.IGNORECASE,
+)
+
+
+def _strip_ansi(text: str) -> str:
+    return _ANSI_RE.sub("", text)
+
+
+def _filter_build_diagnostics(lines: list[str], *, max_lines: int = 40) -> list[str]:
+    """Keep only compiler warnings/errors from docker build output."""
+    kept: list[str] = []
+    for line in lines:
+        clean = _strip_ansi(line).strip()
+        if clean and _BUILD_DIAGNOSTIC_LINE_RE.search(clean):
+            kept.append(clean)
+    return kept[-max_lines:]
 
 
 def _get_docker_client() -> Any:
@@ -136,7 +159,6 @@ class Env:
         files: dict[pathlib.Path, str],
         additional_docker_commands: list[str],
         logger: logging.Logger,
-        no_cache: bool,
     ) -> str:
         logger.info("building the Docker image")
         tar_stream = io.BytesIO()
@@ -153,8 +175,7 @@ class Env:
                 tarinfo = tarfile.TarInfo(name=path)
                 tarinfo.size = len(file_data.getvalue())
                 tar.addfile(tarinfo, fileobj=file_data)
-                logger.info("copying file: %s\n%s", path, content)
-                logger.info("-" * 100)
+                logger.info("copying file: %s (%d bytes)", path, len(content))
 
             add_file("Dockerfile", final_dockerfile)
             for file_path, content in files.items():
@@ -166,12 +187,44 @@ class Env:
         # Build the Docker image using the tar file.
         lang, frw = self.language.replace("-", "_"), self.framework.replace("-", "_")
         tag = f"baxbench_{lang}_{frw}".lower()
-        logger.info("Files copied, building the image")
-        logger.info("-" * 100)
+        logger.info("building docker image %s", tag)
+        import docker.errors
+
         client = _get_docker_client()
-        r = client.images.build(
+        build_log_lines: list[str] = []
+
+        def log_build_chunk(chunk: object) -> None:
+            if not isinstance(chunk, dict):
+                return
+            if stream := chunk.get("stream"):
+                line = str(stream).rstrip("\n")
+                if line:
+                    build_log_lines.append(line)
+                    logger.debug("docker build: %s", line)
+            if err := chunk.get("error"):
+                line = str(err).strip()
+                logger.error("docker build: %s", line)
+                build_log_lines.append(line)
+
+        def log_build_tail() -> None:
+            diagnostics = _filter_build_diagnostics(build_log_lines)
+            if diagnostics:
+                logger.error(
+                    "Docker build failed. Compiler output (tail):\n%s",
+                    "\n".join(diagnostics),
+                )
+            elif build_log_lines:
+                logger.error(
+                    "Docker build failed. Build output (tail):\n%s",
+                    "\n".join(_strip_ansi(ln) for ln in build_log_lines[-20:]),
+                )
+
+        try:
+            # Do not pass decode=True: images.build() already JSON-decodes the
+            # stream internally; decode=True makes the API yield dicts that
+            # json_stream then tries to .decode(), causing AttributeError.
+            image, log_stream = client.images.build(
                 fileobj=tar_stream,
-                nocache=no_cache,
                 custom_context=True,
                 tag=tag,
                 rm=True,
@@ -179,10 +232,20 @@ class Env:
                 forcerm=True,
                 labels={"language": self.language, "framework": self.framework},
             )
-            
-        if r[0].id is None:
-            raise Exception(f"got a None image id: {r}")
-        return r[0].id
+            for chunk in log_stream:
+                log_build_chunk(chunk)
+        except docker.errors.BuildError as exc:
+            for chunk in exc.build_log:
+                log_build_chunk(chunk)
+            log_build_tail()
+            raise
+        except Exception:
+            log_build_tail()
+            raise
+
+        if image.id is None:
+            raise Exception(f"got a None image id from docker build for {tag}")
+        return image.id
 
     def run_docker_container(self, image_id: str, use_port: int, additional_env: dict[str, str] | None = None, link: dict[str, str] | None = None) -> Any:
         uid = uuid.uuid4()

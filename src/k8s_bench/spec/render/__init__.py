@@ -62,8 +62,6 @@ def _backend_container(spec: K8sWorkloadSpec, *, port: int, env_list: list[dict[
             "-c",
             "exec gunicorn --preload --workers=1 "
             "--worker-class=sync "
-            "${GUNICORN_TIMEOUT:+--timeout=$GUNICORN_TIMEOUT} "
-            "${GUNICORN_KEEPALIVE:+--keep-alive=$GUNICORN_KEEPALIVE} "
             "--bind 0.0.0.0:${PORT:-5001} app:app",
         ]
     elif "express" in env_id or "javascript" in env_id or "node" in env_id:

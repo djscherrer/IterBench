@@ -14,7 +14,6 @@ from typing import Any
 
 from ..code.attempt import (
     CodegenMode,
-    CodegenRetryState,
     prepare_codegen_workspace,
     run_code_attempt,
 )
@@ -23,13 +22,12 @@ from ..code.baseline_meta import (
     try_reuse_baseline_codegen,
     write_codegen_meta,
 )
-from ..failure import fail_iteration_phase
+from ..failure import build_code_iteration_failure, fail_iteration_phase
 from ..orchestration.config import IterationPlan, RunConfig, SampleContext
-from ..workspace.skips import append_k8s_skip
 from ..workspace import (
     iteration_code_attempts_dir,
     iteration_code_phase_dir,
-    mark_iteration_folder_failed,
+    iteration_id_for_index,
     materialize_code_lineage,
     next_attempt_index,
     resolve_iteration_dir,
@@ -106,17 +104,26 @@ def run_codegen_stage(
 
     if image_id is None:
         if mode == "refinement":
+            terminal_attempt = next_attempt_index(
+                iteration_code_attempts_dir(iteration_path)
+            ) - 1
+            if terminal_attempt < 1:
+                terminal_attempt = max_attempts
+            iteration_failure = build_code_iteration_failure(
+                iteration_path,
+                iteration_id=plan.iteration_id,
+                terminal_attempt=terminal_attempt,
+                logger=logger,
+            )
             fail_iteration_phase(
                 iteration_path=iteration_path,
                 task_run_dir=ctx.task_run_dir,
                 sample_dir=ctx.sample_dir,
                 sample=ctx.sample,
                 iteration_id=plan.iteration_id,
-                failure_reason=(
-                    "Functional tests did not pass after code refinement"
-                ),
                 kind="code",
                 logger=logger,
+                iteration_failure=iteration_failure,
             )
         return CodeStageResult(None, abort_sample=abort_sample_on_fail)
 
@@ -143,7 +150,6 @@ def _codegen_with_retries(
     fail_fast_on_infra = is_baseline
     log_label = "Baseline codegen" if is_baseline else "Code refinement"
 
-    retry_state = CodegenRetryState()
     last_error: str | None = None
     terminal_infra_failure = False
 
@@ -176,14 +182,13 @@ def _codegen_with_retries(
             base_delay=cfg.base_delay,
             max_delay=cfg.max_delay,
             prior_feedback=plan.lineage.bench_feedback,
-            prior_failure_report=plan.lineage.code_failure_report,
-            retry_state=retry_state,
+            prior_iteration_failure=plan.lineage.prior_code_failure,
             iteration_index=plan.iteration_index,
             total_iterations=cfg.total_iterations,
             track_attempt_dirs=track_attempt_dirs,
             fail_fast_on_infra=fail_fast_on_infra,
             experiment_id=ctx.experiment_id,
-            llm_max_cost_usd=ctx.llm_max_cost_usd,
+            llm_max_cost_usd=cfg.llm_max_cost_usd,
         )
 
         if result.passed and result.image_id is not None:
@@ -275,6 +280,8 @@ def _finalize_baseline_codegen_failure(
     logger: logging.Logger,
 ) -> None:
     attempts_used = next_attempt_index(iteration_code_attempts_dir(iteration_path)) - 1
+    if attempts_used < 1:
+        attempts_used = max_attempts
     terminal_status = "infra_failed" if terminal_infra_failure else "failed"
     write_codegen_meta(
         iteration_path,
@@ -297,28 +304,24 @@ def _finalize_baseline_codegen_failure(
         error=last_error,
         logger=logger,
     )
-    update_iteration_meta(
+    iteration_failure = build_code_iteration_failure(
         iteration_path,
-        status="failed",
-        failure_reason=last_error or "baseline codegen failed",
-        failure_kind="code",
+        iteration_id=iteration_id_for_index(0),
+        terminal_attempt=attempts_used,
+        logger=logger,
     )
-    if task_run_dir is not None:
-        skip_reason = (
-            f"skipped: baseline codegen aborted on infra failure after "
-            f"{attempts_used} attempt(s) — fix the host environment and rerun "
-            f"(last error: {last_error or 'unknown'})"
-            if terminal_infra_failure
-            else (
-                f"skipped: baseline codegen failed after {max_attempts} attempt(s) "
-                f"(last error: {last_error or 'unknown'})"
-            )
-        )
-        append_k8s_skip(task_run_dir, sample, skip_reason)
-    try:
-        mark_iteration_folder_failed(iteration_path)
-    except FileExistsError:
-        pass
+    if task_run_dir is None:
+        return
+    fail_iteration_phase(
+        iteration_path=iteration_path,
+        task_run_dir=task_run_dir,
+        sample_dir=sample_dir,
+        sample=sample,
+        iteration_id=iteration_id_for_index(0),
+        kind="code",
+        logger=logger,
+        iteration_failure=iteration_failure,
+    )
 
 
 def run_code_lineage_stage(
@@ -327,9 +330,9 @@ def run_code_lineage_stage(
     logger: logging.Logger,
 ) -> CodeStageResult:
     """Materialize code lineage without LLM (deployment/spec refinement path)."""
-    if plan.lineage.latest_code_dir is None:
+    if plan.lineage.prior_code_dir is None:
         raise RuntimeError(
-            f"iteration {plan.iteration_id}: no latest_code_dir for code lineage copy"
+            f"iteration {plan.iteration_id}: no prior_code_dir for code lineage copy"
         )
     iteration_path = resolve_iteration_dir(
         ctx.sample_dir, plan.iteration_id, experiment_id=ctx.experiment_id
@@ -338,7 +341,7 @@ def run_code_lineage_stage(
     image_id = (
         materialize_code_lineage(
             iteration_path,
-            plan.lineage.latest_code_dir,
+            plan.lineage.prior_code_dir,
             fallback_image_id=ctx.base_image_id,
         )
         or ctx.base_image_id
@@ -346,7 +349,7 @@ def run_code_lineage_stage(
     logger.info(
         "iteration %s: copied code lineage from %s (image=%s)",
         plan.iteration_id,
-        plan.lineage.latest_code_dir,
+        plan.lineage.prior_code_dir,
         image_id,
     )
     return CodeStageResult(image_id)

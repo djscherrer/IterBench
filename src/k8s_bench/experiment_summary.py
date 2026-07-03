@@ -1536,6 +1536,7 @@ def append_iteration_failure_block(
     kind: str,
     error_excerpt: str = "",
     load_profile: str | None = None,
+    iteration_failure=None,
 ) -> Path:
     """
     Append a failure narrative for an iteration that never produced bench data.
@@ -1556,17 +1557,17 @@ def append_iteration_failure_block(
     )
     iid = normalize_iteration_id(iteration_id)
 
-    # Load the structured FT report (if any) so we can render the *real* cause
-    # — infrastructure-failure banner, per-test outcome list — instead of
-    # leaving the reader to guess from the truncated Python traceback.
-    from .workspace import load_failure_report
+    # Load structured failure (terminal record) for rich summary rendering.
+    from .failure import FailureRecord, load_terminal_failure_record
 
-    report = None
-    if kind == "code":
+    record: FailureRecord | None = None
+    if iteration_failure is not None:
+        record = iteration_failure.terminal
+    elif kind == "code":
         try:
-            report = load_failure_report(iteration_path)
+            record = load_terminal_failure_record(iteration_path, phase="code")
         except Exception:
-            report = None
+            record = None
 
     is_baseline_iter = "-baseline" in iteration_path.name
 
@@ -1591,8 +1592,8 @@ def append_iteration_failure_block(
         f"- **Folder**: `{iteration_path.name}`",
     ]
 
-    if report is not None and report.is_infrastructure_failure:
-        infra = report.infrastructure_failure
+    if record is not None and record.is_infrastructure_failure:
+        infra = record.infrastructure_failure
         assert infra is not None
         body_lines.extend(
             [
@@ -1601,16 +1602,25 @@ def append_iteration_failure_block(
             ]
         )
 
-    if report is not None:
+    if record is not None and record.phase == "code":
         body_lines.append(
-            f"- **Functional tests**: {report.num_passed_ft}/"
-            f"{report.num_total_ft} passed"
+            f"- **Functional tests**: {record.num_passed_ft}/"
+            f"{record.num_total_ft} passed"
+        )
+
+    if iteration_failure is not None and len(iteration_failure.attempts) > 1:
+        body_lines.append(
+            "- **Attempt history**: "
+            + ", ".join(
+                f"`{idx}`→`{rec.kind}`"
+                for idx, rec in sorted(iteration_failure.attempts.items())
+            )
         )
 
     body_lines.append("")
 
-    if report is not None and report.is_infrastructure_failure:
-        infra = report.infrastructure_failure
+    if record is not None and record.is_infrastructure_failure:
+        infra = record.infrastructure_failure
         assert infra is not None
         body_lines.extend(
             [
@@ -1637,23 +1647,20 @@ def append_iteration_failure_block(
                 ]
             )
 
-    if report is not None and (report.failed_tests or report.passed_tests):
+    if record is not None and (record.failed_tests or record.passed_tests):
         body_lines.append("**Per-test outcome**")
         body_lines.append("")
-        for ft in report.failed_tests:
-            label = "blocked" if report.is_infrastructure_failure else "failed"
+        for ft in record.failed_tests:
+            label = "blocked" if record.is_infrastructure_failure else "failed"
             body_lines.append(f"- `{ft.name}` — **{label}**")
-        for name in report.passed_tests:
+        for name in record.passed_tests:
             body_lines.append(f"- `{name}` — passed")
         body_lines.append("")
 
-    # Detailed application-level evidence (per failed test) when we are sure
-    # the failure is *not* infrastructure — otherwise the per-test excerpts
-    # just repeat the same Docker traceback five times.
-    if report is not None and report.failed_tests and not report.is_infrastructure_failure:
+    if record is not None and record.failed_tests and not record.is_infrastructure_failure:
         body_lines.append("**Failed-test evidence**")
         body_lines.append("")
-        for ft in report.failed_tests:
+        for ft in record.failed_tests:
             body_lines.append(f"- `{ft.name}`")
             snippet = ft.per_test_log_tail.strip() or ft.container_error_excerpt.strip()
             if snippet:

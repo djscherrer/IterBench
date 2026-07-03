@@ -10,33 +10,6 @@ from typing import Any
 import docker
 import shutil
 
-_INFRA_FAILURE_PATTERNS: tuple[tuple[str, str], ...] = (
-    (
-        "port is already allocated",
-        "host port already in use — likely a stale baxbench container from a "
-        "previous run. Clean with: docker ps -a --filter name=baxbench- "
-        "--format '{{.Names}}' | grep -v '^baxbench-registry$' | xargs -r "
-        "docker rm -f",
-    ),
-    (
-        "Bind for 0.0.0.0:",
-        "host port bind failed (see test.log for the exact port and "
-        "underlying Docker error)",
-    ),
-    (
-        "Cannot connect to the Docker daemon",
-        "Docker daemon unreachable (check `docker info` / restart the daemon)",
-    ),
-    (
-        "no space left on device",
-        "host disk full — free space and retry",
-    ),
-    (
-        "OCI runtime create failed",
-        "container runtime error (see test.log for runc/containerd details)",
-    ),
-)
-
 
 def read_log_tail(path: Path, *, max_chars: int = 32_000) -> str:
     if not path.is_file():
@@ -46,16 +19,6 @@ def read_log_tail(path: Path, *, max_chars: int = 32_000) -> str:
     except OSError:
         return ""
     return text[-max_chars:] if len(text) > max_chars else text
-
-
-def classify_ft_failure(ft_dir: Path) -> tuple[bool, str, str]:
-    """Return ``(is_infra_failure, hint, log_excerpt)``."""
-    log_text = read_log_tail(ft_dir / "test.log")
-    excerpt = log_text[-2_000:] if log_text else ""
-    for needle, hint in _INFRA_FAILURE_PATTERNS:
-        if needle in log_text:
-            return True, hint, excerpt
-    return False, "", excerpt
 
 
 def ensure_docker_network() -> None:

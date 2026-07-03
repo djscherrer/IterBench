@@ -1,40 +1,12 @@
-"""Infrastructure / harness failures that block functional tests."""
+"""Detect infrastructure / harness failures that block functional tests."""
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from pathlib import Path
 
+from .failure_models import InfrastructureFailure
 from .patterns import INFRA_FAILURE_PATTERNS
 from .text import trim
-
-
-@dataclass(frozen=True)
-class InfrastructureFailure:
-    """
-    Harness/infrastructure failure that prevented the FT run.
-
-    When present on a functional failure report, ``failed_tests`` are blocked
-    tests — they never exercised the application.
-    """
-
-    kind: str
-    description: str
-    evidence: str = ""
-
-    def to_dict(self) -> dict[str, str]:
-        return {
-            "kind": self.kind,
-            "description": self.description,
-            "evidence": self.evidence,
-        }
-
-    @classmethod
-    def from_dict(cls, data: dict[str, object]) -> "InfrastructureFailure":
-        return cls(
-            kind=str(data.get("kind", "")),
-            description=str(data.get("description", "")),
-            evidence=str(data.get("evidence", "")),
-        )
 
 
 def detect_infrastructure_failure(test_log: str) -> InfrastructureFailure | None:
@@ -57,3 +29,19 @@ def detect_infrastructure_failure(test_log: str) -> InfrastructureFailure | None
                 evidence=trim(line.strip(), max_chars=600),
             )
     return None
+
+
+def classify_ft_failure(ft_dir: Path) -> tuple[bool, str, str]:
+    """Return ``(is_infra_failure, hint, log_excerpt)`` from a functional-tests dir."""
+    log_path = ft_dir / "test.log"
+    log_text = ""
+    if log_path.is_file():
+        try:
+            log_text = log_path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            log_text = ""
+    excerpt = log_text[-2_000:] if log_text else ""
+    infra = detect_infrastructure_failure(log_text)
+    if infra is not None:
+        return True, infra.description, excerpt
+    return False, "", excerpt

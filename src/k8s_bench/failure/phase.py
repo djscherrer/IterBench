@@ -5,10 +5,11 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-from ..workspace.skips import append_k8s_skip
 from ..workspace.meta import update_iteration_meta
 from ..workspace.paths import mark_iteration_folder_failed
-from .build import build_functional_failure_report
+from ..workspace.skips import append_k8s_skip
+from .persist import write_iteration_failure
+from .record import FailureRecord, IterationFailure, Phase
 
 
 def fail_iteration_phase(
@@ -18,50 +19,59 @@ def fail_iteration_phase(
     sample_dir: Path,
     sample: int,
     iteration_id: str,
-    failure_reason: str,
     kind: str,
     logger: logging.Logger,
+    failure_reason: str = "",
+    iteration_failure: IterationFailure | None = None,
 ) -> Path:
     """
-    Mark an iteration as failed: update meta, rename folder with ``-failed`` suffix,
-    and append a failure block to the experiment summary.
-
-    For ``kind="code"`` we also build and persist ``failure_report.json`` so the
-    next refinement iteration receives structured FT diagnostics.
-
-    Returns the renamed iteration directory.
+    Mark an iteration as failed: persist ``failure.json``, update meta, rename
+    folder with ``-failed`` suffix, and append a failure block to the summary.
     """
+    phase: Phase = kind if kind in {"code", "spec", "deploy"} else "code"  # type: ignore[assignment]
+    if iteration_failure is None:
+        summary = failure_reason or f"{phase} phase failed"
+        if phase == "spec":
+            kind = "spec_validation"
+        elif phase == "deploy":
+            kind = "deploy_probe"
+        else:
+            kind = "functional_test"
+        terminal = FailureRecord(
+            phase=phase,
+            kind=kind,
+            iteration_id=iteration_id,
+            summary=summary,
+        )
+        iteration_failure = IterationFailure(
+            iteration_id=iteration_id,
+            phase=phase,
+            terminal=terminal,
+        )
+
     update_iteration_meta(
         iteration_path,
         status="failed",
-        failure_reason=failure_reason,
-        failure_kind=kind,
-        refinement_action=kind if kind in {"code", "spec"} else None,
+        failure_reason=iteration_failure.terminal.summary,
+        failure_kind=phase,
+        refinement_action=phase if phase in {"code", "spec"} else None,
     )
 
-    if kind == "code":
-        try:
-            from ..workspace import write_failure_report
-
-            report = build_functional_failure_report(
-                iteration_path,
-                iteration_id=iteration_id,
-                logger=logger,
-            )
-            write_failure_report(iteration_path, report)
-            logger.info(
-                "wrote functional failure report for %s: %d/%d passed, failed=%s",
-                iteration_id,
-                report.num_passed_ft,
-                report.num_total_ft,
-                [ft.name for ft in report.failed_tests] or "(unknown)",
-            )
-        except Exception as exc:
-            logger.warning(
-                "Could not persist functional failure report for %s: %s",
-                iteration_id,
-                exc,
-            )
+    try:
+        write_iteration_failure(iteration_path, iteration_failure)
+        logger.info(
+            "wrote iteration failure for %s (%s/%s, %d attempt record(s))",
+            iteration_id,
+            phase,
+            iteration_failure.terminal.kind,
+            len(iteration_failure.attempts),
+        )
+    except Exception as exc:
+        logger.warning(
+            "Could not persist iteration failure for %s: %s",
+            iteration_id,
+            exc,
+        )
 
     try:
         failed_path = mark_iteration_folder_failed(iteration_path)
@@ -78,9 +88,10 @@ def fail_iteration_phase(
             sample_dir=sample_dir,
             iteration_id=iteration_id,
             iteration_path=failed_path,
-            failure_reason=failure_reason,
-            kind=kind,
+            failure_reason=iteration_failure.terminal.summary,
+            kind=phase,
             error_excerpt=excerpt,
+            iteration_failure=iteration_failure,
         )
     except Exception as exc:
         logger.warning(
@@ -92,13 +103,13 @@ def fail_iteration_phase(
     append_k8s_skip(
         task_run_dir,
         sample,
-        f"failed phase {iteration_id}: {failure_reason}",
+        f"failed phase {iteration_id}: {iteration_failure.terminal.summary}",
     )
     logger.warning(
         "phase %s failed (%s): %s → %s",
         iteration_id,
-        kind,
-        failure_reason,
+        phase,
+        iteration_failure.terminal.summary,
         failed_path.name,
     )
     return failed_path

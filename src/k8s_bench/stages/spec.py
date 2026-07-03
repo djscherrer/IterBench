@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from ..cluster.capacity import collect_cluster_capacity
-from ..failure import fail_iteration_phase
+from ..failure import FailureRecord, IterationFailure, fail_iteration_phase
 from ..orchestration.config import IterationPlan, RunConfig, SampleContext
 from ..spec.attempt import SpecAttemptResult, record_spec_deploy_probe_failure, run_spec_attempt
 from ..spec.reuse import reuse_deployment_spec_for_iteration
@@ -202,15 +202,26 @@ def _generate_spec_with_retries(
 
         return spec_file
 
+    record = FailureRecord(
+        phase="spec",
+        kind="spec_validation",
+        iteration_id=plan.iteration_id,
+        summary=last_err,
+        validation_errors=validation_feedback or last_err,
+    )
     fail_iteration_phase(
         iteration_path=iteration_path,
         task_run_dir=ctx.task_run_dir,
         sample_dir=ctx.sample_dir,
         sample=ctx.sample,
         iteration_id=plan.iteration_id,
-        failure_reason=last_err,
         kind="spec",
         logger=logger,
+        iteration_failure=IterationFailure(
+            iteration_id=plan.iteration_id,
+            phase="spec",
+            terminal=record,
+        ),
     )
     return None
 

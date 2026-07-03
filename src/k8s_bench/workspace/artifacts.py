@@ -5,11 +5,8 @@ Workspace owns *where* artifacts live on disk and *how* they're serialized. The
 data classes themselves live with their builders/parsers:
 
 - ``IterationFeedback``  → ``feedback.py``           (Locust + kubectl parsing)
-- ``FunctionalFailureReport`` → ``failure/`` (FT log parsing)
+- ``FailureRecord`` / ``IterationFailure`` → ``failure/``
 - ``RefinementDecision`` → ``stages/decision.py`` (LLM decision)
-
-This module is the single place that reads/writes the JSON envelopes so other
-modules never touch the filesystem directly.
 """
 
 from __future__ import annotations
@@ -18,17 +15,15 @@ import json
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from .paths import iteration_code_phase_dir, iteration_decision_dir
+from .paths import iteration_decision_dir
 
 if TYPE_CHECKING:
     from ..feedback import IterationFeedback
-    from ..failure import FunctionalFailureReport
     from ..stages.decision import RefinementDecision
 
 
 FEEDBACK_FILENAME = "iteration_feedback.json"
 FEEDBACK_TEXT_FILENAME = "iteration_feedback.txt"
-FAILURE_REPORT_FILENAME = "failure_report.json"
 DECISION_FILENAME = "decision.json"
 
 # Every LLM-driven phase folder (``01-decision/``, ``02-code/``, ``03-spec/``)
@@ -41,16 +36,6 @@ RESPONSE_LOG_FILENAME = "response.log"
 
 def feedback_artifact_path(perf_run_dir: Path) -> Path:
     return perf_run_dir / FEEDBACK_FILENAME
-
-
-def failure_report_path(iteration_path: Path) -> Path:
-    """
-    Canonical path for the structured FT failure report.
-
-    The report describes a failure in the *code regeneration* phase, so it
-    lives next to the regenerated code under ``02-code/failure_report.json``.
-    """
-    return iteration_code_phase_dir(iteration_path) / FAILURE_REPORT_FILENAME
 
 
 def decision_artifact_path(iteration_path: Path) -> Path:
@@ -150,38 +135,6 @@ def load_feedback(perf_run_dir: Path) -> "IterationFeedback | None":
         except json.JSONDecodeError:
             pass
     return None
-
-
-def write_failure_report(
-    iteration_path: Path,
-    report: "FunctionalFailureReport",
-) -> Path:
-    """Persist :class:`FunctionalFailureReport` next to ``meta.json``."""
-    out = failure_report_path(iteration_path)
-    out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(
-        json.dumps(report.to_dict(), indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
-    )
-    return out
-
-
-def load_failure_report(
-    iteration_path: Path,
-) -> "FunctionalFailureReport | None":
-    """Load :class:`FunctionalFailureReport` from a failed iteration directory."""
-    from ..failure import FunctionalFailureReport
-
-    path = failure_report_path(iteration_path)
-    if not path.is_file():
-        return None
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return None
-    if not isinstance(data, dict):
-        return None
-    return FunctionalFailureReport.from_dict(data)
 
 
 def write_decision(

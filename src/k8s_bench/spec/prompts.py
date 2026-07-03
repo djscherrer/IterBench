@@ -234,8 +234,6 @@ When `database.replicas > 1`, the framework renders a replication-aware Postgres
 - `PG_POOL_MAX`: max connections per worker process pool (psycopg2/raw SQL apps; preferred when code reads this env var).
 - `DB_POOL_SIZE`: same role for SQLAlchemy / alternate naming in generated code.
 - `DB_POOL_OVERFLOW`: extra burst connections per pool (if the app supports it).
-- `GUNICORN_TIMEOUT`: worker timeout seconds (passed to gunicorn `--timeout`).
-- `GUNICORN_KEEPALIVE`: HTTP keep-alive seconds (`--keep-alive`).
 - `SQLALCHEMY_POOL_RECYCLE`: pool recycle interval for SQLAlchemy-based apps.
 
 ## Rules
@@ -257,8 +255,6 @@ backend:
   env:                               # optional allow-listed knobs only
     PG_POOL_MAX: "<int>"              # or DB_POOL_SIZE for SQLAlchemy apps
     # DB_POOL_OVERFLOW: "<int>"
-    # GUNICORN_TIMEOUT: "<int>"
-    # GUNICORN_KEEPALIVE: "<int>"
   resources:
     cpu_request: <quantity>
     cpu_limit: <quantity>

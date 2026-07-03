@@ -13,6 +13,17 @@ CONTAINER_ERROR_HINT_RE = re.compile(
     r"(error|exception|traceback|fatal|panic|reject)",
     re.IGNORECASE,
 )
+# Rust / Go / TS compiler diagnostics from docker build output
+COMPILE_DIAGNOSTIC_RE = re.compile(
+    r"(^error\[E\d+\]|^error:|could not compile|rustc --|"
+    r"npm ERR!|error TS\d+|undefined:|cannot find|mismatched types)",
+    re.IGNORECASE | re.MULTILINE,
+)
+DOCKER_BUILD_FAILED_RE = re.compile(
+    r"Failed to build docker image|docker\.errors\.BuildError|"
+    r"returned a non-zero code: 101",
+    re.IGNORECASE,
+)
 PM2_NOISE_RE = re.compile(
     r"^\s*("
     r"2\d{3}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}: PM2 log:"

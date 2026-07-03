@@ -36,9 +36,7 @@ def run_bench_stage(
     iteration_path = resolve_iteration_dir(
         ctx.sample_dir, plan.iteration_id, experiment_id=ctx.experiment_id
     )
-    rebuild_code_dir = plan.lineage.latest_code_dir or iteration_code_snapshot_dir(
-        iteration_path
-    )
+    rebuild_code_dir = iteration_code_snapshot_dir(iteration_path)
     run_locust_for_iteration(
         ctx.task,
         ctx.results_dir,
