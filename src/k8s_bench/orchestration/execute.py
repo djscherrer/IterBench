@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from ..stages.bench import run_bench_stage
-from ..stages.code import run_codegen_stage, run_code_lineage_stage
+from ..stages.code import run_code_stage, run_reuse_code_stage
 from ..stages.decision import (
     RefinementDecision,
     forced_refinement_action_after_failure,
@@ -22,7 +22,7 @@ from ..stages.decision import (
 )
 from ..stages.deploy import run_deploy_stage
 from ..stages.outcome import run_outcome_stage
-from ..stages.spec import run_reuse_spec_stage, run_spec_generation_stage
+from ..stages.spec import run_reuse_spec_stage, run_spec_stage
 from ..workspace import (
     apply_iteration_folder_suffix,
     clear_bench_dir_if_present,
@@ -64,26 +64,24 @@ def execute_iteration(
 
     if setup.is_baseline:
         refinement_action = "baseline"
-    elif lineage.bench_feedback is not None and lineage.bench_feedback.is_failed:
-        # The previous iteration failed, force to try again the same refinement action to fix the problem.
-        fb = lineage.bench_feedback
-        if parse_iteration_index(fb.iteration_id) == 0:
+    elif lineage.prior_iteration_failure is not None:
+        prior_fail = lineage.prior_iteration_failure
+        if parse_iteration_index(prior_fail.iteration_id) == 0:
             return IterationOutcome(None, True)
-        forced = forced_refinement_action_after_failure(fb.failure_kind)
+        forced = forced_refinement_action_after_failure(prior_fail.phase)
         if forced is not None:
-            # The previous iteration failed in the  spec or code stage. -> Force retry
             refinement_action = forced
             decision = RefinementDecision(
                 action=refinement_action,
                 rationale=(
-                    f"Prior iteration `{fb.iteration_id}` failed during "
-                    f"{fb.failure_kind} stage; automatically retrying "
+                    f"Prior iteration `{prior_fail.iteration_id}` failed during "
+                    f"{prior_fail.phase} stage; automatically retrying "
                     f"{'code' if refinement_action == 'code' else 'deployment/spec'} "
                     "refinement (decision LLM skipped)."
                 ),
                 raw_response="",
                 iteration_index=setup.iteration_index,
-                based_on_iteration=fb.iteration_id,
+                based_on_iteration=prior_fail.iteration_id,
             )
             with ctx.task.create_logger(
                 iteration_decision_log_path(setup.iteration_path)
@@ -95,17 +93,15 @@ def execute_iteration(
                     decision,
                     cfg,
                     decision_logger,
-                    based_on_iteration=fb.iteration_id,
+                    based_on_iteration=prior_fail.iteration_id,
                 )
                 decision_logger.info(
                     "iteration %s: forced refinement_action=%s after prior %s failure",
                     setup.iteration_id,
                     refinement_action,
-                    fb.failure_kind,
+                    prior_fail.phase,
                 )
         else:
-            # The previous iteration failed outside the code or spec stage.
-            # -> Let the strategist LLM decide the refinement action.
             with ctx.task.create_logger(
                 iteration_decision_log_path(setup.iteration_path)
             ) as decision_logger:
@@ -171,14 +167,14 @@ def execute_iteration(
         iteration_code_log_path(iteration_path)
     ) as code_logger:
         if refinement_action == "deployment":
-            code_result = run_code_lineage_stage(ctx, plan, code_logger)
+            code_result = run_reuse_code_stage(ctx, plan, code_logger)
         else:
             code_mode = "baseline" if refinement_action == "baseline" else "refinement"
             max_attempts = (
                 cfg.baseline_code_max_attempts if refinement_action == "baseline" else 1
             )
             abort_sample_on_fail = refinement_action == "baseline"
-            code_result = run_codegen_stage(
+            code_result = run_code_stage(
                 ctx,
                 plan,
                 cfg,
@@ -212,7 +208,7 @@ def execute_iteration(
             max_attempts = (
                 cfg.baseline_spec_max_attempts if refinement_action == "baseline" else 1
             )
-            spec_result = run_spec_generation_stage(
+            spec_result = run_spec_stage(
                 ctx,
                 plan,
                 image_id,
@@ -232,7 +228,7 @@ def execute_iteration(
         iteration_deploy_log_path(iteration_path)
     ) as deploy_logger:
         deploy_result = run_deploy_stage(ctx, plan, image_id, cfg, deploy_logger)
-    if not deploy_result.ok:
+    if deploy_result.reason is not None:
         _append_iteration_outcome(iteration_path, "deploy-failed")
         return IterationOutcome(None, False)
 
@@ -241,7 +237,10 @@ def execute_iteration(
     # --------
     bench_log = run_dir / "bench.log"
     with ctx.task.create_logger(bench_log) as bench_logger:
-        run_bench_stage(ctx, plan, run_dir, image_id, cfg, bench_logger)
+        bench_result = run_bench_stage(ctx, plan, run_dir, image_id, cfg, bench_logger)
+        if bench_result.attempt is None:
+            _append_iteration_outcome(iteration_path, "bench-failed")
+            return IterationOutcome(None, False)
         # ---------
         # 06-outcome
         # ---------

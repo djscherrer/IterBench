@@ -1558,9 +1558,9 @@ def append_iteration_failure_block(
     iid = normalize_iteration_id(iteration_id)
 
     # Load structured failure (terminal record) for rich summary rendering.
-    from .failure import FailureRecord, load_terminal_failure_record
+    from .failure import load_terminal_failure_record
 
-    record: FailureRecord | None = None
+    record: object | None = None
     if iteration_failure is not None:
         record = iteration_failure.terminal
     elif kind == "code":

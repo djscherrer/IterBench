@@ -5,7 +5,7 @@ Workspace owns *where* artifacts live on disk and *how* they're serialized. The
 data classes themselves live with their builders/parsers:
 
 - ``IterationFeedback``  → ``feedback.py``           (Locust + kubectl parsing)
-- ``FailureRecord`` / ``IterationFailure`` → ``failure/``
+- Phase-specific failure records + ``IterationFailure`` → ``failure/``
 - ``RefinementDecision`` → ``stages/decision.py`` (LLM decision)
 """
 

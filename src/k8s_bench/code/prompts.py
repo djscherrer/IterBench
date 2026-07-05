@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from ..feedback import IterationFeedback
-from ..failure import FailureRecord
+from ..failure import CodeFailureRecord
 from ..prompt_helpers import (
     format_artifact_pointers_block,
     resolve_artifact_pointers,
@@ -76,7 +76,7 @@ def _codegen_experiment_preamble(
 
 def _attempt_failure_feedback_block(
     *,
-    failure: FailureRecord,
+    failure: CodeFailureRecord,
     heading: str,
 ) -> list[str]:
     block = failure.to_prompt_block()
@@ -91,7 +91,7 @@ def build_baseline_prompt(
     iteration_id: str,
     iteration_index: int = 0,
     total_iterations: int = 0,
-    prior_attempt_failure: FailureRecord | None = None,
+    prior_attempt_failure: CodeFailureRecord | None = None,
 ) -> str:
     parts = [
         _codegen_experiment_preamble(
@@ -134,8 +134,8 @@ def build_code_refinement_prompt(
     sample: int,
     iteration_id: str,
     prior_feedback: IterationFeedback,
-    prior_attempt_failure: FailureRecord | None = None,
-    prior_iteration_failure: FailureRecord | None = None,
+    prior_attempt_failure: CodeFailureRecord | None = None,
+    prior_iteration_failure: CodeFailureRecord | None = None,
     iteration_index: int = 0,
     total_iterations: int = 0,
     experiment_id: str | None = None,

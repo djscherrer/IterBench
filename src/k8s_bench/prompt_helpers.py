@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from .failure import load_terminal_failure_record
+from .failure import CodeFailureRecord, load_terminal_failure_record
 from .workspace import (
     find_latest_code_snapshot_iteration,
     iteration_folder_is_failed,
@@ -29,11 +29,11 @@ def _code_pointer_status(iteration_path: Path) -> str:
     """Short parenthetical for prompt pointers, e.g. ``failed: did not compile``."""
     if iteration_folder_is_failed(iteration_path.name):
         record = load_terminal_failure_record(iteration_path, phase="code")
-        if record is not None:
+        if isinstance(record, CodeFailureRecord):
             if record.kind in {"docker_build", "llm_parse"} or (
-                record.generic_excerpt
+                record.diagnostic_excerpt
                 and any(
-                    marker in record.generic_excerpt
+                    marker in record.diagnostic_excerpt
                     for marker in ("error[E", "could not compile", "npm ERR")
                 )
             ):

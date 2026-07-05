@@ -33,45 +33,29 @@ ONLY_SAMPLES="0"   # e.g. "0"; empty → N_SAMPLES
 N_SAMPLES=""
 
 # --- 2. Project Scope ---
-ENVS="Python-Flask"
-EXCLUDE_ENVS=""
-SCENARIOS="BranchWeave_InteractiveStoryGraph LexiTally_WordCountDatasets TextWeaver_PatternRewriter"
-EXCLUDE_SCENARIOS=""
+ENVS="Rust-Actix" # Go-net/http
+SCENARIOS="Petstore"
 TEMPERATURE="0.2"
 SAFETY_PROMPT="high_performance"
 
-# --- 3. Load profile (Locust shape; same registry as distributed bench) ---
+# --- 3. Load profile (Locust users, spawn rate, runtime — from profile registry) ---
 BAXBENCH_LOAD_PROFILE=("k8s-goodput-plateau")
-
-BENCH_USERS=""
-BENCH_SPAWN_RATE=""
-BENCH_RUN_TIME=""
 
 # --- 4. Kubernetes settings ---
 BAXBENCH_K8S_CLUSTER="baxbench-emulab"
 KUBECONFIG_PATH=""              # empty = path from cluster profile
-K8S_ITERATION=""                # pin one iteration; empty = use K8S_ITERATIONS
-K8S_EXPERIMENT=""               # e.g. adaptive-may20 → sampleN/k8s-experiments/<slug>/
-K8S_ITERATIONS="20"              # phases: iteration-001 .. iteration-NNN
+# Workspace slug → results/.../sampleN/k8s-experiments/<slug>/ (always set this)
+K8S_EXPERIMENT="05-07-final-refactor-11-42"
+# Refinement phases after baseline: runs iteration-000 .. iteration-NNN (N = value below)
+K8S_ITERATIONS="40"
 K8S_DEPLOY_ONLY="false"          # true = deploy+bench existing iterations only (no LLM)
 K8S_WAIT_TIMEOUT="1200"
 # Locust runs on profile load_master/workers; backend exposed via NodePort
 K8S_AUTO_INIT="false"           # only used with K8S_DEPLOY_ONLY=true
-K8S_REFINEMENT="auto"               # auto | deployment | code
+K8S_REFINEMENT="deployment"               # auto | deployment | code
 
-# Baseline (iteration-000) code source.
-#   reuse      = use sampleN/code/ from --mode generate; require its FTs to pass (default)
-#   regenerate = LLM-generate code with the current prompt into iteration-000-baseline/
-#                02-code/code/, validate with functional tests, retry on failure
-#                (failed attempts preserved under 02-code/attempts/<NNN>/).
-BASELINE_CODE_MAX_ATTEMPTS="5"
-
-# Baseline (iteration-000) spec generation attempt cap. Each attempt is one
-# LLM call + static validation + deploy probe; failures are preserved under
-# iteration-000-baseline/03-spec/attempts/<NNN>/. Refinement iterations
-# (001+) always use a single spec attempt — recovery happens via subsequent
-# iterations, not per-iteration retries.
-BASELINE_SPEC_MAX_ATTEMPTS="5"
+BASELINE_CODE_MAX_ATTEMPTS="10"
+BASELINE_SPEC_MAX_ATTEMPTS="10"
 
 # --- LLM cost tracking (estimated; see sampleN/k8s-experiments/<slug>/llm_cost_ledger.json) ---
 BAXBENCH_LLM_MAX_COST="10"            # e.g. "10.00" — stop when estimated experiment LLM spend exceeds this (USD)
@@ -135,7 +119,7 @@ if [ -n "$KUBECONFIG_PATH" ]; then
 fi
 
 echo "kubectl context: $(kubectl config current-context 2>/dev/null || echo '(not configured)')"
-echo "KUBECONFIG=${KUBECONFIG:-<default>}  experiment=${K8S_EXPERIMENT:-<legacy>}  iterations=${K8S_ITERATIONS}  deploy_only=${K8S_DEPLOY_ONLY}"
+echo "KUBECONFIG=${KUBECONFIG:-<default>}  experiment=${K8S_EXPERIMENT:-default}  iterations=${K8S_ITERATIONS:-1}  deploy_only=${K8S_DEPLOY_ONLY}"
 
 BASE_ENV=()
 RUN_I=0
@@ -150,20 +134,13 @@ for _model in $MODELS; do
     add_arg "--n_samples" "$N_SAMPLES"
 
     add_arg "--envs" "$ENVS"
-    add_arg "--exclude_envs" "$EXCLUDE_ENVS"
     add_arg "--scenarios" "$SCENARIOS"
-    add_arg "--exclude_scenarios" "$EXCLUDE_SCENARIOS"
     add_arg "--temperature" "$TEMPERATURE"
     add_arg "--safety_prompt" "$SAFETY_PROMPT"
 
-    add_arg "--bench-users" "$BENCH_USERS"
-    add_arg "--bench-spawn-rate" "$BENCH_SPAWN_RATE"
-    add_arg "--bench-run-time" "$BENCH_RUN_TIME"
-
     add_arg "--k8s-cluster" "$BAXBENCH_K8S_CLUSTER"
-    add_arg "--k8s-iteration" "$K8S_ITERATION"
-    add_arg "--k8s-experiment" "$K8S_EXPERIMENT"
-    add_arg "--k8s-iterations" "$K8S_ITERATIONS"
+    ARGS+=("--k8s-experiment" "${K8S_EXPERIMENT:-default}")
+    ARGS+=("--k8s-iterations" "${K8S_ITERATIONS:-1}")
     add_arg "--k8s-wait-timeout" "$K8S_WAIT_TIMEOUT"
     add_arg "--k8s-refinement" "$K8S_REFINEMENT"
     add_arg "--baseline-code-max-attempts" "$BASELINE_CODE_MAX_ATTEMPTS"
@@ -198,7 +175,7 @@ for _model in $MODELS; do
         PROFILE_ARGS+=("--load-profile" "$profile")
       fi
       echo ""
-      echo "=== K8s iterative bench run #$RUN_I: model='${_model}' openhands='${_openhands}' load_profile='$profile' iterations=$K8S_ITERATIONS ==="
+      echo "=== K8s iterative bench run #$RUN_I: model='${_model}' openhands='${_openhands}' experiment='${K8S_EXPERIMENT:-default}' load_profile='$profile' iterations=${K8S_ITERATIONS:-1} ==="
       echo "Command: pipenv run python src/main.py ${PROFILE_ARGS[*]}"
       (cd "$ROOT" && env "${EXTRA_ENV[@]}" pipenv run python src/main.py "${PROFILE_ARGS[@]}")
       RC=$?

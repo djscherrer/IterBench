@@ -10,24 +10,27 @@ from __future__ import annotations
 
 import json
 import logging
+import shutil
 import subprocess
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from ..failure import FailureRecord, IterationFailure, fail_iteration_phase
-from ..orchestration.config import IterationPlan, RunConfig, SampleContext
-from ..workspace import (
-    deploy_probe_record_path,
-    resolve_iteration_dir,
-)
 from ..cluster.deploy import DeployResult, deploy_iteration
 from ..cluster.images import prepare_image_for_k8s
 from ..cluster.load_target import resolve_nodeport_target
 from ..cluster.profiles import selected_cluster_profile
+from ..failure import DeployFailureRecord, fail_iteration_phase
+from ..failure.persist import build_deploy_iteration_failure
 from ..iteration import ensure_iteration_spec
+from ..orchestration.config import IterationPlan, RunConfig, SampleContext
+from ..workspace import deploy_probe_record_path, iteration_deploy_dir, resolve_iteration_dir
 
+
+# ---------------------------------------------------------------------------
+# Result types
+# ---------------------------------------------------------------------------
 
 @dataclass(frozen=True)
 class DeployProbeResult:
@@ -36,28 +39,65 @@ class DeployProbeResult:
     reason: str
     details: dict[str, Any]
 
-    def to_prompt_feedback(self) -> str:
-        lines = [
-            "## Deploy probe failed (previous attempt)",
-            "",
-            self.reason,
-        ]
-        if self.deploy_result is not None and self.deploy_result.wait_details:
-            lines.extend(["", "### kubectl wait details"])
-            for resource, detail in self.deploy_result.wait_details.items():
-                lines.append(f"- **{resource}**: {detail[:500]}")
-        if self.details:
-            lines.extend(["", "### Additional checks"])
-            for key, value in self.details.items():
-                lines.append(f"- **{key}**: {value}")
-        lines.append("")
-        lines.append(
-            "Fix replicas, resources, and placement so pods schedule and become Ready."
-        )
-        return "\n".join(lines)
+
+@dataclass(frozen=True)
+class DeployAttemptResult:
+    """Outcome of one deploy-probe attempt."""
+
+    ok: bool = False
+    reason: str = ""
+    failure: DeployFailureRecord | None = None
 
 
-def _kubectl(args: list[str], *, timeout_s: int | None = None) -> subprocess.CompletedProcess[str]:
+@dataclass(frozen=True)
+class DeployStageResult:
+    """Success when ``reason`` is ``None``; ``skipped`` is set on baseline skip paths."""
+
+    skipped: bool = False
+    reason: str | None = None
+
+
+# ---------------------------------------------------------------------------
+# Attempt-level helpers
+# ---------------------------------------------------------------------------
+
+def deploy_failure_record_from_probe(
+    iteration_id: str,
+    probe: DeployProbeResult,
+    *,
+    attempt: int | None = None,
+) -> DeployFailureRecord:
+    details = dict(probe.details or {})
+    if probe.deploy_result is not None and probe.deploy_result.wait_details:
+        for resource, detail in probe.deploy_result.wait_details.items():
+            details[f"wait/{resource}"] = str(detail)[:500]
+    return DeployFailureRecord(
+        phase="deploy",
+        kind="deploy_probe",
+        iteration_id=iteration_id,
+        attempt=attempt,
+        summary=probe.reason,
+        reason=probe.reason,
+        details=details,
+    )
+
+
+def rotate_top_level_into_attempt(
+    iteration_path: Path,
+    attempt_dir: Path,
+) -> None:
+    """Move the current ``04-deploy/`` snapshot into ``attempts/<NNN>/``."""
+    phase_dir = iteration_deploy_dir(iteration_path)
+    attempt_dir.mkdir(parents=True, exist_ok=True)
+    for name in ("probe.json", "bench.json"):
+        src = phase_dir / name
+        if src.is_file():
+            shutil.move(str(src), str(attempt_dir / name))
+
+
+def _kubectl(
+    args: list[str], *, timeout_s: int | None = None
+) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         ["kubectl", *args],
         check=False,
@@ -73,11 +113,6 @@ def check_service_endpoints_ready(
     service: str,
     logger: logging.Logger | None = None,
 ) -> tuple[bool, str]:
-    """
-    Return whether the Service has at least one ready endpoint address.
-
-    Does not send HTTP traffic — only inspects the Endpoints object via kubectl.
-    """
     log = logger or logging.getLogger(__name__)
     proc = _kubectl(
         ["get", "endpoints", service, "-n", namespace, "-o", "json"],
@@ -103,35 +138,43 @@ def check_service_endpoints_ready(
     return True, f"{ready_count} ready endpoint(s)"
 
 
-def probe_iteration_deployable(
+def probe_record_passed(iteration_path: Path) -> bool:
+    probe_path = deploy_probe_record_path(iteration_path)
+    if not probe_path.is_file():
+        return False
+    try:
+        record = json.loads(probe_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return False
+    return bool(record.get("success"))
+
+
+def run_deploy_attempt(
     *,
     iteration_path: Path,
+    iteration_id: str,
     image_id: str,
     sample_slug: str,
     app_port: int,
     needs_db: bool,
     k8s_cluster: str,
-    wait_timeout_s: int = 300,
-    labels: dict[str, str] | None = None,
-    logger: logging.Logger | None = None,
-) -> DeployProbeResult:
-    """
-    Render spec with the bench image, deploy to the cluster, and verify readiness.
-
-    Checks:
-    1. ``kubectl apply`` + deployment/statefulset Ready (via ``deploy_iteration``)
-    2. Backend Service has ready Endpoints (no HTTP request)
-    3. NodePort is configured and resolvable for external load generators
-    """
-    log = logger or logging.getLogger(__name__)
+    wait_timeout_s: int,
+    labels: dict[str, str] | None,
+    logger: logging.Logger,
+    attempt_index: int = 1,
+    enable_attempts: bool = False,
+    persist_on_failure: bool = True,
+) -> DeployAttemptResult:
+    """Push image, apply manifests, and verify the iteration is reachable."""
     details: dict[str, Any] = {}
+    deploy_result: DeployResult | None = None
 
     try:
         prepared = prepare_image_for_k8s(
             image_id,
             sample_slug=sample_slug,
             profile_name=k8s_cluster,
-            logger=log,
+            logger=logger,
         )
         spec = ensure_iteration_spec(
             iteration_path,
@@ -144,37 +187,64 @@ def probe_iteration_deployable(
             iteration_path,
             wait_timeout_s=wait_timeout_s,
             record_kind="probe",
-            logger=log,
+            logger=logger,
         )
     except Exception as exc:
-        log.warning("deploy probe raised: %s", exc)
-        return DeployProbeResult(
+        logger.warning("deploy probe raised: %s", exc)
+        probe = DeployProbeResult(
             ok=False,
             deploy_result=None,
             reason=str(exc),
             details=details,
         )
+        return _finish_deploy_attempt(
+            iteration_path=iteration_path,
+            iteration_id=iteration_id,
+            probe=probe,
+            attempt_index=attempt_index,
+            enable_attempts=enable_attempts,
+            persist_on_failure=persist_on_failure,
+            logger=logger,
+        )
 
     if not deploy_result.success:
-        return DeployProbeResult(
+        probe = DeployProbeResult(
             ok=False,
             deploy_result=deploy_result,
             reason="Kubernetes resources did not become Ready within timeout",
             details=details,
         )
+        return _finish_deploy_attempt(
+            iteration_path=iteration_path,
+            iteration_id=iteration_id,
+            probe=probe,
+            attempt_index=attempt_index,
+            enable_attempts=enable_attempts,
+            persist_on_failure=persist_on_failure,
+            logger=logger,
+        )
 
     endpoints_ok, endpoints_msg = check_service_endpoints_ready(
         namespace=spec.namespace,
         service="backend",
-        logger=log,
+        logger=logger,
     )
     details["backend_endpoints"] = endpoints_msg
     if not endpoints_ok:
-        return DeployProbeResult(
+        probe = DeployProbeResult(
             ok=False,
             deploy_result=deploy_result,
             reason=endpoints_msg,
             details=details,
+        )
+        return _finish_deploy_attempt(
+            iteration_path=iteration_path,
+            iteration_id=iteration_id,
+            probe=probe,
+            attempt_index=attempt_index,
+            enable_attempts=enable_attempts,
+            persist_on_failure=persist_on_failure,
+            logger=logger,
         )
 
     profile = selected_cluster_profile(k8s_cluster)
@@ -185,15 +255,24 @@ def probe_iteration_deployable(
             service="backend",
             service_port=spec.backend.port,
             node_host=entry_node,
-            logger=log,
+            logger=logger,
         )
         details["nodeport_target"] = target
     except Exception as exc:
-        return DeployProbeResult(
+        probe = DeployProbeResult(
             ok=False,
             deploy_result=deploy_result,
             reason=f"NodePort resolution failed: {exc}",
             details=details,
+        )
+        return _finish_deploy_attempt(
+            iteration_path=iteration_path,
+            iteration_id=iteration_id,
+            probe=probe,
+            attempt_index=attempt_index,
+            enable_attempts=enable_attempts,
+            persist_on_failure=persist_on_failure,
+            logger=logger,
         )
 
     if spec.database.enabled:
@@ -203,32 +282,59 @@ def probe_iteration_deployable(
             db_ok, db_msg = check_service_endpoints_ready(
                 namespace=spec.namespace,
                 service=svc,
-                logger=log,
+                logger=logger,
             )
             details[f"{svc}_endpoints"] = db_msg
             if not db_ok and svc == spec.database.service_name:
-                return DeployProbeResult(
+                probe = DeployProbeResult(
                     ok=False,
                     deploy_result=deploy_result,
                     reason=db_msg,
                     details=details,
                 )
+                return _finish_deploy_attempt(
+                    iteration_path=iteration_path,
+                    iteration_id=iteration_id,
+                    probe=probe,
+                    attempt_index=attempt_index,
+                    enable_attempts=enable_attempts,
+                    persist_on_failure=persist_on_failure,
+                    logger=logger,
+                )
 
-    log.info("Deploy probe passed for %s", iteration_path)
-    return DeployProbeResult(
-        ok=True,
-        deploy_result=deploy_result,
-        reason="deploy probe passed",
-        details=details,
+    logger.info("Deploy probe passed for %s", iteration_path)
+    return DeployAttemptResult(ok=True, reason="deploy probe passed")
+
+
+def _finish_deploy_attempt(
+    *,
+    iteration_path: Path,
+    iteration_id: str,
+    probe: DeployProbeResult,
+    attempt_index: int,
+    enable_attempts: bool,
+    persist_on_failure: bool,
+    logger: logging.Logger,
+) -> DeployAttemptResult:
+    failure = deploy_failure_record_from_probe(
+        iteration_id, probe, attempt=attempt_index
     )
+    if persist_on_failure:
+        from ..failure.persist import persist_deploy_attempt_failure
+
+        persist_deploy_attempt_failure(
+            iteration_path=iteration_path,
+            attempt_index=attempt_index,
+            enable_attempts=enable_attempts,
+            record=failure,
+            logger=logger,
+        )
+    return DeployAttemptResult(ok=False, reason=probe.reason, failure=failure)
 
 
-@dataclass(frozen=True)
-class DeployStageResult:
-    ok: bool
-    skipped: bool = False
-    reason: str | None = None
-
+# ---------------------------------------------------------------------------
+# Stage-level orchestration
+# ---------------------------------------------------------------------------
 
 def should_run_deploy_stage(plan: IterationPlan) -> bool:
     """
@@ -240,16 +346,97 @@ def should_run_deploy_stage(plan: IterationPlan) -> bool:
     return plan.refinement_action in {"code", "deployment"}
 
 
-def probe_record_passed(iteration_path: Path) -> bool:
-    probe_path = deploy_probe_record_path(iteration_path)
-    if not probe_path.is_file():
-        return False
-    try:
-        record = json.loads(probe_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return False
-    return bool(record.get("success"))
+def run_deploy_stage(
+    ctx: SampleContext,
+    plan: IterationPlan,
+    image_id: str,
+    cfg: RunConfig,
+    logger: logging.Logger,
+) -> DeployStageResult:
+    """
+    Bring the iteration up on the cluster so bench can run Locust immediately.
 
+    Probes when ``refinement_action`` is ``code`` (new image, reused spec) or
+    ``deployment`` (new spec). Skips baseline iterations that already probed
+    during the spec retry loop.
+    """
+    from tasks import esc
+
+    iteration_path = resolve_iteration_dir(
+        ctx.sample_dir, plan.iteration_id, experiment_id=ctx.experiment_id
+    )
+
+    if not should_run_deploy_stage(plan):
+        if probe_record_passed(iteration_path):
+            logger.info(
+                "iteration %s: deploy stage skipped (baseline probe already recorded)",
+                plan.iteration_id,
+            )
+            return DeployStageResult(skipped=True)
+        return DeployStageResult(
+            reason="deploy probe required but baseline spec loop did not record success",
+        )
+
+    logger.info(
+        "iteration %s: deploying for bench (action=%s, image=%s)",
+        plan.iteration_id,
+        plan.refinement_action,
+        image_id,
+    )
+    sample_slug = (
+        f"{esc(ctx.task.model)}-{esc(ctx.task.env.id)}-"
+        f"{esc(ctx.task.scenario.id)}-sample{ctx.sample}"
+    )
+    labels = {
+        "baxbench.dev/model": esc(ctx.task.model),
+        "baxbench.dev/scenario": esc(ctx.task.scenario.id),
+        "baxbench.dev/env": esc(ctx.task.env.id),
+        "baxbench.dev/spec-gen": "true",
+        "baxbench.dev/phase": str(plan.iteration_index),
+    }
+    result = run_deploy_attempt(
+        iteration_path=iteration_path,
+        iteration_id=plan.iteration_id,
+        image_id=image_id,
+        sample_slug=sample_slug,
+        app_port=ctx.task.env.port,
+        needs_db=ctx.task.scenario.needs_db,
+        k8s_cluster=ctx.k8s_cluster,
+        wait_timeout_s=cfg.k8s_wait_timeout,
+        labels=labels,
+        logger=logger,
+        attempt_index=1,
+        enable_attempts=False,
+    )
+    if result.ok:
+        logger.info("deploy stage passed; cluster ready for bench")
+        return DeployStageResult()
+
+    logger.error("deploy stage failed: %s", result.reason)
+    failure = result.failure
+    iteration_failure = build_deploy_iteration_failure(
+        iteration_path,
+        iteration_id=plan.iteration_id,
+        terminal_attempt=1,
+        fallback=failure,
+        logger=logger,
+    )
+    fail_iteration_phase(
+        iteration_path=iteration_path,
+        task_run_dir=ctx.task_run_dir,
+        sample_dir=ctx.sample_dir,
+        sample=ctx.sample,
+        iteration_id=plan.iteration_id,
+        kind="deploy",
+        logger=logger,
+        iteration_failure=iteration_failure,
+    )
+    return DeployStageResult(reason=result.reason)
+
+
+# ---------------------------------------------------------------------------
+# Baseline spec deploy-probe callback
+# ---------------------------------------------------------------------------
 
 def _bench_labels(ctx: SampleContext, plan: IterationPlan) -> dict[str, str]:
     from tasks import esc
@@ -279,12 +466,13 @@ def baseline_deploy_probe_callback(
     cfg: RunConfig,
     iteration_path: Path,
     logger: logging.Logger,
-) -> Callable[[], DeployProbeResult]:
+) -> Callable[[], DeployAttemptResult]:
     """Zero-arg probe callable for the baseline spec retry loop."""
 
-    def _probe() -> DeployProbeResult:
-        return probe_iteration_deployable(
+    def _probe() -> DeployAttemptResult:
+        return run_deploy_attempt(
             iteration_path=iteration_path,
+            iteration_id=plan.iteration_id,
             image_id=image_id,
             sample_slug=_sample_slug(ctx),
             app_port=ctx.task.env.port,
@@ -293,86 +481,22 @@ def baseline_deploy_probe_callback(
             wait_timeout_s=cfg.k8s_wait_timeout,
             labels=_bench_labels(ctx, plan),
             logger=logger,
+            persist_on_failure=False,
         )
 
     return _probe
 
 
-def run_deploy_stage(
-    ctx: SampleContext,
-    plan: IterationPlan,
-    image_id: str,
-    cfg: RunConfig,
-    logger: logging.Logger,
-) -> DeployStageResult:
-    """
-    Bring the iteration up on the cluster so bench can run Locust immediately.
-
-    Probes when ``refinement_action`` is ``code`` (new image, reused spec) or
-    ``deployment`` (new spec). Skips baseline iterations that already probed
-    during the spec retry loop.
-    """
-    iteration_path = resolve_iteration_dir(
-        ctx.sample_dir, plan.iteration_id, experiment_id=ctx.experiment_id
-    )
-
-    if not should_run_deploy_stage(plan):
-        if probe_record_passed(iteration_path):
-            logger.info(
-                "iteration %s: deploy stage skipped (baseline probe already recorded)",
-                plan.iteration_id,
-            )
-            return DeployStageResult(ok=True, skipped=True)
-        return DeployStageResult(
-            ok=False,
-            reason="deploy probe required but baseline spec loop did not record success",
-        )
-
-    failure_kind = "deploy"
-
-    logger.info(
-        "iteration %s: deploying for bench (action=%s, image=%s)",
-        plan.iteration_id,
-        plan.refinement_action,
-        image_id,
-    )
-    probe = probe_iteration_deployable(
-        iteration_path=iteration_path,
-        image_id=image_id,
-        sample_slug=_sample_slug(ctx),
-        app_port=ctx.task.env.port,
-        needs_db=ctx.task.scenario.needs_db,
-        k8s_cluster=ctx.k8s_cluster,
-        wait_timeout_s=cfg.k8s_wait_timeout,
-        labels=_bench_labels(ctx, plan),
-        logger=logger,
-    )
-    if probe.ok:
-        logger.info("deploy stage passed; cluster ready for bench")
-        return DeployStageResult(ok=True)
-
-    logger.error("deploy stage failed: %s", probe.reason)
-    deploy_record = FailureRecord(
-        phase="deploy",
-        kind="deploy_probe",
-        iteration_id=plan.iteration_id,
-        summary=probe.reason,
-        deploy_probe_reason=probe.reason,
-        deploy_probe_details=dict(probe.details or {}),
-        generic_excerpt=probe.to_prompt_feedback(),
-    )
-    fail_iteration_phase(
-        iteration_path=iteration_path,
-        task_run_dir=ctx.task_run_dir,
-        sample_dir=ctx.sample_dir,
-        sample=ctx.sample,
-        iteration_id=plan.iteration_id,
-        kind=failure_kind,
-        logger=logger,
-        iteration_failure=IterationFailure(
-            iteration_id=plan.iteration_id,
-            phase="deploy",
-            terminal=deploy_record,
-        ),
-    )
-    return DeployStageResult(ok=False, reason=probe.reason)
+__all__ = [
+    "DeployAttemptResult",
+    "DeployProbeResult",
+    "DeployStageResult",
+    "baseline_deploy_probe_callback",
+    "check_service_endpoints_ready",
+    "deploy_failure_record_from_probe",
+    "probe_record_passed",
+    "rotate_top_level_into_attempt",
+    "run_deploy_attempt",
+    "run_deploy_stage",
+    "should_run_deploy_stage",
+]

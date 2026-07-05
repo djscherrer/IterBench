@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import logging
 import pathlib
+import shutil
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -21,6 +22,8 @@ from scenarios.base import Scenario
 from ..cluster.capacity import ClusterCapacity
 from ..feedback import IterationFeedback
 from ..prompt_helpers import ArtifactPointers
+from ..failure import SpecFailureRecord
+from ..failure.persist import spec_attempt_dir
 from ..workspace import (
     PROMPT_LOG_FILENAME,
     RESPONSE_LOG_FILENAME,
@@ -29,7 +32,6 @@ from ..workspace import (
     iteration_spec_attempts_dir,
     iteration_spec_dir,
     iteration_spec_path,
-    next_attempt_index,
 )
 from .models import BackendSpec, K8sWorkloadSpec
 from .parse import merge_fragment_into_spec, parse_spec_fragment
@@ -41,32 +43,119 @@ from .validate import SpecValidationError, validate_spec_against_cluster
 
 @dataclass(frozen=True)
 class SpecAttemptResult:
-    """Outcome of one spec generation attempt (LLM + validate + write)."""
+    """Outcome of one spec attempt (LLM + validate + write)."""
 
     spec_path: Path | None = None
     error: str | None = None
     spec: K8sWorkloadSpec | None = None
     raw_response: str = ""
     warnings: tuple[str, ...] = ()
+    validation_errors: tuple[str, ...] = ()
+    validation_warnings: tuple[str, ...] = ()
+    failure: SpecFailureRecord | None = None
 
 
 _SPEC_ATTEMPT_META_FILENAME = "attempt.json"
+
+
+def rotate_top_level_into_attempt(
+    iteration_path: pathlib.Path,
+    attempt_dir: pathlib.Path,
+) -> None:
+    """Move the current ``03-spec/`` snapshot into ``attempts/<NNN>/`` before retry."""
+    spec_dir = iteration_spec_dir(iteration_path)
+    attempt_dir.mkdir(parents=True, exist_ok=True)
+    for name in (PROMPT_LOG_FILENAME, RESPONSE_LOG_FILENAME, "spec_gen.json", "spec.yaml"):
+        src = spec_dir / name
+        if src.is_file():
+            shutil.move(str(src), str(attempt_dir / name))
+    for sub in ("manifests",):
+        src = spec_dir / sub
+        if src.is_dir():
+            dest = attempt_dir / sub
+            if dest.exists():
+                shutil.rmtree(dest)
+            shutil.move(str(src), str(dest))
+
+
+def _spec_attempt_dir(
+    iteration_path: pathlib.Path, *, attempt_index: int, enable_attempts: bool
+) -> Path:
+    if enable_attempts:
+        return attempt_subdir(iteration_spec_attempts_dir(iteration_path), attempt_index)
+    return spec_attempt_dir(iteration_path, attempt_index)
+
+
+def _record_failed_spec_attempt(
+    *,
+    iteration_path: pathlib.Path,
+    attempt_index: int,
+    enable_attempts: bool,
+    status: str,
+    error: str | None,
+    validation_feedback: str | None = None,
+) -> pathlib.Path:
+    """Rotate top-level spec artifacts into ``attempts/<NNN>/`` and write meta."""
+    attempt_dir = _spec_attempt_dir(
+        iteration_path, attempt_index=attempt_index, enable_attempts=enable_attempts
+    )
+    if enable_attempts:
+        rotate_top_level_into_attempt(iteration_path, attempt_dir)
+    else:
+        attempt_dir.mkdir(parents=True, exist_ok=True)
+    _write_spec_attempt_meta(
+        attempt_dir,
+        attempt_index=attempt_index,
+        status=status,
+        error=error,
+        validation_feedback=validation_feedback,
+    )
+    return attempt_dir
+
+
+def persist_spec_attempt_failure_artifacts(
+    *,
+    iteration_path: pathlib.Path,
+    attempt_index: int,
+    enable_attempts: bool,
+    failure: SpecFailureRecord | None,
+    status: str,
+    error: str | None,
+    validation_feedback: str | None = None,
+    logger: logging.Logger | None = None,
+) -> None:
+    """Rotate failed attempt artifacts (when enabled) and persist ``failure.json``."""
+    attempt_dir = _record_failed_spec_attempt(
+        iteration_path=iteration_path,
+        attempt_index=attempt_index,
+        enable_attempts=enable_attempts,
+        status=status,
+        error=error,
+        validation_feedback=validation_feedback,
+    )
+    if failure is None:
+        return
+    log = logger or logging.getLogger(__name__)
+    try:
+        from ..failure.persist import write_spec_attempt_failure
+
+        write_spec_attempt_failure(attempt_dir, failure)
+    except Exception as exc:
+        log.debug("could not persist spec attempt failure: %s", exc)
 
 
 def _write_spec_attempt_meta(
     attempt_dir: pathlib.Path,
     *,
     attempt_index: int,
-    global_attempt_index: int,
     status: str,
     error: str | None,
     validation_feedback: str | None,
     note: str | None = None,
 ) -> None:
-    """Persist ``attempts/<NNN>/attempt.json`` (one per LLM call)."""
+    """Persist ``attempts/<NNN>/attempt.json`` (one outer spec attempt)."""
     payload: dict[str, Any] = {
-        "attempt_index": global_attempt_index,
-        "validation_round": attempt_index,
+        "attempt_index": attempt_index,
         "status": status,
         "error": error,
         "validation_feedback": validation_feedback,
@@ -83,21 +172,14 @@ def _write_spec_attempt_meta(
 def record_spec_deploy_probe_failure(
     iteration_path: pathlib.Path,
     *,
+    attempt_index: int,
     probe_reason: str,
     probe_feedback: str,
 ) -> None:
-    """
-    After a deploy probe fails, mark the **most recent** spec attempt as
-    ``deploy_probe_failed`` so the on-disk record reflects the real outcome
-    (the LLM produced a valid-looking spec, but the cluster wouldn't accept it).
-    """
-    attempts_dir = iteration_spec_attempts_dir(iteration_path)
-    if not attempts_dir.is_dir():
-        return
-    best_idx = next_attempt_index(attempts_dir) - 1
-    if best_idx < 1:
-        return
-    attempt_dir = attempt_subdir(attempts_dir, best_idx)
+    """Mark an outer spec attempt as ``deploy_probe_failed`` after rotation."""
+    attempt_dir = attempt_subdir(
+        iteration_spec_attempts_dir(iteration_path), attempt_index
+    )
     meta_path = attempt_dir / _SPEC_ATTEMPT_META_FILENAME
     if not meta_path.is_file():
         return
@@ -131,7 +213,6 @@ def generate_k8s_workload_spec(
     iteration_path: pathlib.Path | None = None,
     iteration_index: int = 0,
     total_iterations: int = 0,
-    enable_attempts: bool = False,
     artifact_pointers: ArtifactPointers | None = None,
     experiment_id: str = "default",
     llm_max_cost_usd: float | None = None,
@@ -141,20 +222,14 @@ def generate_k8s_workload_spec(
 ) -> tuple[K8sWorkloadSpec, str, list[str]]:
     """Call the configured LLM and return (spec, raw_response, validation_warnings).
 
-    When ``enable_attempts`` is ``True`` (baseline iteration only), each LLM
-    call writes a self-contained record under ``03-spec/attempts/<NNN>/``
-    (``prompt.log``, ``response.log``, ``attempt.json``) so failed validation
-    rounds stay auditable instead of being overwritten by the winning attempt.
-    The winning attempt is also mirrored at the top of ``03-spec/``
-    (``prompt.log``, ``response.log``) as required by
-    :func:`write_spec_generation_artifacts` and the experiment summary writers.
-
-    For refinement iterations (``enable_attempts=False``, the default) only
-    the top-level ``03-spec/{prompt.log,response.log}`` files are written —
-    no per-attempt forensics directory is created.
+    When ``enable_attempts`` is ``True`` on the outer :func:`run_spec_attempt`,
+    failed attempts are rotated into ``03-spec/attempts/<NNN>/`` before retry.
+    This function always writes prompt/response to the phase top level.
     """
     last_raw = ""
     validation_hint = validation_feedback
+    last_errors: list[str] = []
+    last_warnings: list[str] = []
     for attempt in range(1, max_validation_retries + 1):
         prompt = build_k8s_spec_prompt(
             env=env,
@@ -169,31 +244,14 @@ def generate_k8s_workload_spec(
             artifact_pointers=artifact_pointers,
         )
 
-        # Per-attempt directory: each LLM call lands its own
-        # ``attempts/<NNN>/{prompt.log,response.log,attempt.json}``. Only
-        # created for the baseline iteration (``enable_attempts=True``) —
-        # refinement iterations write only the top-level prompt/response
-        # logs and rely on git/snapshot diffs across iterations for
-        # forensics. The global index (across both validation retries
-        # inside a single call and across outer deploy-probe rounds in
-        # ``stages.spec``) picks up the next free slot automatically.
-        per_attempt_dir: pathlib.Path | None = None
-        global_attempt_idx = 0
+        # Write prompt/response at the phase top level; failed outer attempts are
+        # rotated into ``attempts/<NNN>/`` by the stage loop (move-on-fail).
         if iteration_path is not None:
             spec_dir = iteration_spec_dir(iteration_path)
             spec_dir.mkdir(parents=True, exist_ok=True)
             (spec_dir / PROMPT_LOG_FILENAME).write_text(
                 prompt + "\n", encoding="utf-8"
             )
-            if enable_attempts:
-                attempts_dir = iteration_spec_attempts_dir(iteration_path)
-                attempts_dir.mkdir(parents=True, exist_ok=True)
-                global_attempt_idx = next_attempt_index(attempts_dir)
-                per_attempt_dir = attempt_subdir(attempts_dir, global_attempt_idx)
-                per_attempt_dir.mkdir(parents=True, exist_ok=True)
-                (per_attempt_dir / PROMPT_LOG_FILENAME).write_text(
-                    prompt + "\n", encoding="utf-8"
-                )
         if sample_dir is not None:
             from ..llm_cost import check_k8s_llm_budget, record_k8s_llm_call
 
@@ -216,15 +274,6 @@ def generate_k8s_workload_spec(
             )
         except RuntimeError as exc:
             if "no completion" in str(exc).lower():
-                if per_attempt_dir is not None:
-                    _write_spec_attempt_meta(
-                        per_attempt_dir,
-                        attempt_index=attempt,
-                        global_attempt_index=global_attempt_idx,
-                        status="empty_response",
-                        error=empty_response_error,
-                        validation_feedback=validation_hint,
-                    )
                 raise RuntimeError(empty_response_error) from exc
             raise
         if sample_dir is not None:
@@ -233,22 +282,14 @@ def generate_k8s_workload_spec(
                 call_type="k8s_spec_generation",
                 sample_dir=sample_dir,
                 logger=logger,
-                artifact_dir=per_attempt_dir
-                or (iteration_spec_dir(iteration_path) if iteration_path else None),
+                artifact_dir=(
+                    iteration_spec_dir(iteration_path) if iteration_path else None
+                ),
                 iteration_id=iteration_id,
-                note=f"validation_attempt={attempt} global_attempt={global_attempt_idx}",
+                note=f"validation_round={attempt}",
                 experiment_id=experiment_id,
                 max_cost_usd=llm_max_cost_usd,
             )
-        if per_attempt_dir is not None:
-            (per_attempt_dir / RESPONSE_LOG_FILENAME).write_text(
-                last_raw + "\n", encoding="utf-8"
-            )
-        # Persist the raw reply next to the prompt regardless of validation
-        # outcome. ``write_spec_generation_artifacts`` only runs on success, so
-        # without this a failed refinement spec leaves a ``prompt.log`` with no
-        # ``response.log`` to inspect. On a passing attempt this is overwritten
-        # with the identical accepted reply.
         if iteration_path is not None:
             (iteration_spec_dir(iteration_path) / RESPONSE_LOG_FILENAME).write_text(
                 last_raw + "\n", encoding="utf-8"
@@ -264,15 +305,6 @@ def generate_k8s_workload_spec(
                 experiment_id=experiment_id,
             )
         except ValueError as parse_exc:
-            if per_attempt_dir is not None:
-                _write_spec_attempt_meta(
-                    per_attempt_dir,
-                    attempt_index=attempt,
-                    global_attempt_index=global_attempt_idx,
-                    status="parse_failed",
-                    error=str(parse_exc),
-                    validation_feedback=validation_hint,
-                )
             validation_hint = (
                 f"Your previous response could not be parsed as a <SPEC> "
                 f"YAML fragment: {parse_exc}. Re-emit the spec inside a "
@@ -296,54 +328,36 @@ def generate_k8s_workload_spec(
                 max_validation_retries,
                 placement_errors,
             )
-            if per_attempt_dir is not None:
-                _write_spec_attempt_meta(
-                    per_attempt_dir,
-                    attempt_index=attempt,
-                    global_attempt_index=global_attempt_idx,
-                    status="placement_invalid",
-                    error="; ".join(placement_errors),
-                    validation_feedback=validation_hint,
-                )
             continue
 
         # Validate the spec against the cluster capacity and scheduling rules.
         result = validate_spec_against_cluster(spec, capacity)
         if result.errors:
-            validation_hint = SpecValidationError(result.errors).to_prompt_text()
+            last_errors = list(result.errors)
+            last_warnings = list(result.warnings)
+            validation_hint = SpecValidationError(result.errors, result.warnings).to_prompt_text()
             logger.warning(
                 "spec validation attempt %d/%d failed: %s",
                 attempt,
                 max_validation_retries,
                 result.errors,
             )
-            if per_attempt_dir is not None:
-                _write_spec_attempt_meta(
-                    per_attempt_dir,
-                    attempt_index=attempt,
-                    global_attempt_index=global_attempt_idx,
-                    status="validation_failed",
-                    error="; ".join(result.errors),
-                    validation_feedback=validation_hint,
-                )
             continue
 
         if attempt > 1:
             logger.info("spec validation passed on attempt %d", attempt)
-        if per_attempt_dir is not None:
-            _write_spec_attempt_meta(
-                per_attempt_dir,
-                attempt_index=attempt,
-                global_attempt_index=global_attempt_idx,
-                status="validation_passed",
-                error=None,
-                validation_feedback=validation_hint,
-            )
         return spec, last_raw, result.warnings
 
+    if last_errors:
+        raise SpecValidationError(
+            [f"Spec still invalid after {max_validation_retries} generation attempt(s)."]
+            + last_errors,
+            last_warnings,
+        )
     raise SpecValidationError(
         [f"Spec still invalid after {max_validation_retries} generation attempt(s)."]
-        + [ln for ln in (validation_hint or "").splitlines() if ln.strip()][-8:]
+        + [ln for ln in (validation_hint or "").splitlines() if ln.strip()][-8:],
+        last_warnings,
     )
 
 
@@ -441,6 +455,7 @@ def run_spec_attempt(
     prior_feedback: IterationFeedback | None = None,
     validation_feedback: str | None = None,
     max_validation_retries: int = 1,
+    attempt_index: int = 1,
     iteration_index: int = 0,
     total_iterations: int = 0,
     enable_attempts: bool = False,
@@ -480,7 +495,6 @@ def run_spec_attempt(
             iteration_path=iteration_path,
             iteration_index=iteration_index,
             total_iterations=total_iterations,
-            enable_attempts=enable_attempts,
             session=session,
             artifact_pointers=artifact_pointers,
             experiment_id=experiment_id,
@@ -510,8 +524,51 @@ def run_spec_attempt(
             warnings=tuple(warnings),
         )
     except SpecValidationError as exc:
-        return SpecAttemptResult(error=exc.to_prompt_text())
+        failure = SpecFailureRecord(
+            phase="spec",
+            kind="spec_validation",
+            iteration_id=iteration_id,
+            attempt=attempt_index,
+            summary="static spec validation failed",
+            errors=tuple(exc.errors),
+            warnings=tuple(getattr(exc, "warnings", []) or ()),
+        )
+        persist_spec_attempt_failure_artifacts(
+            iteration_path=iteration_path,
+            attempt_index=attempt_index,
+            enable_attempts=enable_attempts,
+            failure=failure,
+            status="validation_failed",
+            error=exc.to_prompt_text(),
+            validation_feedback=validation_feedback,
+            logger=logger,
+        )
+        return SpecAttemptResult(
+            error=exc.to_prompt_text(),
+            validation_errors=tuple(exc.errors),
+            validation_warnings=tuple(getattr(exc, "warnings", []) or ()),
+            failure=failure,
+        )
     except Exception as exc:
         logger.exception("spec generation failed: %s", exc, exc_info=exc)
-        return SpecAttemptResult(error=str(exc))
+        msg = str(exc)
+        failure = SpecFailureRecord(
+            phase="spec",
+            kind="llm_call",
+            iteration_id=iteration_id,
+            attempt=attempt_index,
+            summary="spec generation failed",
+            llm_error=msg or "spec generation failed",
+        )
+        persist_spec_attempt_failure_artifacts(
+            iteration_path=iteration_path,
+            attempt_index=attempt_index,
+            enable_attempts=enable_attempts,
+            failure=failure,
+            status="llm_failed",
+            error=msg,
+            validation_feedback=validation_feedback,
+            logger=logger,
+        )
+        return SpecAttemptResult(error=msg, failure=failure)
 

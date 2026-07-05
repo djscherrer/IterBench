@@ -47,7 +47,8 @@ Implementation: [`src/k8s_bench/prompt_helpers.py`](../src/k8s_bench/prompt_help
 
 Resolved from disk:
 
-- `latest_code_dir()` → codegen iteration folder name
+- `prior_iteration_code_dir()` → copy source for deployment/spec lineage (N−1)
+- `find_latest_code_snapshot_iteration()` → codegen iteration folder name for prompt pointers
 - `latest_spec_path()` → `<SPEC>` iteration folder name
 
 ## System prompt

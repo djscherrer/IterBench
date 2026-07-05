@@ -19,7 +19,7 @@ from ..workspace import (
     update_iteration_meta,
 )
 from .config import IterationSetup, RunConfig, SampleContext
-from .lineage import load_iteration_lineage
+from .lineage import lineage_based_on_iteration_id, load_iteration_lineage
 
 
 def plan_iteration(
@@ -39,11 +39,7 @@ def plan_iteration(
         is_baseline=is_baseline,
         experiment_id=ctx.experiment_id,
     )
-    based_on = (
-        lineage.bench_feedback.iteration_id
-        if lineage.bench_feedback is not None
-        else None
-    )
+    based_on = lineage_based_on_iteration_id(lineage)
     init_iteration_meta(
         iteration_path,
         iteration_index=iteration_index,

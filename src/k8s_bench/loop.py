@@ -29,7 +29,7 @@ from .orchestration.preflight import (
     sample_postlude,
     sample_preflight,
 )
-from .stages.bench import run_locust_for_iteration
+from .stages.bench import run_bench_attempt
 from .workspace.skips import append_k8s_skip
 from .workspace import (
     bench_dir_has_complete_run,
@@ -323,22 +323,26 @@ def _run_deploy_only_for_task(
                     continue
 
             with task.create_logger(log_file) as logger:
-                run_locust_for_iteration(
-                    task,
-                    results_dir,
-                    sample,
-                    iteration_path,
-                    run_dir,
-                    ctx.base_image_id,
+                run_bench_attempt(
+                    task=task,
+                    results_dir=results_dir,
+                    sample=sample,
+                    iteration_path=iteration_path,
+                    run_dir=run_dir,
+                    image_id=ctx.base_image_id,
                     timeout=timeout,
                     bench_users=bench_users,
                     bench_spawn_rate=bench_spawn_rate,
                     bench_run_time=bench_run_time,
                     k8s_wait_timeout=k8s_wait_timeout,
-                    load_profile=cfg.load_profile,
-                    k8s_cluster=cfg.k8s_cluster,
+                    iteration_index=parse_iteration_index(iteration_path.name),
+                    iteration_id=iteration_id,
                     logger=logger,
                     rebuild_code_dir=source_code_dir,
+                    load_profile=cfg.load_profile,
+                    k8s_cluster=cfg.k8s_cluster,
+                    attempt_index=1,
+                    enable_attempts=False,
                 )
                 try:
                     from .experiment_summary import append_perf_run_block

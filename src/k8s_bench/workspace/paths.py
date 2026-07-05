@@ -285,6 +285,11 @@ def iteration_deploy_dir(iteration_path: Path) -> Path:
     return iteration_path / PHASE_DEPLOY_DIRNAME
 
 
+def iteration_deploy_attempts_dir(iteration_path: Path) -> Path:
+    """``04-deploy/attempts/`` — one numbered subdir per deploy probe attempt."""
+    return iteration_deploy_dir(iteration_path) / ATTEMPTS_DIRNAME
+
+
 def deploy_probe_record_path(iteration_path: Path) -> Path:
     return iteration_deploy_dir(iteration_path) / "probe.json"
 
@@ -367,6 +372,29 @@ def prior_iteration_code_dir(
         experiment_id=experiment_id,
     )
     return nonempty_code_snapshot_dir(prev_path)
+
+
+def resolve_bench_rebuild_code_dir(
+    sample_dir: Path,
+    iteration_path: Path,
+    *,
+    experiment_id: str | None = None,
+) -> Path | None:
+    """
+    Application source tree to rebuild the bench image from.
+
+    Prefer a non-empty ``02-code/code/`` on this iteration; otherwise fall back
+    to the immediately preceding iteration (deploy-only / spec-only folders).
+    """
+    snap = nonempty_code_snapshot_dir(iteration_path)
+    if snap is not None:
+        return snap
+    idx = parse_iteration_index(iteration_path.name)
+    if idx is not None and idx > 0:
+        return prior_iteration_code_dir(
+            sample_dir, idx, experiment_id=experiment_id
+        )
+    return None
 
 
 def find_latest_code_snapshot_iteration(
@@ -524,6 +552,11 @@ def next_attempt_index(attempts_dir: Path) -> int:
 def iteration_bench_dir(iteration_path: Path) -> Path:
     """Bench phase folder (``05-bench/``)."""
     return iteration_path / PHASE_BENCH_DIRNAME
+
+
+def iteration_bench_attempts_dir(iteration_path: Path) -> Path:
+    """``05-bench/attempts/`` — one numbered subdir per bench run attempt."""
+    return iteration_bench_dir(iteration_path) / ATTEMPTS_DIRNAME
 
 
 def default_k8s_namespace(

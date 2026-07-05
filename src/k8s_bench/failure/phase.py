@@ -9,7 +9,14 @@ from ..workspace.meta import update_iteration_meta
 from ..workspace.paths import mark_iteration_folder_failed
 from ..workspace.skips import append_k8s_skip
 from .persist import write_iteration_failure
-from .record import FailureRecord, IterationFailure, Phase
+from .record import (
+    BenchFailureRecord,
+    CodeFailureRecord,
+    DeployFailureRecord,
+    IterationFailure,
+    Phase,
+    SpecFailureRecord,
+)
 
 
 def fail_iteration_phase(
@@ -28,21 +35,40 @@ def fail_iteration_phase(
     Mark an iteration as failed: persist ``failure.json``, update meta, rename
     folder with ``-failed`` suffix, and append a failure block to the summary.
     """
-    phase: Phase = kind if kind in {"code", "spec", "deploy"} else "code"  # type: ignore[assignment]
+    phase: Phase = (
+        kind if kind in {"code", "spec", "deploy", "bench"} else "code"
+    )  # type: ignore[assignment]
     if iteration_failure is None:
         summary = failure_reason or f"{phase} phase failed"
         if phase == "spec":
-            kind = "spec_validation"
+            terminal = SpecFailureRecord(
+                phase="spec",
+                kind="spec_validation",
+                iteration_id=iteration_id,
+                summary=summary,
+            )
         elif phase == "deploy":
-            kind = "deploy_probe"
+            terminal = DeployFailureRecord(
+                phase="deploy",
+                kind="deploy_probe",
+                iteration_id=iteration_id,
+                summary=summary,
+                reason=summary,
+            )
+        elif phase == "bench":
+            terminal = BenchFailureRecord(
+                phase="bench",
+                kind="bench_run",
+                iteration_id=iteration_id,
+                summary=summary,
+            )
         else:
-            kind = "functional_test"
-        terminal = FailureRecord(
-            phase=phase,
-            kind=kind,
-            iteration_id=iteration_id,
-            summary=summary,
-        )
+            terminal = CodeFailureRecord(
+                phase="code",
+                kind="functional_test",
+                iteration_id=iteration_id,
+                summary=summary,
+            )
         iteration_failure = IterationFailure(
             iteration_id=iteration_id,
             phase=phase,

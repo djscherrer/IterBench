@@ -4,12 +4,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from .failure_models import InfrastructureFailure
+from .record import CodeFailureRecord
 from .patterns import INFRA_FAILURE_PATTERNS
 from .text import trim
 
 
-def detect_infrastructure_failure(test_log: str) -> InfrastructureFailure | None:
+def detect_infrastructure_failure(test_log: str) -> CodeFailureRecord.InfrastructureFailure | None:
     """Return the first infrastructure failure marker in ``test.log``, if any."""
     if not test_log:
         return None
@@ -23,7 +23,7 @@ def detect_infrastructure_failure(test_log: str) -> InfrastructureFailure | None
                 port = m.groupdict().get("port")
                 if port:
                     detail = f"{description} (port {port})"
-            return InfrastructureFailure(
+            return CodeFailureRecord.InfrastructureFailure(
                 kind=kind,
                 description=detail,
                 evidence=trim(line.strip(), max_chars=600),

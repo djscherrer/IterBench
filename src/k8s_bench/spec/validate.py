@@ -43,8 +43,9 @@ class SpecValidationResult:
 class SpecValidationError(ValueError):
     """Hard scheduling / capacity violations; safe to feed back to the LLM."""
 
-    def __init__(self, errors: list[str]) -> None:
+    def __init__(self, errors: list[str], warnings: list[str] | None = None) -> None:
         self.errors = list(errors)
+        self.warnings = list(warnings or [])
         super().__init__("\n".join(self.errors))
 
     def to_prompt_text(self) -> str:
@@ -55,6 +56,8 @@ class SpecValidationError(ValueError):
             "",
         ]
         lines.extend(f"- {e}" for e in self.errors)
+        if self.warnings:
+            lines.extend(["", "### Warnings", *[f"- {w}" for w in self.warnings]])
         lines.extend(
             [
                 "",

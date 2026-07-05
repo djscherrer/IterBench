@@ -33,11 +33,12 @@ from .workspace import (
 @dataclass(frozen=True)
 class IterationFeedback:
     """
-    Structured summary of one prior iteration for the **decision** prompt.
+    Structured summary of one prior iteration for prompts.
 
-    Success: Locust + diagnostics. Failure: reason + error excerpt only.
+    Success path: Locust + diagnostics for the decision stage.
     Code/spec content is referenced via conversation history pointers, not
-    inlined here.
+    inlined here. Prior-iteration failures are carried via
+    :class:`~k8s_bench.failure.IterationFailure` in lineage, not here.
     """
 
     iteration_id: str
@@ -609,17 +610,10 @@ def load_prior_feedback_for_iteration(
     """
     Load feedback from the **immediately preceding** iteration (``iteration_index - 1``).
 
-    - If the previous iteration *succeeded*, return its bench-derived
-      :class:`IterationFeedback` as before.
-    - If it *failed*, return a feedback object with ``status="failed"``,
-      empty Locust / k8s sections, and the failure narrative (reason +
-      error excerpt + the spec that was attempted). The renderer in
-      :meth:`IterationFeedback.to_prompt_text` adapts.
-
-    The loader deliberately does **not** walk further back: if iteration N-1
-    failed, the next iteration's prompt anchors on N-1's failure (not on
-    some older successful run), so the LLM has direct context for what to
-    fix without us digging up stale bench data.
+    Returns bench-derived :class:`IterationFeedback` only when N−1 completed a
+    successful load run. When N−1 failed, returns ``None`` — use
+    :func:`k8s_bench.failure.load_prior_iteration_failure` for the structured
+  failure envelope instead.
     """
     if iteration_index <= 0:
         return None
@@ -639,7 +633,7 @@ def load_prior_feedback_for_iteration(
     )
 
     if iteration_is_failed(ip):
-        return _failed_iteration_feedback(ip, prev_id)
+        return None
 
     bench = resolve_bench_dir(
         sample_dir, prev_id, experiment_id=experiment_id
@@ -653,34 +647,3 @@ def load_prior_feedback_for_iteration(
             iteration_path=ip,
         )
     return fb
-
-
-def _failed_iteration_feedback(
-    iteration_path: Path,
-    iteration_id: str,
-) -> IterationFeedback:
-    """Build :class:`IterationFeedback` for a prior iteration that failed before bench."""
-    from .workspace import read_decision_rationale, read_iteration_meta
-
-    meta = read_iteration_meta(iteration_path) or {}
-    failure_reason = str(meta.get("failure_reason") or "").strip()
-    raw_kind = meta.get("failure_kind") or meta.get("refinement_action") or ""
-    kind = str(raw_kind)
-    if kind == "baseline":
-        kind = "spec"
-    if kind not in {"code", "spec", "deploy"}:
-        kind = ""
-    rationale = read_decision_rationale(iteration_path) or ""
-    excerpt = read_failed_iteration_error_excerpt(iteration_path)
-    return IterationFeedback(
-        iteration_id=str(meta.get("iteration_id") or iteration_id),
-        perf_run_dir="",
-        locust_summary="",
-        error_excerpt=excerpt,
-        pod_utilization="",
-        notes="",
-        status="failed",
-        failure_reason=failure_reason or "(no reason recorded)",
-        failure_kind=kind,
-        decision_rationale=rationale,
-    )

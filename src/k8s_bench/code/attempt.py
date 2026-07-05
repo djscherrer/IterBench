@@ -16,7 +16,7 @@ from llm import Prompter
 
 from ..feedback import IterationFeedback
 from ..failure import (
-    FailureRecord,
+    CodeFailureRecord,
     build_code_failure_record,
     classify_ft_failure,
     code_attempt_dir,
@@ -65,18 +65,19 @@ class CodegenAttemptResult:
     error: str | None = None
     infra_failure: bool = False
     continue_loop: bool = True
+    failure: CodeFailureRecord | None = None
 
 
 def _attempt_dir(
-    iteration_path: Path, *, attempt_index: int, track_attempt_dirs: bool
+    iteration_path: Path, *, attempt_index: int, enable_attempts: bool
 ) -> Path | None:
     """
     Resolve the attempt directory used for baseline retries.
 
-    When ``track_attempt_dirs`` is false (non-baseline stages), we don't persist
+    When ``enable_attempts`` is false, we don't persist
     per-attempt artifacts and return ``None``.
     """
-    if not track_attempt_dirs:
+    if not enable_attempts:
         return None
     return attempt_subdir(iteration_code_attempts_dir(iteration_path), attempt_index)
 
@@ -85,7 +86,7 @@ def _record_attempt_meta(
     *,
     iteration_path: Path,
     attempt_index: int,
-    track_attempt_dirs: bool,
+    enable_attempts: bool,
     status: str,
     started_at: float,
     error: str,
@@ -103,7 +104,7 @@ def _record_attempt_meta(
     ``attempts/<NNN>/`` before the next retry overwrites it.
     """
     attempt_dir = _attempt_dir(
-        iteration_path, attempt_index=attempt_index, track_attempt_dirs=track_attempt_dirs
+        iteration_path, attempt_index=attempt_index, enable_attempts=enable_attempts
     )
     if attempt_dir is None:
         return None
@@ -130,13 +131,13 @@ def _persist_code_attempt_failure(
     iteration_path: Path,
     attempt_index: int,
     iteration_id: str,
-    track_attempt_dirs: bool,
-    record: FailureRecord,
+    enable_attempts: bool,
+    record: CodeFailureRecord,
     logger: logging.Logger,
 ) -> None:
     """Write ``attempts/NNN/failure.json`` (always) and rotate baseline snapshots."""
     attempt_dir = _attempt_dir(
-        iteration_path, attempt_index=attempt_index, track_attempt_dirs=track_attempt_dirs
+        iteration_path, attempt_index=attempt_index, enable_attempts=enable_attempts
     )
     if attempt_dir is None:
         attempt_dir = code_attempt_dir(iteration_path, attempt_index)
@@ -186,10 +187,10 @@ def run_code_attempt(
     base_delay: float,
     max_delay: float,
     prior_feedback: IterationFeedback | None,
-    prior_iteration_failure: FailureRecord | None,
+    prior_iteration_failure: CodeFailureRecord | None,
     iteration_index: int,
     total_iterations: int,
-    track_attempt_dirs: bool,
+    enable_attempts: bool,
     fail_fast_on_infra: bool,
     experiment_id: str = "default",
     llm_max_cost_usd: float | None = None,
@@ -222,8 +223,10 @@ def run_code_attempt(
         return CodegenAttemptResult(error=error, continue_loop=False)
 
     iteration_id = _iteration_id_for_llm_cost(iteration_path, iteration_index)
-    prior_attempt_failure = load_prior_code_attempt_failure(
-        iteration_path, attempt_index
+    prior_attempt_failure = (
+        load_prior_code_attempt_failure(iteration_path, attempt_index)
+        if enable_attempts
+        else None
     )
 
     # ---------------------------------------------------------------------
@@ -264,7 +267,7 @@ def run_code_attempt(
         persist_session(prompter, sample_dir, logger=logger)
     except Exception as exc:
         error = f"LLM call failed: {exc}"
-        llm_record = FailureRecord(
+        llm_record = CodeFailureRecord(
             phase="code",
             kind="llm_call",
             iteration_id=iteration_id,
@@ -276,19 +279,19 @@ def run_code_attempt(
             iteration_path=iteration_path,
             attempt_index=attempt_index,
             iteration_id=iteration_id,
-            track_attempt_dirs=track_attempt_dirs,
+            enable_attempts=enable_attempts,
             record=llm_record,
             logger=logger,
         )
         _record_attempt_meta(
             iteration_path=iteration_path,
             attempt_index=attempt_index,
-            track_attempt_dirs=track_attempt_dirs,
+            enable_attempts=enable_attempts,
             status="llm_failed",
             started_at=started_at,
             error=error,
         )
-        return CodegenAttemptResult(error=error, continue_loop=True)
+        return CodegenAttemptResult(error=error, continue_loop=True, failure=llm_record)
 
     # Persist raw prompt/response for debugging and auditability.
     (phase_dir / PROMPT_LOG_FILENAME).write_text(prompt_text + "\n", encoding="utf-8")
@@ -321,7 +324,7 @@ def run_code_attempt(
     except ValueError as exc:
         error = str(exc)
         logger.warning(error)
-        parse_record = FailureRecord(
+        parse_record = CodeFailureRecord(
             phase="code",
             kind="llm_parse",
             iteration_id=iteration_id,
@@ -333,20 +336,20 @@ def run_code_attempt(
             iteration_path=iteration_path,
             attempt_index=attempt_index,
             iteration_id=iteration_id,
-            track_attempt_dirs=track_attempt_dirs,
+            enable_attempts=enable_attempts,
             record=parse_record,
             logger=logger,
         )
         _record_attempt_meta(
             iteration_path=iteration_path,
             attempt_index=attempt_index,
-            track_attempt_dirs=track_attempt_dirs,
+            enable_attempts=enable_attempts,
             status="parse_failed",
             started_at=started_at,
             error=error,
             rotate_top_level=True,
         )
-        return CodegenAttemptResult(error=error, continue_loop=True)
+        return CodegenAttemptResult(error=error, continue_loop=True, failure=parse_record)
 
     # ---------------------------------------------------------------------
     # Phase 3: write code snapshot to disk (this becomes the "current attempt")
@@ -397,7 +400,7 @@ def run_code_attempt(
             logger=logger,
         )
         if not is_infra:
-            runner_record = FailureRecord(
+            runner_record = CodeFailureRecord(
                 phase="code",
                 kind="ft_runner",
                 iteration_id=iteration_id,
@@ -409,14 +412,14 @@ def run_code_attempt(
             iteration_path=iteration_path,
             attempt_index=attempt_index,
             iteration_id=iteration_id,
-            track_attempt_dirs=track_attempt_dirs,
+            enable_attempts=enable_attempts,
             record=runner_record,
             logger=logger,
         )
         _record_attempt_meta(
             iteration_path=iteration_path,
             attempt_index=attempt_index,
-            track_attempt_dirs=track_attempt_dirs,
+            enable_attempts=enable_attempts,
             status="infra_failed" if is_infra else "ft_runner_failed",
             started_at=started_at,
             error=error,
@@ -429,6 +432,7 @@ def run_code_attempt(
             error=error,
             infra_failure=is_infra,
             continue_loop=not stop,
+            failure=runner_record,
         )
 
     # ---------------------------------------------------------------------
@@ -497,7 +501,7 @@ def run_code_attempt(
         iteration_path=iteration_path,
         attempt_index=attempt_index,
         iteration_id=iteration_id,
-        track_attempt_dirs=track_attempt_dirs,
+        enable_attempts=enable_attempts,
         record=failure_record,
         logger=logger,
     )
@@ -513,7 +517,7 @@ def run_code_attempt(
     _record_attempt_meta(
         iteration_path=iteration_path,
         attempt_index=attempt_index,
-        track_attempt_dirs=track_attempt_dirs,
+        enable_attempts=enable_attempts,
         status="infra_failed" if is_infra else "ft_failed",
         started_at=started_at,
         error=error,
@@ -528,6 +532,7 @@ def run_code_attempt(
         error=error,
         infra_failure=is_infra,
         continue_loop=not stop,
+        failure=failure_record,
     )
 
 

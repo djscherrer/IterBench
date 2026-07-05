@@ -104,11 +104,13 @@ def build_refinement_decision_prompt(
     task: Any,
     results_dir: Path,
     sample: int,
-    prior_feedback: IterationFeedback,
+    based_on_iteration_id: str,
     iteration_index: int,
     next_iteration_id: str,
     total_iterations: int = 0,
     experiment_id: str | None = None,
+    prior_feedback: IterationFeedback | None = None,
+    prior_iteration_failure: "IterationFailure | None" = None,
 ) -> str:
     sample_dir = task.get_sample_dir(results_dir, sample)
     pointers = resolve_artifact_pointers(
@@ -120,10 +122,18 @@ def build_refinement_decision_prompt(
         iteration_index=iteration_index, total_iterations=total_iterations
     )
     pointer_block = format_artifact_pointers_block(pointers)
-    feedback_text = prior_feedback.to_prompt_text()
+    if prior_feedback is not None:
+        context_text = prior_feedback.to_prompt_text()
+        context_heading = "## Benchmark feedback (previous iteration)"
+    elif prior_iteration_failure is not None:
+        context_text = prior_iteration_failure.terminal.to_prompt_block()
+        context_heading = "## Previous iteration failure"
+    else:
+        context_text = "(no prior iteration context available)"
+        context_heading = "## Previous iteration"
     return f"""You are a performance optimization strategist for BaxBench iterative experiments.
 
-After iteration `{prior_feedback.iteration_id}`, decide what to refine **next** (`{next_iteration_id}`) to improve benchmark **goodput** (sustained rate of *successful* HTTP responses; failed requests do not count).
+After iteration `{based_on_iteration_id}`, decide what to refine **next** (`{next_iteration_id}`) to improve benchmark **goodput** (sustained rate of *successful* HTTP responses; failed requests do not count).
 
 **Progress**: {progress} Choose the path most likely to lift goodput within the remaining budget.
 
@@ -140,9 +150,9 @@ You may choose **exactly one** path:
 
 {pointer_block}
 
-## Benchmark feedback (previous iteration)
+{context_heading}
 
-{feedback_text}
+{context_text}
 
 ## Output format
 
@@ -195,7 +205,7 @@ def decide_refinement_action(
     results_dir: Path,
     sample: int,
     iteration_path: Path,
-    prior_feedback: IterationFeedback,
+    based_on_iteration_id: str,
     iteration_index: int,
     next_iteration_id: str,
     prompter: "Prompter",
@@ -206,6 +216,8 @@ def decide_refinement_action(
     total_iterations: int = 0,
     experiment_id: str = "default",
     llm_max_cost_usd: float | None = None,
+    prior_feedback: IterationFeedback | None = None,
+    prior_iteration_failure: "IterationFailure | None" = None,
 ) -> RefinementDecision:
     from ..workspace import PROMPT_LOG_FILENAME, iteration_decision_dir
 
@@ -213,7 +225,9 @@ def decide_refinement_action(
         task=task,
         results_dir=results_dir,
         sample=sample,
+        based_on_iteration_id=based_on_iteration_id,
         prior_feedback=prior_feedback,
+        prior_iteration_failure=prior_iteration_failure,
         iteration_index=iteration_index,
         next_iteration_id=next_iteration_id,
         total_iterations=total_iterations,
@@ -258,7 +272,7 @@ def decide_refinement_action(
             return parse_refinement_decision(
                 last_raw,
                 iteration_index=iteration_index,
-                based_on_iteration=prior_feedback.iteration_id,
+                based_on_iteration=based_on_iteration_id,
             )
         except Exception as exc:
             last_exc = exc
@@ -285,7 +299,7 @@ def decide_refinement_action(
         rationale=f"Decision LLM failed ({last_exc}); defaulting to deployment tuning.",
         raw_response=last_raw,
         iteration_index=iteration_index,
-        based_on_iteration=prior_feedback.iteration_id,
+        based_on_iteration=based_on_iteration_id,
     )
 
 
@@ -306,6 +320,7 @@ def run_decision_stage(
     rename the iteration folder or build :class:`~k8s_bench.orchestration.config.IterationPlan`;
     orchestration applies the folder suffix after this returns.
     """
+    from ..orchestration.lineage import lineage_based_on_iteration_id
     from ..workspace import update_iteration_meta
     if ctx.session is None:
         raise RuntimeError(
@@ -313,24 +328,17 @@ def run_decision_stage(
             "initialize ctx.session for iterative experiments"
         )
 
-    if lineage.bench_feedback is None:
-        # Hard error: for iteration_index >= 1 we expect iteration N-1 to have
-        # either (a) bench feedback artifacts (successful run) or (b) be marked
-        # failed, in which case the loader returns an IterationFeedback with
-        # status="failed". If both are missing, the experiment directory is in
-        # an inconsistent / partially-written state (interrupted run, manual
-        # deletion of 05-bench artifacts, etc.).
+    based_on_iteration_id = lineage_based_on_iteration_id(lineage)
+    if based_on_iteration_id is None:
         from ..workspace import iteration_id_for_index
 
         prev_id = iteration_id_for_index(iteration_index - 1)
         reason = (
-            f"Missing prior benchmark feedback for refinement decision in {iteration_id}: "
-            f"expected feedback for previous iteration {prev_id} (either a successful "
-            f"bench run under `05-bench/` or a `-failed` marker/meta). "
-            "This indicates an inconsistent experiment state (e.g. interrupted run, "
-            "incomplete resume, or deleted artifacts). Fix by re-running the previous "
-            "iteration with `--force` or deleting the incomplete iteration folder so it "
-            "can be regenerated."
+            f"Missing prior iteration context for refinement decision in {iteration_id}: "
+            f"expected either a successful bench run under `05-bench/` for previous "
+            f"iteration {prev_id}, or a structured failure record when that iteration "
+            f"failed. This indicates an inconsistent experiment state (e.g. interrupted "
+            f"run, incomplete resume, or deleted artifacts)."
         )
         logger.error(reason)
         update_iteration_meta(iteration_path, status="failed", failure_reason=reason)
@@ -342,7 +350,7 @@ def run_decision_stage(
             rationale=f"Forced by refinement mode={cfg.refinement_mode!r}",
             raw_response="",
             iteration_index=iteration_index,
-            based_on_iteration=lineage.bench_feedback.iteration_id,
+            based_on_iteration=based_on_iteration_id,
         )
     elif cfg.refinement_mode == "deployment":
         decision = RefinementDecision(
@@ -350,15 +358,23 @@ def run_decision_stage(
             rationale=f"Forced by refinement mode={cfg.refinement_mode!r}",
             raw_response="",
             iteration_index=iteration_index,
-            based_on_iteration=lineage.bench_feedback.iteration_id,
+            based_on_iteration=based_on_iteration_id,
         )
     else:
+        prior_fail = lineage.prior_iteration_failure
+        decision_failure = (
+            prior_fail
+            if prior_fail is not None and prior_fail.phase in {"deploy", "bench"}
+            else None
+        )
         decision = decide_refinement_action(
             task=ctx.task,
             results_dir=ctx.results_dir,
             sample=ctx.sample,
             iteration_path=iteration_path,
+            based_on_iteration_id=based_on_iteration_id,
             prior_feedback=lineage.bench_feedback,
+            prior_iteration_failure=decision_failure,
             iteration_index=iteration_index,
             next_iteration_id=iteration_id,
             prompter=ctx.session,
@@ -378,7 +394,7 @@ def run_decision_stage(
         decision,
         cfg,
         logger,
-        based_on_iteration=lineage.bench_feedback.iteration_id,
+        based_on_iteration=based_on_iteration_id,
     )
 
     return decision
@@ -386,6 +402,7 @@ def run_decision_stage(
 
 if TYPE_CHECKING:
     from llm import Prompter
+    from ..failure import IterationFailure
     from ..orchestration.config import (
         IterationPlan,
         IterationSetup,

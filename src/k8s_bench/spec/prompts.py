@@ -132,13 +132,7 @@ Propose deployment parameters for iteration `{iteration_id}` so the application 
 
     return f"""You are a Kubernetes deployment tuning expert for BaxBench performance experiments.
 
-{goal}{validation_block}## Application
-- Scenario: {scenario.id}
-- Environment: {env.id} (listen port {env.port})
-- Database required: {scenario.needs_db}
-- Each backend pod runs a single app process; scale throughput with `backend.replicas` and per-pod `resources`. DB connection pool sizing is controlled by `backend.env.PG_POOL_MAX` / `backend.env.DB_POOL_SIZE` (if you set them).
-
-## Cluster capacity
+{goal}{validation_block}## Cluster capacity
 Schedulable **workers only** (control-plane excluded). Use **requests** for scheduling fit.
 
 **Cluster budget (sum across workers, after {capacity.suggested_reserve_fraction:.0%} reserve):**

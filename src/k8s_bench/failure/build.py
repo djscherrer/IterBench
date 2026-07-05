@@ -1,4 +1,4 @@
-"""Build :class:`FailureRecord` from functional-test log artifacts."""
+"""Build :class:`CodeFailureRecord` from functional-test log artifacts."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ import logging
 from pathlib import Path
 
 from ..workspace.paths import iteration_functional_tests_dir
-from .failure_models import FunctionalFailure
+from .record import CodeFailureRecord
 from .infra import detect_infrastructure_failure
 from .patterns import (
     COMPILE_DIAGNOSTIC_RE,
@@ -18,7 +18,7 @@ from .patterns import (
     INFRA_FAILURE_PATTERNS,
     PM2_NOISE_RE,
 )
-from .record import FailureKind, FailureRecord
+from .record import CodeFailureKind, CodeFailureRecord
 from .text import filter_compile_diagnostics, strip_harness_noise, tail, trim
 
 _PER_TEST_TAIL_LINES = 6
@@ -181,7 +181,7 @@ def _infer_code_kind(
     infra,
     failed_names: list[str],
     generic_excerpt: str,
-) -> FailureKind:
+) -> CodeFailureKind:
     if infra is not None:
         return "infrastructure"
     if not failed_names and generic_excerpt and (
@@ -197,7 +197,7 @@ def _infer_code_kind(
 
 def _build_summary(
     *,
-    kind: FailureKind,
+    kind: CodeFailureKind,
     iteration_id: str,
     attempt: int | None,
     passed_n: int,
@@ -224,8 +224,8 @@ def build_code_failure_record(
     iteration_id: str | None = None,
     attempt: int | None = None,
     logger: logging.Logger | None = None,
-) -> FailureRecord:
-    """Inspect ``functional_tests/`` and build a code-phase :class:`FailureRecord`."""
+) -> CodeFailureRecord:
+    """Inspect ``functional_tests/`` and build a code-phase :class:`CodeFailureRecord`."""
     log = logger or logging.getLogger(__name__)
     ft_dir = iteration_functional_tests_dir(iteration_path)
     iid = iteration_id or iteration_path.name
@@ -242,7 +242,7 @@ def build_code_failure_record(
 
     passed_names, failed_names = _scan_test_log_for_results(test_log)
 
-    failures: list[FunctionalFailure] = []
+    failures: list[CodeFailureRecord.FunctionalFailure] = []
     for name in failed_names:
         per_test_path = ft_dir / f"{name}.log"
         per_test_tail = ""
@@ -257,7 +257,7 @@ def build_code_failure_record(
                 log.debug("Could not read %s: %s", per_test_path, exc)
         container_excerpt = _container_error_excerpt_for_test(test_log, name)
         failures.append(
-            FunctionalFailure(
+            CodeFailureRecord.FunctionalFailure(
                 name=name,
                 per_test_log_tail=per_test_tail,
                 container_error_excerpt=container_excerpt,
@@ -292,9 +292,9 @@ def build_code_failure_record(
         infra=infra,
     )
 
-    return FailureRecord(
+    return CodeFailureRecord(
         phase="code",
-        kind=kind,
+        kind=kind,  # type: ignore[arg-type]
         iteration_id=iid,
         attempt=attempt,
         summary=summary,
@@ -302,6 +302,6 @@ def build_code_failure_record(
         num_total_ft=total_n,
         failed_tests=tuple(failures),
         passed_tests=tuple(passed_names),
-        generic_excerpt=generic_excerpt,
+        diagnostic_excerpt=generic_excerpt,
         infrastructure_failure=infra,
     )
