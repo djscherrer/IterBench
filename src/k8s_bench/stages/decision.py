@@ -28,8 +28,8 @@ _RATIONALE_RE = re.compile(
 class DecisionStageResult:
     """Outcome of the decision stage (baseline routing, forced path, or LLM)."""
 
-    ok: bool = True
     refinement_action: RefinementActionFull
+    ok: bool = True
     decision: RefinementDecision | None = None
     abort_sample: bool = False
 
