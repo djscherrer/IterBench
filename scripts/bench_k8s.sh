@@ -39,9 +39,9 @@ RESULTS_DIR=""                  # empty → default results path
 # Cluster profile: kubeconfig, nodes, registry, Locust hosts (see k8s_bench/cluster/profiles.py).
 K8S_CLUSTER="baxbench-emulab"
 # Workspace slug → results/.../sampleN/k8s-experiments/<slug>/
-K8S_EXPERIMENT="06-07-final-validation-20-51"
+K8S_EXPERIMENT="07-07-final-validation-15-15"
 # Iterative loop: iteration-000 (baseline) .. iteration-NNN (N = value below)
-K8S_ITERATIONS="10"
+K8S_ITERATIONS="20"
 K8S_WAIT_TIMEOUT="1200"         # seconds to wait for K8s resources to become Ready
 K8S_REFINEMENT="auto"           # auto | deployment | code
 BASELINE_CODE_MAX_ATTEMPTS="10"

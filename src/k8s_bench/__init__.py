@@ -1,7 +1,7 @@
 """
 Kubernetes-backed benchmark path (parallel to ``distributed_bench``).
 
-Top level: ``loop`` (bench entry), ``iteration`` (deploy+Locust engine), ``workspace``, and CLI.
+Top level: ``loop`` (bench entry), ``stages`` (deploy/bench/decision/code/spec), ``workspace``, and CLI.
 Supporting packages: ``spec/`` (workload YAML), ``cluster/`` (kubectl, registry, lab).
 """
 
@@ -11,15 +11,11 @@ from .cluster import (
     deploy_iteration,
     ensure_k8s_cluster_ready,
 )
-from .iteration import (
-    make_k8s_perf_run_dir,
-    resolve_iterations_to_run,
-    run_k8s_bench_iteration,
-)
+from .loop import resolve_iterations_to_run
+from .stages.bench import run_distributed_locust
 from .workspace import (
     ITERATIONS_DIRNAME,
     K8S_EXPERIMENTS_DIRNAME,
-    deploy_bench_record_path,
     deploy_probe_record_path,
     default_k8s_namespace,
     find_iteration_spec_path,
@@ -28,6 +24,7 @@ from .workspace import (
     iteration_spec_path,
     iterations_root,
     k8s_workspace_root,
+    make_k8s_perf_run_dir,
     new_iteration_id,
     normalize_experiment_id,
     resolve_bench_dir,
@@ -47,7 +44,6 @@ __all__ = [
     "K8S_EXPERIMENTS_DIRNAME",
     "K8sWorkloadSpec",
     "collect_cluster_capacity",
-    "deploy_bench_record_path",
     "deploy_iteration",
     "deploy_probe_record_path",
     "ensure_k8s_cluster_ready",
@@ -68,5 +64,5 @@ __all__ = [
     "prepare_iteration",
     "render_manifests",
     "resolve_iterations_to_run",
-    "run_k8s_bench_iteration",
+    "run_distributed_locust",
 ]

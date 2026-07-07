@@ -21,7 +21,6 @@ from typing import Any
 import tqdm
 
 from .code.docker_image import ensure_docker_image
-from .iteration import resolve_iterations_to_run
 from .orchestration.execute import execute_iteration
 from .orchestration.preflight import (
     build_run_config,
@@ -36,13 +35,57 @@ from .workspace.skips import append_k8s_skip
 from .workspace import (
     bench_dir_has_complete_run,
     ensure_iteration_core_layout,
+    find_iteration_spec_path,
     iteration_bench_dir,
     iteration_bench_log_path,
+    iterations_root,
+    list_iteration_dirs,
+    new_iteration_id,
     nonempty_code_snapshot_dir,
     parse_iteration_index,
     prior_iteration_code_dir,
     resolve_bench_dir,
+    resolve_iteration_dir,
 )
+
+
+def resolve_iterations_to_run(
+    sample_dir: Path,
+    *,
+    iteration_id: str | None,
+    auto_init: bool,
+    iteration_path: Path | None = None,
+    experiment_id: str | None = None,
+) -> list[Path]:
+    """Resolve which iteration directories to deploy/bench in deploy-only mode."""
+    if iteration_path is not None:
+        path = Path(iteration_path).expanduser().resolve()
+        if not path.is_dir():
+            raise FileNotFoundError(f"Iteration path is not a directory: {path}")
+        if find_iteration_spec_path(path) is None:
+            raise FileNotFoundError(f"Missing spec for iteration: {path}")
+        return [path]
+    if iteration_id:
+        path = resolve_iteration_dir(
+            sample_dir, iteration_id, experiment_id=experiment_id
+        )
+        if find_iteration_spec_path(path) is None:
+            raise FileNotFoundError(f"Missing spec for iteration: {path}")
+        return [path]
+    existing = list_iteration_dirs(sample_dir, experiment_id=experiment_id)
+    if existing:
+        return existing
+    if not auto_init:
+        raise FileNotFoundError(
+            f"No k8s iterations under {iterations_root(sample_dir, experiment_id=experiment_id)}; "
+            "pass --k8s-iteration or enable auto-init."
+        )
+    iid = new_iteration_id(sample_dir, experiment_id=experiment_id)
+    path = resolve_iteration_dir(
+        sample_dir, iid, experiment_id=experiment_id
+    )
+    ensure_iteration_core_layout(path)
+    return [path]
 
 
 def run_k8s_bench(

@@ -573,7 +573,7 @@ def read_failed_iteration_error_excerpt(
     1. **Structured ``failure.json``** (terminal :class:`IterationFailure` on disk).
     2. Legacy ``failure_report.json`` (v1 code failures).
     3. ``bench/bench.log`` — last 40 lines for spec-refinement failures.
-    3. ``deploy/probe.json`` — full content for failed deploy probes.
+    3. ``04-deploy/probe.json`` — full content for failed deploy probes.
     4. ``functional_tests/test.log`` — last-resort tail; almost always the
        *last* test (often a passing one) and therefore mostly noise. Kept only
        so older iterations without a ``failure_report.json`` still produce

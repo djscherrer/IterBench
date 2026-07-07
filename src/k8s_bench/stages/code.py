@@ -218,6 +218,16 @@ def run_code_stage(
 
     if mode == "refinement":
         update_iteration_meta(iteration_path, code_modified=True)
+        try:
+            from ..experiment_summary import append_code_refinement_block
+
+            append_code_refinement_block(
+                sample_dir=ctx.sample_dir,
+                iteration_id=plan.iteration_id,
+                iteration_path=iteration_path,
+            )
+        except Exception as exc:
+            logger.warning("Could not update experiment summary (code refinement): %s", exc)
 
     return CodeStageResult(image_id)
 
@@ -307,4 +317,20 @@ def run_reuse_code_stage(
         plan.lineage.prior_code_dir,
         image_id,
     )
+    try:
+        from ..orchestration.lineage import lineage_based_on_iteration_id
+        from ..experiment_summary import append_code_reuse_block
+
+        source_id = lineage_based_on_iteration_id(plan.lineage)
+        if source_id is None and plan.lineage.prior_code_dir is not None:
+            source_id = plan.lineage.prior_code_dir.parent.parent.name
+        if source_id is not None:
+            append_code_reuse_block(
+                sample_dir=ctx.sample_dir,
+                iteration_id=plan.iteration_id,
+                iteration_path=iteration_path,
+                source_iteration_id=source_id,
+            )
+    except Exception as exc:
+        logger.warning("Could not update experiment summary (code reuse): %s", exc)
     return CodeStageResult(image_id)

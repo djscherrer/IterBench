@@ -33,6 +33,15 @@ PM2_NOISE_RE = re.compile(
     r")"
 )
 
+CONTAINER_LOGS_MARKER = "container logs:"
+# Application crash inside the test container (not harness / Docker networking).
+APP_STARTUP_CRASH_RE = re.compile(
+    r"(Traceback \(most recent call last\)|"
+    r"ModuleNotFoundError|ImportError:|SyntaxError:|IndentationError:|"
+    r"NameError:|panic!|thread 'main' panicked|FATAL ERROR)",
+    re.IGNORECASE,
+)
+
 INFRA_FAILURE_PATTERNS: tuple[tuple[str, re.Pattern[str], str], ...] = (
     (
         "port_conflict",

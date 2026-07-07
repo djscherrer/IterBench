@@ -8,10 +8,12 @@ from pathlib import Path
 
 from ..workspace.paths import iteration_functional_tests_dir
 from .record import CodeFailureRecord
-from .infra import detect_infrastructure_failure
+from .infra import detect_infrastructure_failure, startup_timeout_is_application_crash
 from .patterns import (
+    APP_STARTUP_CRASH_RE,
     COMPILE_DIAGNOSTIC_RE,
     CONTAINER_ERROR_HINT_RE,
+    CONTAINER_LOGS_MARKER,
     DOCKER_BUILD_FAILED_RE,
     FT_STATUS_RE,
     HARNESS_LINE_RE,
@@ -24,6 +26,23 @@ from .text import filter_compile_diagnostics, strip_harness_noise, tail, trim
 _PER_TEST_TAIL_LINES = 6
 _CONTAINER_ERROR_TAIL_LINES = 14
 _MAX_CONTAINER_ERROR_CHARS = 1600
+
+
+def _app_crash_excerpt_from_section(section_text: str) -> str:
+    """Extract application crash output from a per-test ``container logs:`` section."""
+    if CONTAINER_LOGS_MARKER not in section_text:
+        return ""
+    after = section_text.split(CONTAINER_LOGS_MARKER, 1)[1]
+    lines: list[str] = []
+    for line in after.splitlines():
+        if HARNESS_LINE_RE.match(line) and lines:
+            break
+        stripped = line.rstrip()
+        if stripped:
+            lines.append(stripped)
+    if not lines or not APP_STARTUP_CRASH_RE.search("\n".join(lines)):
+        return ""
+    return trim("\n".join(lines[:_CONTAINER_ERROR_TAIL_LINES]), max_chars=_MAX_CONTAINER_ERROR_CHARS)
 
 
 def _read_test_results(ft_dir: Path) -> tuple[int, int]:
@@ -75,9 +94,15 @@ def _container_error_excerpt_for_test(
     section = lines[start:failed_idx]
 
     infra_evidence = ""
+    section_text = "\n".join(section)
     for line in section:
-        for _kind, pattern, _desc in INFRA_FAILURE_PATTERNS:
+        for kind, pattern, _desc in INFRA_FAILURE_PATTERNS:
             if pattern.search(line):
+                if (
+                    kind == "server_did_not_start"
+                    and startup_timeout_is_application_crash(section_text)
+                ):
+                    continue
                 infra_evidence = line.strip()
                 break
         if infra_evidence:
@@ -103,6 +128,10 @@ def _container_error_excerpt_for_test(
         b for b in blocks if any(CONTAINER_ERROR_HINT_RE.search(l) for l in b)
     ]
     chosen = error_blocks[-1] if error_blocks else (blocks[-1] if blocks else [])
+    if startup_timeout_is_application_crash(section_text):
+        app_crash = _app_crash_excerpt_from_section(section_text)
+        if app_crash:
+            return app_crash
     head = chosen[:_CONTAINER_ERROR_TAIL_LINES] if chosen else []
     body = "\n".join(head)
     if infra_evidence:

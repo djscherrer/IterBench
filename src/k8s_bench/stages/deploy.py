@@ -1,9 +1,9 @@
 """
 Deploy stage (``04-deploy/``): bring the iteration up on the cluster.
 
-Patches ``spec.yaml`` with the bench image, renders manifests, applies them,
-waits for readiness, and records ``04-deploy/probe.json``. Bench assumes this
-stage succeeded before running Locust.
+Applies a deploy-time overlay (registry image, port, labels) when rendering
+manifests — ``03-spec/spec.yaml`` stays the LLM artifact. Records runtime
+fields in ``04-deploy/probe.json``. Bench reads that probe before Locust.
 """
 
 from __future__ import annotations
@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from ..cluster.deploy import DeployResult, deploy_iteration
+from ..cluster.deploy import DeployResult, deploy_iteration, write_deploy_record
 from ..cluster.images import prepare_image_for_k8s
 from ..cluster.load_target import resolve_nodeport_target
 from ..cluster.profiles import selected_cluster_profile
@@ -24,9 +24,80 @@ from ..failure import DeployFailureRecord, fail_iteration_phase
 from ..failure.classify import classify_deploy_failure_kind
 from ..failure.deploy_diagnostics import collect_deploy_failure_diagnostics
 from ..failure.persist import build_deploy_iteration_failure
-from ..iteration import ensure_iteration_spec
 from ..orchestration.config import IterationPlan, RunConfig, SampleContext
-from ..workspace import deploy_probe_record_path, iteration_deploy_dir, resolve_iteration_dir
+from ..spec.models import (
+    BackendSpec,
+    DatabaseSpec,
+    K8sWorkloadSpec,
+)
+from ..workspace import (
+    deploy_probe_record_path,
+    ensure_iteration_core_layout,
+    find_iteration_spec_path,
+    iteration_deploy_dir,
+    resolve_iteration_dir,
+)
+
+
+# ---------------------------------------------------------------------------
+# Deploy overlay (in-memory only; does not rewrite ``03-spec/spec.yaml``)
+# ---------------------------------------------------------------------------
+
+def update_iteration_spec(
+    iteration_path: Path,
+    *,
+    image_reference: str,
+    app_port: int,
+    needs_db: bool,
+    labels: dict[str, str] | None = None,
+) -> K8sWorkloadSpec:
+    """
+    Apply deploy-time fields to the iteration spec in memory before manifest render.
+
+    ``03-spec/spec.yaml`` remains the LLM workload plan. Registry image, framework
+    port, and deploy labels are injected here and persisted in ``probe.json``.
+    """
+    ensure_iteration_core_layout(iteration_path)
+    spec_path = find_iteration_spec_path(iteration_path)
+    if spec_path is None or not spec_path.is_file():
+        raise RuntimeError(
+            f"Missing spec.yaml for {iteration_path.name}; the spec stage (03-spec) "
+            "must produce a workload spec before deploy"
+        )
+    spec = K8sWorkloadSpec.from_yaml_file(spec_path)
+    db = spec.database
+    return K8sWorkloadSpec(
+        iteration_id=spec.iteration_id,
+        namespace=spec.namespace,
+        backend=BackendSpec(
+            image=image_reference,
+            replicas=spec.backend.replicas,
+            port=spec.backend.port or app_port,
+            resources=spec.backend.resources,
+            env=spec.backend.env,
+            placement_workers=spec.backend.placement_workers,
+            spread_replicas=spec.backend.spread_replicas,
+        ),
+        database=DatabaseSpec(
+            enabled=needs_db if needs_db else db.enabled,
+            image=db.image,
+            service_name=db.service_name,
+            port=db.port,
+            replicas=db.replicas,
+            max_connections=db.max_connections,
+            tuning=db.tuning,
+            placement_worker=db.placement_worker,
+            placement_workers=db.placement_workers,
+            resources=db.resources,
+            primary_resources=db.primary_resources,
+            replica_resources=db.replica_resources,
+            cache=db.cache,
+        ),
+        pooler=spec.pooler,
+        read_pooler=spec.read_pooler,
+        cache=spec.cache,
+        labels={**spec.labels, **(labels or {})},
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -120,10 +191,9 @@ def rotate_top_level_into_attempt(
     """Move the current ``04-deploy/`` snapshot into ``attempts/<NNN>/``."""
     phase_dir = iteration_deploy_dir(iteration_path)
     attempt_dir.mkdir(parents=True, exist_ok=True)
-    for name in ("probe.json", "bench.json"):
-        src = phase_dir / name
-        if src.is_file():
-            shutil.move(str(src), str(attempt_dir / name))
+    probe = phase_dir / "probe.json"
+    if probe.is_file():
+        shutil.move(str(probe), str(attempt_dir / "probe.json"))
     for sub in ("manifests",):
         src = phase_dir / sub
         if src.is_dir():
@@ -243,6 +313,8 @@ def run_deploy_attempt(
     details: dict[str, Any] = {}
     deploy_result: DeployResult | None = None
     spec_namespace = ""
+    image_reference = ""
+    deploy_labels = dict(labels or {})
 
     try:
         prepared = prepare_image_for_k8s(
@@ -251,22 +323,26 @@ def run_deploy_attempt(
             profile_name=k8s_cluster,
             logger=logger,
         )
-        spec = ensure_iteration_spec(
+        image_reference = prepared.reference
+        spec = update_iteration_spec(
             iteration_path,
-            image_reference=prepared.reference,
+            image_reference=image_reference,
             app_port=app_port,
             needs_db=needs_db,
-            labels=labels,
+            labels=deploy_labels,
         )
         spec_namespace = spec.namespace
         deploy_result = deploy_iteration(
             iteration_path,
+            spec=spec,
             wait_timeout_s=wait_timeout_s,
-            record_kind="probe",
+            write_record=False,
             logger=logger,
         )
     except Exception as exc:
         logger.warning("deploy attempt raised: %s", exc)
+        if deploy_result is not None:
+            write_deploy_record(iteration_path, deploy_result)
         return _fail_deploy_attempt(
             iteration_path=iteration_path,
             iteration_id=iteration_id,
@@ -279,6 +355,7 @@ def run_deploy_attempt(
         )
 
     if not deploy_result.success:
+        write_deploy_record(iteration_path, deploy_result)
         return _fail_deploy_attempt(
             iteration_path=iteration_path,
             iteration_id=iteration_id,
@@ -299,6 +376,7 @@ def run_deploy_attempt(
     )
     details["backend_endpoints"] = endpoints_msg
     if not endpoints_ok:
+        write_deploy_record(iteration_path, deploy_result)
         return _fail_deploy_attempt(
             iteration_path=iteration_path,
             iteration_id=iteration_id,
@@ -324,6 +402,7 @@ def run_deploy_attempt(
         )
         details["nodeport_target"] = target
     except Exception as exc:
+        write_deploy_record(iteration_path, deploy_result)
         return _fail_deploy_attempt(
             iteration_path=iteration_path,
             iteration_id=iteration_id,
@@ -348,6 +427,7 @@ def run_deploy_attempt(
             )
             details[f"{svc}_endpoints"] = db_msg
             if not db_ok and svc == spec.database.service_name:
+                write_deploy_record(iteration_path, deploy_result)
                 return _fail_deploy_attempt(
                     iteration_path=iteration_path,
                     iteration_id=iteration_id,
@@ -361,6 +441,13 @@ def run_deploy_attempt(
                     namespace=spec.namespace,
                 )
 
+    deploy_result = deploy_result.with_runtime(
+        image_reference=image_reference,
+        backend_port=spec.backend.port,
+        nodeport_target=target,
+        deploy_labels=deploy_labels,
+    )
+    write_deploy_record(iteration_path, deploy_result)
     logger.info("Deploy passed for %s", iteration_path)
     return DeployAttemptResult(ok=True)
 
@@ -460,4 +547,5 @@ __all__ = [
     "rotate_top_level_into_attempt",
     "run_deploy_attempt",
     "run_deploy_stage",
+    "update_iteration_spec",
 ]

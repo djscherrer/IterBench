@@ -294,10 +294,6 @@ def deploy_probe_record_path(iteration_path: Path) -> Path:
     return iteration_deploy_dir(iteration_path) / "probe.json"
 
 
-def deploy_bench_record_path(iteration_path: Path) -> Path:
-    return iteration_deploy_dir(iteration_path) / "bench.json"
-
-
 def iteration_decision_dir(iteration_path: Path) -> Path:
     """Decision phase folder (``01-decision/``)."""
     return iteration_path / PHASE_DECISION_DIRNAME
@@ -762,3 +758,24 @@ def perf_run_dir_for_iteration(
 
     ensure_iteration_core_layout(ip)
     return iteration_bench_dir(ip)
+
+
+def make_k8s_perf_run_dir(
+    sample_dir: Path,
+    iteration_id: str,
+    *,
+    load_profile: str | None = None,
+    experiment_id: str | None = None,
+) -> Path:
+    """Return ``05-bench/`` for an iteration, creating core layout if needed."""
+    import datetime
+
+    prof = re.sub(r"[^a-zA-Z0-9_-]+", "-", (load_profile or "default").strip()) or "default"
+    ts = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+    return perf_run_dir_for_iteration(
+        sample_dir,
+        iteration_id,
+        load_profile=prof,
+        timestamp=ts,
+        experiment_id=experiment_id,
+    )

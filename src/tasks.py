@@ -15,7 +15,6 @@ from collections import defaultdict
 from contextlib import contextmanager
 import datetime
 from dataclasses import dataclass, field
-from sys import exc_info
 from typing import Any, Generator, Optional, Self, Tuple, cast
 
 import docker
@@ -312,20 +311,29 @@ class ContainerRunner:
                 self.logger.warning("Server is not up yet: %s", e)
             if time.time() - start > self.env.wait_to_start_time:
                 self.logger.error("Server did not start in time")
-                self.__exit__(*exc_info())
+                self.__exit__(None, None, None)
+                raise RuntimeError("Server did not start in time")
             self.logger.info("Waiting for server to start...")
             time.sleep(1.0)
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb) -> None:  # type: ignore[no-untyped-def]
         # Cleanup application container
-        if self.container is not None:
-            container_logs = cast(
-                bytes, self.container.logs(stdout=True, stderr=True, follow=False)
-            )
-            self.logger.info("container logs:\n%s", container_logs.decode())
-            self.container.remove(force=True)
-            self.logger.info("removed container")
+        if self._container is not None:
+            container = self._container
+            self._container = None
+            try:
+                container_logs = cast(
+                    bytes, container.logs(stdout=True, stderr=True, follow=False)
+                )
+                self.logger.info("container logs:\n%s", container_logs.decode())
+            except Exception as e:
+                self.logger.warning("could not fetch container logs: %s", e)
+            try:
+                container.remove(force=True)
+                self.logger.info("removed container")
+            except Exception as e:
+                self.logger.warning("could not remove container: %s", e)
 
         # Cleanup Postgres container
         if self._postgres_manager is not None:
@@ -465,7 +473,7 @@ class Task:
         sample: int,
         iteration_id: str,
     ) -> pathlib.Path:
-        from k8s_bench.iteration import make_k8s_perf_run_dir
+        from k8s_bench.workspace import make_k8s_perf_run_dir
 
         return make_k8s_perf_run_dir(
             self.get_sample_dir(results_dir, sample),

@@ -90,7 +90,7 @@ def materialize_code_lineage(
     Copy prior application code and FT artifacts into ``02-code/``.
 
     Used for spec-only iterations so each folder is self-contained and
-    deploy/bench can reuse the prior docker image without rerunning codegen.
+    deploy/bench stages can reuse the prior docker image without rerunning codegen.
     """
     code_dest = iteration_code_snapshot_dir(iteration_path)
     if code_dest.is_dir() and any(code_dest.iterdir()):

@@ -5,8 +5,25 @@ from __future__ import annotations
 from pathlib import Path
 
 from .record import CodeFailureRecord
-from .patterns import INFRA_FAILURE_PATTERNS
+from .patterns import (
+    APP_STARTUP_CRASH_RE,
+    CONTAINER_LOGS_MARKER,
+    INFRA_FAILURE_PATTERNS,
+)
 from .text import trim
+
+
+def startup_timeout_is_application_crash(test_log: str) -> bool:
+    """True when a start-timeout was caused by the app crashing, not the harness."""
+    idx = test_log.find("Server did not start in time")
+    if idx < 0:
+        return False
+    after = test_log[idx:]
+    logs_idx = after.find(CONTAINER_LOGS_MARKER)
+    if logs_idx < 0:
+        return False
+    section = after[logs_idx : logs_idx + 4_000]
+    return bool(APP_STARTUP_CRASH_RE.search(section))
 
 
 def detect_infrastructure_failure(test_log: str) -> CodeFailureRecord.InfrastructureFailure | None:
@@ -19,6 +36,10 @@ def detect_infrastructure_failure(test_log: str) -> CodeFailureRecord.Infrastruc
             if not m:
                 continue
             detail = description
+            if kind == "server_did_not_start" and startup_timeout_is_application_crash(
+                test_log
+            ):
+                continue
             if kind == "port_conflict":
                 port = m.groupdict().get("port")
                 if port:

@@ -85,10 +85,10 @@ MODEL="${MODEL_ESC/-//}"
 RESULTS_DIR="$(dirname "$(dirname "$(dirname "$(dirname "$(dirname "$SAMPLE_DIR")")")")")"
 
 if [ "$KEEP_BENCH" != "true" ]; then
-  rm -f "$ITER/04-deploy/probe.json" "$ITER/04-deploy/bench.json"
+  rm -f "$ITER/04-deploy/probe.json"
   rm -rf "$ITER/05-bench"
   rm -f "$ITER/iteration.log"
-  echo "Cleared stale deploy/bench artifacts under $ITER"
+  echo "Cleared stale 04-deploy/05-bench artifacts under $ITER"
 fi
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"

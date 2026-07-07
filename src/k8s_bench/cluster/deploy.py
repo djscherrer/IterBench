@@ -3,19 +3,16 @@ from __future__ import annotations
 import json
 import logging
 import subprocess
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Literal, Sequence
+from typing import Sequence
 
 from ..workspace.paths import (
-    deploy_bench_record_path,
     deploy_probe_record_path,
     iteration_manifests_dir,
     require_iteration_spec_path,
 )
-
-DeployRecordKind = Literal["probe", "bench"]
 
 
 @dataclass(frozen=True)
@@ -29,9 +26,30 @@ class DeployResult:
     stdout: str
     stderr: str
     wait_details: dict[str, str]
+    # Runtime snapshot (filled after a successful deploy probe; not in LLM spec.yaml).
+    image_reference: str = ""
+    backend_port: int = 0
+    nodeport_target: str = ""
+    deploy_labels: dict[str, str] = field(default_factory=dict)
 
     def to_dict(self) -> dict:
         return asdict(self)
+
+    def with_runtime(
+        self,
+        *,
+        image_reference: str,
+        backend_port: int,
+        nodeport_target: str,
+        deploy_labels: dict[str, str] | None = None,
+    ) -> DeployResult:
+        return replace(
+            self,
+            image_reference=image_reference,
+            backend_port=backend_port,
+            nodeport_target=nodeport_target,
+            deploy_labels=dict(deploy_labels or {}),
+        )
 
 
 def _kubectl(
@@ -241,17 +259,9 @@ def apply_manifests(
     )
 
 
-def write_deploy_record(
-    iteration_path: Path,
-    result: DeployResult,
-    *,
-    kind: DeployRecordKind = "bench",
-) -> Path:
-    path = (
-        deploy_probe_record_path(iteration_path)
-        if kind == "probe"
-        else deploy_bench_record_path(iteration_path)
-    )
+def write_deploy_record(iteration_path: Path, result: DeployResult) -> Path:
+    """Persist deploy outcome to ``04-deploy/probe.json``."""
+    path = deploy_probe_record_path(iteration_path)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(result.to_dict(), indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return path
@@ -266,8 +276,9 @@ def delete_iteration_namespace(namespace: str, *, logger: logging.Logger | None 
 def deploy_iteration(
     iteration_path: Path,
     *,
+    spec: "K8sWorkloadSpec | None" = None,
     wait_timeout_s: int = 300,
-    record_kind: DeployRecordKind = "bench",
+    write_record: bool = True,
     logger: logging.Logger | None = None,
 ) -> DeployResult:
     from ..spec.models import K8sWorkloadSpec
@@ -277,9 +288,9 @@ def deploy_iteration(
     log = logger or logging.getLogger(__name__)
     cleanup_baxbench_namespaces_before_deploy(logger=log)
 
-    # Spec may be patched after generation (e.g. real registry image replaces placeholder).
-    spec_path = require_iteration_spec_path(iteration_path)
-    spec = K8sWorkloadSpec.from_yaml_file(spec_path)
+    if spec is None:
+        spec_path = require_iteration_spec_path(iteration_path)
+        spec = K8sWorkloadSpec.from_yaml_file(spec_path)
     manifest_file = write_manifest_files(spec, iteration_manifests_dir(iteration_path))
     waits: list[str] = ["deployment/backend"]
     statefulset_waits: list[str] = []
@@ -313,7 +324,8 @@ def deploy_iteration(
         statefulset_wait_timeout_s=statefulset_wait_timeout_s,
         logger=log,
     )
-    write_deploy_record(iteration_path, result, kind=record_kind)
+    if write_record:
+        write_deploy_record(iteration_path, result)
     return result
 
 
@@ -325,5 +337,5 @@ def render_and_deploy(
 ) -> DeployResult:
     result = deploy_iteration(iteration_path, wait_timeout_s=wait_timeout_s, logger=logger)
     if not result.success:
-        raise RuntimeError(f"K8s deploy failed for {iteration_path}; see deploy/bench.json")
+        raise RuntimeError(f"K8s deploy failed for {iteration_path}; see 04-deploy/probe.json")
     return result
