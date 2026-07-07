@@ -1,0 +1,245 @@
+% =============================================================
+%  Chapter 2 — Related Work (full draft)
+% =============================================================
+%  Matches the structure in 01-paper-analysis.md:
+%    §2.1  LLM code generation and backend evaluation benchmarks
+%    §2.2  Reliable and verifiable LLM code generation
+%    §2.3  Deployment configuration and cluster tuning
+%    §2.4  LLM-driven performance optimization
+%    §2.5  Positioning of this work
+% =============================================================
+
+\chapter{Related Work}
+\label{ch:related-work}
+
+
+% ----- §2.1  Benchmarks -----
+\section{LLM Code Generation and Backend Evaluation Benchmarks}
+\label{sec:rw-benchmarks}
+
+Evaluation of large language models for software engineering has progressed
+along a clear trajectory of increasing scope and realism.
+HumanEval~\cite{chen2021humaneval} established pass@$k$ as the standard metric
+for single-function Python synthesis from natural-language specifications.
+MBPP and related suites extended this to short programs with broader test
+coverage.  SWE-bench~\cite{jimenez2024swebench} moved evaluation to the
+repository level, requiring models to resolve real GitHub issues by producing
+patches that pass project test suites.  These benchmarks measure whether
+generated software is \emph{correct} at increasing scales of context, but they
+do not assess complete backend services, security properties, or runtime
+performance under deployment.
+
+\textsc{BaxBench}~\cite{vero2025baxbench} addresses the application layer:
+392~tasks across 28~scenarios, 14~frameworks, and 6~languages, evaluating
+whether LLMs can generate \emph{complete} backend applications that pass
+functional tests and resist security exploits.  Results show that even strong
+models achieve only moderate functional correctness and that a large fraction of
+correct code remains insecure.  Complementary work by CWEval~\cite{peng2025cweval}
+jointly evaluates functionality and security with outcome-driven test oracles,
+demonstrating that prior security benchmarks can substantially overestimate
+safety.  SecRepoBench~\cite{shen2026secrepobench} extends secure-code evaluation
+to repository-level \emph{code agents}, combining developer unit tests with
+OSS-Fuzz security tests across 318~completion tasks in real C/C++ projects.
+
+CodeFlowBench~\cite{wang2025codeflowbench} introduces a complementary dimension:
+\emph{multi-turn iterative} code generation (``codeflow''), where new
+functionality is built by reusing functions implemented in earlier turns.
+Experiments show significant performance degradation relative to single-turn
+generation as dependency complexity grows, highlighting that iterative software
+construction is a distinct and difficult evaluation setting.
+
+Together, these benchmarks characterise whether LLM-generated software is
+correct, secure, or constructible over multiple turns.  However, they
+typically execute programs in isolated containers without orchestrated
+deployment, shared cluster resources, or load testing.  None measures
+\emph{sustainable throughput} when an application is deployed as a replicated
+service on Kubernetes---the gap our work addresses.
+
+
+% ----- §2.2  Reliability -----
+\section{Reliable and Verifiable LLM Code Generation}
+\label{sec:rw-reliability}
+
+Because unconstrained LLM output is often syntactically invalid or semantically
+incorrect, a line of work seeks to improve reliability before any deployment
+attempt.  Synchromesh~\cite{poesia2022synchromesh} combines Target Similarity
+Tuning for few-shot example selection with Constrained Semantic Decoding, which
+restricts token sampling to programs satisfying grammar, typing, and domain
+constraints---eliminating whole classes of parse and runtime errors without
+fine-tuning the underlying language model.
+
+Clover~\cite{sun2023clover} proposes \emph{closed-loop verifiable} code
+generation: the model produces code together with formal annotations and
+natural-language docstrings, and a consistency checker validates alignment among
+all three using formal verification tools coupled with LLMs.  On textbook-level
+Dafny programs, the approach achieves high acceptance of correct instances while
+maintaining zero tolerance for adversarial incorrect ones.
+
+VERGE~\cite{singh2026verge} applies a related closed-loop pattern to logical
+reasoning: LLM outputs are decomposed into claims, autoformalized, and verified
+with SMT solvers; Minimal Correction Subsets provide actionable refinement
+feedback across iterations.
+
+Our framework shares the principle that LLM artifacts must pass hard gates
+before downstream stages proceed, but we enforce reliability through BaxBench
+functional tests and schema-validated deployment specifications rather than
+formal verification or constrained decoding of source code.  Reliability in our
+setting is necessary yet insufficient: a deployment that passes tests may still
+perform poorly under load, motivating the performance-oriented loop described in
+Sections~\ref{sec:rw-cluster} and~\ref{sec:rw-llm-perf}.
+
+
+% ----- §2.3  Cluster tuning -----
+\section{Deployment Configuration and Cluster Tuning}
+\label{sec:rw-cluster}
+
+Production backends run on container orchestration platforms rather than in
+isolation.  Burns~et~al.~\cite{burns2016borg} document how Google's Borg,
+Omega, and Kubernetes evolved to schedule workloads, enforce resource isolation,
+and maintain declarative desired state across large clusters.  In Kubernetes,
+operators express deployment intent through replica counts, CPU and memory
+requests and limits, affinity rules, and service definitions; the control plane
+continuously reconciles cluster state with that intent.
+
+Day-to-day performance tuning often relies on \emph{reactive} autoscaling.
+The Horizontal Pod Autoscaler (HPA)~\cite{kubernetes-hpa} adjusts replica
+count from live metrics such as CPU utilisation or custom request rates; the
+Vertical Pod Autoscaler adjusts per-pod resource requests.  These mechanisms
+optimise scale within a \emph{fixed} deployment template.  They do not reason
+about database topology, connection pooling, pod placement across worker nodes,
+or joint trade-offs between application code and infrastructure layout.  Nor do
+they perform multi-iteration search guided by structured post-load-test
+diagnostics.
+
+Learned cluster management predates LLM agents.  Decima~\cite{mao2019decima}
+uses deep reinforcement learning to discover scheduling policies for data-
+processing clusters that outperform hand-tuned heuristics.  Like classical
+knob-tuning systems, Decima optimises \emph{policies or parameters} within a
+fixed system architecture rather than revising application code or declarative
+deployment manifests for arbitrary HTTP services.
+
+More recently, Glia~\cite{hamadanian2025glia} applies a multi-agent LLM
+architecture---combining reasoning, experimentation, and analysis---to design
+systems mechanisms for a distributed GPU cluster running LLM inference.  The
+system autonomously proposes algorithms for request routing, job scheduling,
+and autoscaling that match human-expert quality in substantially less time, with
+interpretable designs grounded in empirical feedback.  Glia is the closest prior
+work to our setting in combining \emph{LLM reasoning} with \emph{measured
+performance feedback} for infrastructure behaviour.  Our work differs in three
+respects: we target \emph{general BaxBench backend applications} rather than
+inference-serving stacks; we optimise a \emph{constrained deployment
+specification} (\texttt{spec.yaml}) rather than generating new routing or
+scheduling algorithms; and we score iterations by \emph{adaptive load-test
+goodput} on a multi-node Kubernetes cluster with explicit correctness gates
+before each benchmark.
+
+No prior system in this line evaluates whether an LLM agent can \emph{iteratively}
+refine replica topology, resource allocation, placement, and optional
+application code for LLM-generated web backends using sustainable-throughput
+feedback---the problem our framework formalises.
+
+
+% ----- §2.4  Performance optimization -----
+\section{LLM-Driven Performance Optimization}
+\label{sec:rw-llm-perf}
+
+A growing body of work asks whether LLMs can improve \emph{performance}, not
+merely correctness.  SWE-Perf~\cite{he2025sweperf} is the first benchmark for
+repository-level \emph{code} performance optimisation: 140~instances derived
+from performance-improving pull requests, each with performance tests and
+expert reference patches.  Evaluations of Agentless~\cite{xia2024agentless},
+OpenHands, and related approaches reveal a substantial gap between current LLMs
+and expert optimisers.  The benchmark is largely \emph{one-shot}: the model
+receives a codebase and must emit an optimised patch without iterative runtime
+feedback from executing the system under load.
+
+Agentic systems have begun to close the loop with measurement.
+VibeServe~\cite{kamahori2025vibeserve} synthesises bespoke LLM serving runtimes
+through a two-level multi-agent loop.  An outer planner maintains an issue
+tracker and git-recorded optimisation history; an inner loop separates
+implementation, accuracy judging, and performance evaluation.  On standard
+Llama serving, generated systems match vLLM; on non-standard model--hardware--
+workload combinations, they achieve large speedups by specialising kernels,
+memory management, and scheduling logic.
+
+Liu~et~al.~\cite{liu2025jitsystems} argue for \emph{Just-in-Time Systems}:
+LLM agents can synthesise entire key-value stores from specification cards
+describing environment, workload, and required properties.  Their pipeline
+(\textsc{Jitskit}) iterates through planning, coding, evaluation with leading
+indicators, and critic-guided reflection, with an adversarial auditor that
+detects reward hacking.  Synthesised stores outperform FASTER, RocksDB, and
+Redis on all 18~configurations tested (up to $4.6\times$ on the most favourable
+spec).
+
+Our framework shares the iterative structure of VibeServe and Jitskit---each
+round produces a candidate, passes correctness gates, is benchmarked, and
+feeds structured diagnostics to the next iteration---but operates at a different
+level of the stack.  SWE-Perf optimises \emph{source code}; VibeServe and
+Jitskit synthesise \emph{system implementations}; we optimise \emph{Kubernetes
+deployment configuration} (and optionally application code) for BaxBench
+backends, using \emph{goodput}---sustained successful requests per second---as
+the primary objective under an adaptive load profile.
+
+
+% ----- §2.5  Positioning -----
+\section{Positioning of This Work}
+\label{sec:rw-positioning}
+
+Table~\ref{tab:rw-comparison} summarises how representative systems relate to
+our framework across evaluation target, feedback structure, and deployment
+environment.  Benchmarks through CodeFlowBench establish correctness, security,
+and multi-turn code quality but not cluster performance.  Reliability methods
+(Synchromesh, Clover) and cluster tooling (autoscaling, Decima, Glia) address
+trust and infrastructure tuning without benchmarking full LLM-generated backends
+under adaptive load.  SWE-Perf, VibeServe, and Jitskit demonstrate LLM-driven
+performance optimisation at the code or implementation level.
+
+Our thesis occupies the intersection BaxBench leaves open: \emph{iterative
+deployment optimisation} of complete backend applications on a real Kubernetes
+cluster, with the agent controlling both application code and a validated
+deployment specification, and with each iteration scored by measured goodput
+rather than static tests alone.
+
+\begin{table}[t]
+  \centering
+  \caption{Comparison of related approaches (selected dimensions).}
+  \label{tab:rw-comparison}
+  \small
+  \begin{tabular}{@{}l c c c c c@{}}
+    \toprule
+    & \textbf{BaxBench} & \textbf{Glia} & \textbf{SWE-Perf} &
+      \textbf{VibeServe} & \textbf{This work} \\
+    \midrule
+    Primary focus
+      & Func.+sec.
+      & Mechanism design
+      & Code perf.
+      & Serving runtime
+      & Deploy perf. \\
+    Iterative loop
+      & No
+      & Yes
+      & No
+      & Yes
+      & Yes \\
+    Runtime load test
+      & No
+      & Yes
+      & Perf.\ tests
+      & Yes
+      & Yes \\
+    Environment
+      & Docker
+      & GPU cluster
+      & Local/CI
+      & Single GPU
+      & Multi-node K8s \\
+    Agent controls
+      & Code
+      & Algorithms
+      & Code patches
+      & System code
+      & Code + spec \\
+    \bottomrule
+  \end{tabular}
+\end{table}

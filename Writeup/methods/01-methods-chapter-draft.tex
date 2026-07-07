@@ -1,0 +1,598 @@
+% =============================================================
+%  Chapter 3 — Methods (complete draft)
+% =============================================================
+%  Companion notes: Writeup/methods/*.md
+%  TODO markers: fill cluster hardware table with your lab values.
+% =============================================================
+
+\chapter{Methods}
+\label{ch:methods}
+
+
+% ----- §3.1  Overview -----
+\section{Overview}
+\label{sec:methods-overview}
+
+This chapter describes how we extend \textsc{BaxBench} with an iterative
+deploy--benchmark--refine loop on a real Kubernetes cluster.  The operational
+research question is:
+
+\begin{quote}
+  \emph{Given a BaxBench backend scenario and a cluster with fixed capacity,
+  can an LLM agent iteratively improve sustainable throughput by refining
+  application code and/or deployment configuration, while preserving functional
+  correctness?}
+\end{quote}
+
+We optimise \textbf{goodput}---the sustained rate of successful HTTP
+responses---under an adaptive load profile.  The agent never edits raw
+Kubernetes manifests; it controls a constrained deployment specification
+(\texttt{spec.yaml}) and optionally application source code.  The framework
+owns manifest rendering, validation, deployment orchestration, load testing,
+and feedback aggregation.
+
+The remainder of this chapter proceeds as follows.
+Section~\ref{sec:methods-architecture} presents the system architecture.
+Section~\ref{sec:methods-workflow} defines the experimental workflow and
+iteration model.
+Section~\ref{sec:methods-phases} details each pipeline phase.
+Section~\ref{sec:methods-failure} specifies failure handling and iteration
+routing.
+Section~\ref{sec:methods-design} states design principles and constraints.
+Section~\ref{sec:methods-metrics} defines evaluation metrics.
+Section~\ref{sec:methods-implementation} summarises the implementation.
+
+
+% ----- §3.2  Architecture -----
+\section{System Architecture}
+\label{sec:methods-architecture}
+
+\subsection{Motivation for a Real Cluster}
+
+\textsc{BaxBench} evaluates generated backends in isolated Docker containers on
+a single host.  Production deployments differ materially: multiple replicas
+compete for CPU and memory, the scheduler places pods across worker nodes,
+database topology affects connection pressure, and network paths between load
+generators and services influence latency.  Our extension deploys each
+candidate to a multi-node Kubernetes cluster so that performance measurements
+reflect orchestration decisions rather than single-container behaviour alone.
+
+\subsection{Components}
+
+The experiment involves four logical subsystems (Figure~\ref{fig:architecture}
+% TODO: insert architecture figure
+).
+
+\paragraph{Kubernetes cluster.}
+A control-plane node runs the Kubernetes API server and scheduler.  One or more
+worker nodes host application and database pods.  In our laboratory setup
+(profile \texttt{baxbench-emulab}), the control-plane host also runs the
+BaxBench orchestrator and an optional private container registry; workers are
+dedicated compute nodes.  Each iteration receives an isolated namespace
+(\texttt{baxbench-*}) that is torn down after benchmarking to prevent resource
+leakage on the fixed-size cluster.
+
+\paragraph{Load generation.}
+Distributed Locust~\cite{locust} generates HTTP traffic against the Kubernetes
+Service fronting the backend Deployment.  A Locust master coordinates workers
+that may run on hosts separate from application pods, reducing the risk that
+load-generator CPU contention distorts application measurements.
+
+\paragraph{BaxBench orchestrator.}
+A host with Docker, LLM API access, and \texttt{kubectl} executes the
+experiment pipeline: LLM calls for code, deployment specification, and
+refinement decisions; functional test execution; container image build and
+registry push; manifest rendering and cluster apply; Locust orchestration;
+diagnostics collection; and structured feedback writing.
+
+\paragraph{External LLM.}
+The refinement agent is accessed via an API (e.g.\ OpenRouter).  Each
+experiment uses one \textbf{persistent conversation} per sample, persisted as
+\texttt{conversation.json} and reloaded on resume.
+
+\subsection{Responsibility Split}
+
+Table~\ref{tab:responsibility-split} summarises the division of labour between
+the LLM agent and the framework.
+
+\begin{table}[t]
+  \centering
+  \caption{Responsibility split between LLM agent and framework.}
+  \label{tab:responsibility-split}
+  \small
+  \begin{tabular}{@{}p{0.42\linewidth} p{0.48\linewidth}@{}}
+    \toprule
+    \textbf{LLM agent} & \textbf{Framework (BaxBench K8s extension)} \\
+    \midrule
+    Application source code &
+      OpenAPI scenario, functional tests, Dockerfile templates \\
+    Deployment parameters in \texttt{spec.yaml} &
+      Schema validation, manifest rendering, \texttt{kubectl} apply \\
+    Refinement routing decision (code vs.\ deployment) &
+      Namespace lifecycle, readiness probes, Locust orchestration \\
+    Interpretation of benchmark feedback &
+      Diagnostics collectors, feedback compression, artifact layout \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+This split bounds the agent's search space, keeps experiments reproducible,
+and separates deployment \emph{reasoning} from infrastructure \emph{syntax}.
+
+\subsection{Image and Deployment Flow}
+
+After functional tests pass, the framework builds a container image from the
+generated application, tags it, and pushes it to the cluster registry when
+enabled.  Workers pull the image according to the rendered Deployment
+specification.  The agent's \texttt{spec.yaml} selects replica count, per-pod
+resource requests and limits, optional node placement, and database topology;
+the framework translates these fields into Deployments, Services, and database
+resources.
+
+
+% ----- §3.3  Workflow -----
+\section{Experimental Workflow}
+\label{sec:methods-workflow}
+
+\subsection{Samples, Experiments, and Iterations}
+
+A \textbf{sample} is one BaxBench code-generation run: a tuple of scenario,
+framework, language, model, temperature, and related configuration.  Results
+are stored under a per-sample directory (e.g.\
+\texttt{results/<model>/<scenario>/<framework>/sample0/}).
+
+A \textbf{Kubernetes experiment} groups all refinement iterations for that
+sample under \texttt{k8s-experiments/<slug>/}, where \texttt{<slug>} is a
+human-chosen label (e.g.\ \texttt{05-07-final-validation-13-12}).  Each
+experiment writes an append-only trajectory log
+(\texttt{experiment\_summary.md}) and an LLM cost ledger.
+
+An \textbf{iteration} is one full pass through the pipeline:
+decision $\to$ code $\to$ spec $\to$ deploy $\to$ bench $\to$ outcome.
+Iteration~\texttt{000} is the \emph{baseline}; iterations \texttt{001} through
+\texttt{N} are \emph{refinement} rounds.  The CLI flag \texttt{--k8s-iterations
+N} sets the number of refinement phases after baseline.
+
+\subsection{Pipeline Overview}
+
+For each iteration, the framework executes stages in a fixed order
+(Figure~\ref{fig:pipeline}
+% TODO: insert pipeline / sequence diagram
+):
+
+\begin{enumerate}
+  \item \textbf{Decision} --- refinement routing (skipped on iteration~000).
+  \item \textbf{Code} --- generate or reuse application source; run functional
+        tests; build container image.
+  \item \textbf{Spec} --- generate or reuse \texttt{spec.yaml}; validate;
+        optional deploy probe during baseline spec retries.
+  \item \textbf{Deploy} --- apply manifests; wait for pods Ready and Service
+        endpoints.
+  \item \textbf{Bench} --- distributed Locust load test with adaptive profile.
+  \item \textbf{Outcome} --- label success/failure; write feedback for the next
+        iteration.
+\end{enumerate}
+
+\subsection{Baseline Phase (Iteration 000)}
+
+The baseline establishes a functionally correct application and a
+cluster-feasible deployment before any performance-oriented refinement.
+
+\paragraph{Code.}
+The LLM generates application code from the BaxBench scenario (OpenAPI
+specification).  The framework allows multiple attempts
+(\texttt{baseline\_code\_max\_attempts}, default~10 in our experiments).  Each
+attempt must pass BaxBench functional tests before an image is built.  If all
+attempts fail, the sample aborts: refinement cannot proceed without a correct
+baseline application.
+
+\paragraph{Spec.}
+The LLM proposes an initial \texttt{spec.yaml} given cluster capacity summary
+and scenario context.  Multiple attempts are permitted
+(\texttt{baseline\_spec\_max\_attempts}, default~10).  Each attempt undergoes
+static validation and a deploy probe (pods Ready, endpoints populated).  Failure
+after all attempts aborts the sample.
+
+\paragraph{Deploy, bench, outcome.}
+On acceptance, the framework deploys the stack, runs the load benchmark, and
+writes structured feedback consumed by iteration~001.  The iteration folder is
+named \texttt{iteration-000-baseline/}.
+
+\subsection{Refinement Phases (Iterations 001--N)}
+
+Each refinement iteration aims to improve goodput using feedback from the last
+\textbf{successful} deployment.
+
+\paragraph{Decision.}
+Unless overridden by CLI (\texttt{--k8s-refinement auto|deployment|code}), an
+LLM chooses whether to refine \emph{deployment} (\texttt{spec.yaml}) or
+\emph{code} (application implementation).  The decision is logged with a
+structured rationale.
+
+\paragraph{Code and spec (conditional).}
+Depending on the refinement action:
+\begin{itemize}
+  \item \textbf{Deployment path:} reuse code from the latest successful
+        iteration; generate one new \texttt{spec.yaml} attempt.
+  \item \textbf{Code path:} generate one code refinement attempt with
+        benchmark feedback; reuse the last passing \texttt{spec.yaml}.
+\end{itemize}
+Refinement allows only \textbf{one} LLM attempt per lever (fail-fast), unlike
+the generous baseline retries.
+
+\paragraph{Deploy, bench, outcome.}
+Identical to baseline.  Folder names encode the action, e.g.\
+\texttt{iteration-003-spec/} or \texttt{iteration-004-code/}.
+
+\subsection{Agent Memory Model}
+
+Unlike single-shot BaxBench codegen, each Kubernetes experiment maintains
+\textbf{one conversational thread} per sample.  A shared \texttt{Prompter}
+accumulates user prompts and assistant replies across all phases and iterations;
+after each phase the history is written to
+\texttt{k8s-experiments/<slug>/conversation.json} so resumed runs continue
+the same thread.
+
+Each new phase \textbf{appends} a user turn rather than starting from scratch.
+The model therefore retains access to its own prior codegen, spec proposals,
+decisions, and rationales from earlier rounds.
+
+To limit token growth, prompts follow a \textbf{slimming} policy
+(Section~\ref{sec:methods-outcome}): the decision phase embeds full benchmark
+telemetry inline (Locust summary, diagnostics pointers); subsequent spec and
+code phases reference earlier turns by label (e.g.\ ``see \texttt{<SPEC>} in
+conversation history'') instead of re-inlining large artifacts.  Structured
+files such as \texttt{iteration\_feedback.json} and
+\texttt{experiment\_summary.md} support orchestration, plotting, and audit;
+they complement the conversation rather than replacing it.
+
+Per-phase \texttt{prompt.log} and \texttt{phase.log} files preserve the exact
+user turn sent in that call for reproducibility.
+
+
+% ----- §3.4  Phases -----
+\section{Iteration Phases}
+\label{sec:methods-phases}
+
+\subsection{Decision Phase}
+\label{sec:methods-decision}
+
+The decision phase (\texttt{01-decision/}) runs only for refinement iterations
+($\geq 1$).  The LLM responds with structured tags, e.g.\
+\texttt{<DECISION>deployment</DECISION>} and
+\texttt{<RATIONALE>...</RATIONALE>}, persisted as \texttt{decision.json}.
+
+When iteration $N{-}1$ \textbf{succeeded}, the decision LLM runs (or the CLI
+forces \texttt{deployment} or \texttt{code}).  When iteration $N{-}1$
+\textbf{failed}:
+\begin{itemize}
+  \item \textbf{code failure} $\Rightarrow$ force \texttt{code} refinement
+        (decision LLM skipped);
+  \item \textbf{spec failure} $\Rightarrow$ force \texttt{deployment}
+        refinement;
+  \item \textbf{deploy failure} $\Rightarrow$ decision LLM chooses freely.
+\end{itemize}
+This routing is specified in Section~\ref{sec:methods-failure}.
+
+Motivation: deployment tuning and code optimisation are coupled but costly to
+change jointly; single-lever iterations yield clearer attribution in results.
+
+
+\subsection{Code Generation and Functional Tests}
+\label{sec:methods-code}
+
+The code phase (\texttt{02-code/}) produces a container-ready application.
+
+\paragraph{Modes.}
+\begin{itemize}
+  \item \textbf{Baseline:} LLM codegen from scenario; multiple attempts until
+        tests pass or budget exhausted.
+  \item \textbf{Code refinement:} single LLM attempt using benchmark and
+        functional-test feedback; instructs performance improvements without
+        breaking the API contract.
+  \item \textbf{Deployment refinement:} copy code tree from latest successful
+        iteration (lineage copy); no regeneration.
+\end{itemize}
+
+\paragraph{Functional tests.}
+BaxBench scenario tests (\texttt{Task.test\_code}) gate all paths that produce
+new images.  Performance optimisation never proceeds with a failing API
+implementation.  On refinement code failure, the iteration is labelled
+\texttt{*-code-failed}; live lineage reverts to the last passing snapshot.
+
+\paragraph{Image build.}
+After tests pass, Docker builds and tags the image, pushes to the registry when
+configured, and records \texttt{image\_id} for deploy.
+
+
+\subsection{Deployment Specification}
+\label{sec:methods-spec}
+
+The spec phase (\texttt{03-spec/}) is central to our contribution: the agent
+outputs \texttt{spec.yaml}, not raw Kubernetes YAML.  The framework validates
+and renders manifests.
+
+\paragraph{Agent-controlled fields.}
+Table~\ref{tab:spec-schema} lists the main knobs.
+
+\begin{table}[t]
+  \centering
+  \caption{Deployment specification schema (agent-controlled fields).}
+  \label{tab:spec-schema}
+  \small
+  \begin{tabular}{@{}ll@{}}
+    \toprule
+    \textbf{Component / field} & \textbf{Effect} \\
+    \midrule
+    \texttt{backend.replicas} & Horizontal scale behind Service \\
+    \texttt{backend.resources.*} & Per-pod CPU/memory request and limit \\
+    \texttt{backend.placement.workers} & Optional node allow-list \\
+    \texttt{backend.placement.spread\_replicas} & Anti-affinity across nodes \\
+    \texttt{database.replicas} & Single pod or primary + read replicas \\
+    \texttt{database.max\_connections} & Postgres connection ceiling \\
+    \texttt{database.resources.*} & Per database pod resources \\
+    \texttt{database.placement.*} & Pin or restrict DB placement \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\paragraph{Static validation.}
+Before deploy, the framework checks:
+\begin{enumerate}
+  \item each pod's resource \emph{requests} fit on at least one worker;
+  \item cluster-wide requested resources do not exceed advertised capacity;
+  \item connection budget:
+        $\text{backend.replicas} \times \text{pool\_size} \leq
+         \text{database.max\_connections}$.
+\end{enumerate}
+
+\paragraph{Deploy probe (baseline spec retries).}
+During baseline spec attempts, the framework may apply manifests and verify pods
+reach Ready state and Service endpoints are populated---without HTTP load.
+This separates \emph{schedulable layout} from \emph{performant under load}.
+
+\paragraph{Prompt design.}
+Spec prompts document field semantics and hard constraints only; they omit
+recommended numeric ranges.  The agent must interpret Locust and resource
+utilisation signals across iterations.
+
+
+\subsection{Deploy and Readiness Probe}
+\label{sec:methods-deploy}
+
+The deploy phase (\texttt{04-deploy/}) applies rendered manifests to an
+isolated namespace, deletes prior \texttt{baxbench-*} namespaces to free
+cluster resources, and waits for readiness.
+
+\begin{table}[t]
+  \centering
+  \caption{Two-stage gating: deploy probe vs.\ load benchmark.}
+  \label{tab:deploy-vs-bench}
+  \small
+  \begin{tabular}{@{}lp{0.62\linewidth}@{}}
+    \toprule
+    \textbf{Stage} & \textbf{Question answered} \\
+    \midrule
+    Deploy probe & Can this layout be scheduled and become ready? \\
+    Locust bench & What sustainable throughput does it achieve under load? \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+Deploy failure labels the iteration \texttt{deploy-failed} without forcing a
+particular refinement lever on the next round (Section~\ref{sec:methods-failure}).
+Artifacts include \texttt{probe.json} and phase logs; Kubernetes events may be
+captured in diagnostics.
+
+
+\subsection{Load Benchmark}
+\label{sec:methods-bench}
+
+The benchmark phase (\texttt{05-bench/}) measures runtime performance using
+distributed Locust with BaxBench scenario task definitions---the same API
+surface exercised by functional tests.
+
+\subsubsection{Adaptive Load Profile}
+
+Fixed request rates require per-application tuning and do not automatically
+find the capacity knee.  We use the \texttt{k8s-goodput-plateau} profile
+(default in \texttt{scripts/bench\_k8s.sh}), which:
+\begin{enumerate}
+  \item warms up at an initial user count (discarding transient measurements);
+  \item ramps virtual users in steps while the system remains healthy;
+  \item backs off when overload is detected;
+  \item stops when marginal goodput growth flattens (plateau).
+\end{enumerate}
+
+\paragraph{Overload rules.}
+A load step is treated as overloaded if \emph{any} of:
+\begin{itemize}
+  \item step failure rate $> 2\%$;
+  \item p95 latency $> 1000$\,ms;
+  \item goodput drops below $90\%$ of the best value observed so far.
+\end{itemize}
+On overload, the controller reduces users and optionally waits for in-flight
+requests to drain before continuing.
+
+\paragraph{Primary metric: goodput.}
+\textbf{Goodput} is the sustained rate of \emph{successful} HTTP responses
+(requests per second excluding failures).  Raw throughput at high error rates
+is not treated as improvement; spec and code prompts align the agent with
+goodput maximisation.
+
+\paragraph{Iteration score.}
+We report two related quantities:
+\begin{itemize}
+  \item \textbf{Peak step goodput} --- maximum per-step goodput during the
+        ramp (useful for adaptive-ramp plots);
+  \item \textbf{Sustained goodput} --- best 30\,s rolling-window mean with
+        stable user count, failure rate, and goodput variance (primary
+        cross-iteration comparison metric).
+\end{itemize}
+The profile enforces a maximum run time of 420\,s and a user ceiling of
+10\,000.  Full parameter values are documented in
+\texttt{locust\_bench/load\_profiles/registry.py} and may be listed in an
+appendix.
+
+\subsubsection{Diagnostics}
+
+During benchmarking, optional collectors gather:
+\begin{itemize}
+  \item per-endpoint Locust statistics and failure excerpts;
+  \item \texttt{kubectl top} for pods and nodes;
+  \item backend and Postgres logs;
+  \item database statistics (e.g.\ \texttt{pg\_stat\_*}).
+\end{itemize}
+Diagnostics can be disabled via \texttt{BAXBENCH\_K8S\_DIAGNOSTICS=0}; state
+which setting your experiments used.
+
+
+\subsection{Outcome and Feedback Aggregation}
+\label{sec:methods-outcome}
+
+The outcome phase (\texttt{06-outcome/}) closes the iteration.
+
+\paragraph{Feedback artifact.}
+\texttt{iteration\_feedback.json} compresses bench and diagnostic signals into
+agent-consumable categories: load-test summary, per-endpoint breakdown,
+resource pressure (min/avg/max CPU and memory), deployment context, and
+failure metadata when applicable.  A human-readable \texttt{.txt} sibling and
+append-only \texttt{experiment\_summary.md} support case-study analysis.
+
+\paragraph{Lineage.}
+Only \textbf{successful} iterations advance the ``latest good'' code/spec
+lineage and become \texttt{prior\_feedback} for the next round.  Failed
+iterations receive folder suffixes (\texttt{*-code-failed},
+\texttt{*-spec-failed}, \texttt{deploy-failed}) and are excluded from lineage
+while remaining on disk for audit.
+
+
+% ----- §3.5  Failure handling -----
+\section{Failure Handling and Iteration Continuity}
+\label{sec:methods-failure}
+
+Table~\ref{tab:failure-routing} specifies how failure at iteration $N{-}1$
+affects iteration $N$.
+
+\begin{table}[t]
+  \centering
+  \caption{Iteration routing after failure.}
+  \label{tab:failure-routing}
+  \small
+  \begin{tabular}{@{}lll@{}}
+    \toprule
+    \textbf{Failed stage} & \textbf{Folder label} & \textbf{Next iteration} \\
+    \midrule
+    Code (baseline) & \texttt{code-failed} & Sample abort (after max attempts) \\
+    Code (refinement) & \texttt{*-code-failed} & Force \texttt{code} \\
+    Spec (baseline) & retry in place & Sample abort if exhausted \\
+    Spec (refinement) & \texttt{*-spec-failed} & Force \texttt{deployment} \\
+    Deploy & \texttt{deploy-failed} & LLM decides \\
+  \end{tabular}
+\end{table}
+
+\paragraph{Baseline abort.}
+If iteration~000 cannot produce passing code or an acceptable spec, refinement
+is meaningless; the framework aborts the sample.
+
+\paragraph{Namespace cleanup.}
+Before each deploy and after each benchmark, all \texttt{baxbench-*} namespaces
+are deleted.  This prevents resource leakage on a fixed lab cluster while
+preserving complete on-disk experiment records.
+
+
+% ----- §3.6  Design principles -----
+\section{Design Principles and Constraints}
+\label{sec:methods-design}
+
+\paragraph{Bounded search space.}
+Raw Kubernetes YAML is vast and error-prone.  Restricting the agent to
+\texttt{spec.yaml} keeps comparisons focused on deployment \emph{decisions}
+rather than syntactic accidents.
+
+\paragraph{Framework owns infrastructure.}
+Network wiring, namespace lifecycle, manifest rendering, Locust orchestration,
+and validation rules are fixed.  The agent never executes shell commands on
+cluster nodes.
+
+\paragraph{Correctness before performance.}
+Functional tests gate all new images; deploy probes gate specs; goodput is
+measured only on correct, ready deployments.
+
+\paragraph{Learn from feedback, not from hand-tuned ranges.}
+Spec prompts omit recommended numeric values, supporting claims about autonomous
+deployment optimisation from measured signals.
+
+\paragraph{Fail-fast refinement, generous baseline.}
+Baseline retries bootstrap a working system; single-attempt refinement preserves
+a fixed iteration budget and clear per-iteration attribution.
+
+\paragraph{Reproducibility.}
+Every LLM call is logged; iteration directories are self-contained experiment
+records; cluster topology is codified in \texttt{k8s\_bench/cluster/profiles.py}
+rather than ad-hoc host strings in prompts.
+
+
+% ----- §3.7  Metrics -----
+\section{Metrics and Evaluation Criteria}
+\label{sec:methods-metrics}
+
+\paragraph{Primary metric.}
+\textbf{Sustained goodput} (successful RPS under the adaptive profile), compared
+across iterations and scenarios.
+
+\paragraph{Secondary metrics.}
+\begin{itemize}
+  \item p50 and p95 latency per endpoint;
+  \item failure rate during benchmark;
+  \item peak step goodput and adaptive-ramp trajectory;
+  \item CPU and memory utilisation from \texttt{kubectl top};
+  \item deployment parameters in \texttt{spec.yaml} (replicas, requests, placement);
+  \item iteration outcome labels and agent decision rationales;
+  \item estimated LLM cost per experiment (\texttt{llm\_cost\_ledger.json}).
+\end{itemize}
+
+\paragraph{Baselines and ablations (Results chapter).}
+Examples for comparison:
+\begin{itemize}
+  \item baseline deployment only (iteration~000 goodput, no refinement);
+  \item forced \texttt{--k8s-refinement deployment} vs.\ \texttt{code} vs.\
+        \texttt{auto};
+  \item single-shot deploy without iterative feedback.
+\end{itemize}
+
+
+% ----- §3.8  Implementation -----
+\section{Implementation Summary}
+\label{sec:methods-implementation}
+
+The extension is invoked via \texttt{python src/main.py --mode k8s-bench} or the
+wrapper script \texttt{scripts/bench\_k8s.sh}.  Key packages:
+\begin{itemize}
+  \item \texttt{k8s\_bench/} --- orchestration, stages, cluster profiles,
+        spec validation, failure recording;
+  \item \texttt{locust\_bench/} --- distributed Locust orchestration and load
+        profile registry;
+  \item \texttt{bench\_diagnostics/} --- telemetry collectors during benchmark.
+\end{itemize}
+
+The canonical iteration pipeline is implemented in
+\texttt{k8s\_bench/orchestration/execute.py}.  Design rationale and CLI
+reference are documented in \texttt{docs/k8s\_approach.md} and
+\texttt{docs/locust\_pipeline.md}.  On-disk layout for a single iteration:
+
+\begin{verbatim}
+iteration-NNN-<kind>/
+  01-decision/     (refinement only)
+  02-code/
+  03-spec/
+  04-deploy/
+  05-bench/
+  06-outcome/
+  meta.json
+  iteration.log
+\end{verbatim}
+
+Detailed parameter tables and prompt templates are deferred to the appendix
+and repository documentation to keep this chapter focused on experimental
+methodology.
