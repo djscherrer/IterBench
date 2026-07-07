@@ -224,6 +224,7 @@ def generate_k8s_workload_spec(
                 max_cost_usd=llm_max_cost_usd,
             )
 
+        spec_call_type = "spec_refinement" if refinement else "baseline_spec_generation"
         empty_response_error = "LLM returned no completion for k8s spec generation"
         try:
             last_raw = send_with_retries(
@@ -242,7 +243,7 @@ def generate_k8s_workload_spec(
         if sample_dir is not None:
             record_k8s_llm_call(
                 prompter=session,
-                call_type="k8s_spec_generation",
+                call_type=spec_call_type,
                 sample_dir=sample_dir,
                 logger=logger,
                 artifact_dir=(
