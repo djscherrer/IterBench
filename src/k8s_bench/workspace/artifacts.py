@@ -54,15 +54,12 @@ def write_feedback(
         "perf_run_dir": feedback.perf_run_dir,
         "locust_summary": feedback.locust_summary,
         "error_excerpt": feedback.error_excerpt,
-        "pod_utilization": feedback.pod_utilization,
-        "benchmark_context": feedback.benchmark_context,
         "load_run_summary": feedback.load_run_summary,
         "diagnostics_summary": feedback.diagnostics_summary,
         "notes": feedback.notes,
         "status": feedback.status,
         "failure_reason": feedback.failure_reason,
         "failure_kind": feedback.failure_kind,
-        "decision_rationale": feedback.decision_rationale,
         "prompt_text": prompt_text,
     }
     out.write_text(
@@ -86,15 +83,12 @@ def load_feedback(perf_run_dir: Path) -> "IterationFeedback | None":
             perf_run_dir=str(data.get("perf_run_dir", perf_run_dir)),
             locust_summary=str(data.get("locust_summary", "")),
             error_excerpt=str(data.get("error_excerpt", "")),
-            pod_utilization=str(data.get("pod_utilization", "")),
-            benchmark_context=str(data.get("benchmark_context", "")),
             load_run_summary=str(data.get("load_run_summary", "")),
             diagnostics_summary=str(data.get("diagnostics_summary", "")),
             notes=str(data.get("notes", "")),
             status=str(data.get("status", "success")),
             failure_reason=str(data.get("failure_reason", "")),
             failure_kind=str(data.get("failure_kind", "")),
-            decision_rationale=str(data.get("decision_rationale", "")),
         )
         if (
             fb.status == "success"
@@ -119,7 +113,6 @@ def load_feedback(perf_run_dir: Path) -> "IterationFeedback | None":
             perf_run_dir=str(perf_run_dir),
             locust_summary="",
             error_excerpt="",
-            pod_utilization="",
             notes=txt.read_text(encoding="utf-8", errors="replace"),
         )
     cfg_path = perf_run_dir / "config.json"

@@ -15,7 +15,6 @@ from pathlib import Path
 
 from ..experiment_summary import append_perf_run_block
 from ..feedback import collect_iteration_feedback
-from ..spec.models import K8sWorkloadSpec
 from ..workspace import (
     resolve_iteration_dir,
     update_iteration_meta,
@@ -37,11 +36,9 @@ def run_outcome_stage(
         ctx.sample_dir, plan.iteration_id, experiment_id=ctx.experiment_id
     )
     try:
-        spec = K8sWorkloadSpec.from_yaml_file(spec_file)
         fb = collect_iteration_feedback(
             perf_run_dir=run_dir,
             iteration_path=iteration_path,
-            namespace=spec.namespace,
             logger=logger,
         )
         write_feedback(run_dir, fb)

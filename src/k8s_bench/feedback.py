@@ -5,23 +5,19 @@ Collect benchmark feedback for the next K8s spec-generation iteration.
 from __future__ import annotations
 
 import csv
-import json
 import logging
 import re
-from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from bench_diagnostics.summary import (
-    benchmark_context_from_config,
     read_run_config,
     summarize_load_run,
     summarize_run_dir,
 )
 
 from .spec.models import K8sWorkloadSpec
-from .cluster.preflight import _kubectl
 from .workspace import (
     deploy_probe_record_path,
     find_iteration_spec_path,
@@ -45,15 +41,12 @@ class IterationFeedback:
     perf_run_dir: str
     locust_summary: str
     error_excerpt: str
-    pod_utilization: str
-    benchmark_context: str = ""
     load_run_summary: str = ""
     diagnostics_summary: str = ""
     notes: str = ""
     status: str = "success"  # "success" | "failed"
     failure_reason: str = ""
     failure_kind: str = ""  # "spec" | "code" | "deploy" | "" for success
-    decision_rationale: str = ""
 
     @property
     def is_failed(self) -> bool:
@@ -128,11 +121,6 @@ class IterationFeedback:
             "`code` = functional tests did not pass after code refinement)",
             f"- **Reason**: {self.failure_reason or '(unspecified)'}",
         ]
-        if self.decision_rationale:
-            rationale = self.decision_rationale.strip().replace("\n", " ")
-            if len(rationale) > 600:
-                rationale = rationale[:600] + "…"
-            parts.append(f"- **Decision at the time**: {rationale}")
         parts.extend(
             [
                 "",
@@ -272,166 +260,8 @@ def _extract_error_excerpt(bench_log: str, *, max_lines: int = 15) -> str:
     return "\n".join(out)
 
 
-def _kubectl_top_pods(namespace: str, logger: logging.Logger) -> str:
-    proc = _kubectl(
-        ["top", "pods", "-n", namespace, "--no-headers"],
-        timeout_s=30,
-    )
-    if proc.returncode != 0:
-        logger.debug(
-            "kubectl top pods failed (metrics-server may be missing): %s",
-            (proc.stderr or proc.stdout or "").strip()[:200],
-        )
-        return ""
-    return (proc.stdout or "").strip()
-
-
-def _parse_cpu_millicores(value: str) -> int | None:
-    v = (value or "").strip()
-    if not v or v == "<unknown>":
-        return None
-    if v.endswith("m"):
-        return int(round(float(v[:-1])))
-    try:
-        return int(round(float(v) * 1000))
-    except ValueError:
-        return None
-
-
-def _parse_memory_mi(value: str) -> int | None:
-    v = (value or "").strip()
-    if not v or v == "<unknown>":
-        return None
-    if v.endswith("Mi"):
-        return int(round(float(v[:-2])))
-    if v.endswith("Gi"):
-        return int(round(float(v[:-2]) * 1024))
-    if v.endswith("Ki"):
-        return int(round(float(v[:-2]) / 1024))
-    return None
-
-
-def _parse_pct(value: str) -> float | None:
-    v = (value or "").strip().rstrip("%")
-    if not v:
-        return None
-    try:
-        return float(v)
-    except ValueError:
-        return None
-
-
-def _min_avg_max(values: list[int]) -> str:
-    if not values:
-        return "-"
-    return f"{min(values)}/{int(round(sum(values) / len(values)))}/{max(values)}"
-
-
-def _min_avg_max_f(values: list[float]) -> str:
-    if not values:
-        return "-"
-    return (
-        f"{min(values):.0f}/{sum(values) / len(values):.0f}/{max(values):.0f}"
-    )
-
-
-def _summarize_pod_top_csv(path: Path) -> str:
-    if not path.is_file():
-        return ""
-    with path.open(newline="", encoding="utf-8", errors="replace") as f:
-        rows = list(csv.DictReader(f))
-    if not rows:
-        return ""
-
-    samples = len({r.get("ts_epoch_s", "") for r in rows})
-    cpu_by_pod: dict[str, list[int]] = defaultdict(list)
-    mem_by_pod: dict[str, list[int]] = defaultdict(list)
-
-    for row in rows:
-        pod = (row.get("pod") or "").strip()
-        if not pod:
-            continue
-        cpu = _parse_cpu_millicores(row.get("cpu") or "")
-        mem = _parse_memory_mi(row.get("memory") or "")
-        if cpu is not None:
-            cpu_by_pod[pod].append(cpu)
-        if mem is not None:
-            mem_by_pod[pod].append(mem)
-
-    pod_names = sorted(cpu_by_pod.keys() | mem_by_pod.keys())
-    lines = [
-        f"kubectl top pods: {samples} sample(s), {len(pod_names)} pod(s)",
-        "",
-        "| Pod | CPU m (min/avg/max) | Memory Mi (min/avg/max) |",
-        "|---|---:|---:|",
-    ]
-    for pod in pod_names:
-        lines.append(
-            f"| {pod} | {_min_avg_max(cpu_by_pod[pod])} | "
-            f"{_min_avg_max(mem_by_pod[pod])} |"
-        )
-    return "\n".join(lines)
-
-
-def _summarize_node_top_csv(path: Path) -> str:
-    if not path.is_file():
-        return ""
-    with path.open(newline="", encoding="utf-8", errors="replace") as f:
-        rows = list(csv.DictReader(f))
-    if not rows:
-        return ""
-
-    samples = len({r.get("ts_epoch_s", "") for r in rows})
-    cpu_by_node: dict[str, list[int]] = defaultdict(list)
-    cpu_pct_by_node: dict[str, list[float]] = defaultdict(list)
-    mem_mi_by_node: dict[str, list[int]] = defaultdict(list)
-    mem_pct_by_node: dict[str, list[float]] = defaultdict(list)
-
-    for row in rows:
-        node = (row.get("node") or "").strip()
-        if not node:
-            continue
-        short = node.split(".", 1)[0]
-        cpu = _parse_cpu_millicores(row.get("cpu") or "")
-        if cpu is not None:
-            cpu_by_node[short].append(cpu)
-        pct = _parse_pct(row.get("cpu_pct") or "")
-        if pct is not None:
-            cpu_pct_by_node[short].append(pct)
-        mem = _parse_memory_mi(row.get("memory") or "")
-        if mem is not None:
-            mem_mi_by_node[short].append(mem)
-        mpct = _parse_pct(row.get("memory_pct") or "")
-        if mpct is not None:
-            mem_pct_by_node[short].append(mpct)
-
-    lines = [
-        f"kubectl top nodes: {samples} sample(s)",
-        "",
-        "| Node | CPU m (min/avg/max) | CPU % (min/avg/max) | "
-        "Memory Mi (min/avg/max) | Memory % (min/avg/max) |",
-        "|---|---:|---:|---:|---:|",
-    ]
-    for node in sorted(cpu_by_node.keys()):
-        lines.append(
-            f"| {node} | {_min_avg_max(cpu_by_node[node])} | "
-            f"{_min_avg_max_f(cpu_pct_by_node[node])} | "
-            f"{_min_avg_max(mem_mi_by_node[node])} | "
-            f"{_min_avg_max_f(mem_pct_by_node[node])} |"
-        )
-    return "\n".join(lines)
-
-
-def _summarize_k8s_utilization_csv(perf_run_dir: Path) -> str:
-    """Aggregate ``diagnostics/kubernetes/cluster/kubectl_top_*.csv`` over the whole perf run."""
-    from bench_diagnostics.summary.utilization import summarize_k8s_utilization
-
-    text = summarize_k8s_utilization(perf_run_dir)
-    return "" if text == "(kubernetes metrics unavailable)" else text
-
-
 def _replica_usage_note(
-    pod_util_text: str,
+    utilization_text: str,
     spec: K8sWorkloadSpec | None,
 ) -> str:
     """
@@ -440,12 +270,12 @@ def _replica_usage_note(
     """
     if spec is None or not spec.database.enabled or spec.database.replicas <= 1:
         return ""
-    if not pod_util_text:
+    if not utilization_text or utilization_text == "(kubernetes metrics unavailable)":
         return ""
 
     primary_max_m: int | None = None
     replica_max_m: int | None = None
-    for line in pod_util_text.splitlines():
+    for line in utilization_text.splitlines():
         stripped = line.strip()
         if not stripped.startswith("|") or "/" not in stripped:
             continue
@@ -487,10 +317,8 @@ def collect_iteration_feedback(
     *,
     perf_run_dir: Path,
     iteration_path: Path,
-    namespace: str | None = None,
     logger: logging.Logger | None = None,
 ) -> IterationFeedback:
-    log = logger or logging.getLogger(__name__)
     bench_log_path = perf_run_dir / "bench.log"
     bench_log = ""
     if bench_log_path.is_file():
@@ -503,23 +331,6 @@ def collect_iteration_feedback(
             spec = K8sWorkloadSpec.from_yaml_file(spec_path)
         except ValueError:
             spec = None
-
-    cfg_path = perf_run_dir / "config.json"
-    ns = namespace
-    if not ns and cfg_path.is_file():
-        try:
-            cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
-            ns = (cfg.get("k8s_iteration") or {}).get("namespace")
-        except json.JSONDecodeError:
-            pass
-    if not ns and spec is not None:
-        ns = spec.namespace
-
-    k8s_util = _summarize_k8s_utilization_csv(perf_run_dir)
-    if not k8s_util and ns:
-        k8s_util = _kubectl_top_pods(ns, log)
-
-    notes = _replica_usage_note(k8s_util, spec)
 
     run_config = read_run_config(perf_run_dir)
     max_connections = None
@@ -540,14 +351,13 @@ def collect_iteration_feedback(
         bench_log=bench_log,
         max_connections=max_connections,
     )
+    notes = _replica_usage_note(diagnostics.utilization, spec)
 
     return IterationFeedback(
         iteration_id=iteration_path.name,
         perf_run_dir=str(perf_run_dir),
         locust_summary=_locust_summary_from_run_dir(perf_run_dir, bench_log),
         error_excerpt=_extract_error_excerpt(bench_log),
-        pod_utilization=k8s_util,
-        benchmark_context=benchmark_context_from_config(run_config),
         load_run_summary=summarize_load_run(bench_log),
         diagnostics_summary=diagnostics.to_prompt_block(),
         notes=notes,
@@ -556,8 +366,7 @@ def collect_iteration_feedback(
 
 # Note: persistence + loading of ``iteration_feedback.json`` now lives in
 # ``workspace.artifacts`` (``write_feedback`` / ``load_feedback``). This module
-# is the *builder* (parses Locust CSVs + kubectl + logs into
-# ``IterationFeedback``); the filesystem is owned by ``workspace``.
+# is the *builder* (parses Locust CSVs + diagnostics into ``IterationFeedback``);
 
 
 def read_failed_iteration_error_excerpt(
