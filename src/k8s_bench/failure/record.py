@@ -6,9 +6,81 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Literal, TypeAlias
 
-from .text import sanitize_test_log_tail, trim
+from .text import failure_prompt_header, sanitize_test_log_tail, trim
 
-Phase = Literal["code", "spec", "deploy", "bench"]
+Phase = Literal["decision", "code", "spec", "deploy", "bench"]
+
+
+# ---------------------------------------------------------------------------
+# Decision failures (routing LLM)
+# ---------------------------------------------------------------------------
+DecisionFailureKind = Literal["llm_call", "llm_parse"]
+
+
+@dataclass(frozen=True)
+class DecisionFailureRecord:
+    phase: Literal["decision"]
+    kind: DecisionFailureKind
+    iteration_id: str
+    summary: str
+    attempt: int | None = None
+    llm_error: str = ""
+    diagnostic_excerpt: str = ""
+
+    def to_dict(self) -> dict[str, object]:
+        out: dict[str, object] = {
+            "phase": "decision",
+            "kind": self.kind,
+            "iteration_id": self.iteration_id,
+            "summary": self.summary,
+            "attempt": self.attempt,
+        }
+        if self.llm_error:
+            out["llm_error"] = self.llm_error
+        if self.diagnostic_excerpt:
+            out["diagnostic_excerpt"] = self.diagnostic_excerpt
+        return out
+
+    @classmethod
+    def from_dict(cls, data: dict[str, object]) -> "DecisionFailureRecord":
+        return cls(
+            phase="decision",
+            kind=str(data.get("kind") or "llm_call"),  # type: ignore[arg-type]
+            iteration_id=str(data.get("iteration_id") or ""),
+            summary=str(data.get("summary") or ""),
+            attempt=int(data["attempt"]) if data.get("attempt") is not None else None,
+            llm_error=str(data.get("llm_error") or ""),
+            diagnostic_excerpt=str(data.get("diagnostic_excerpt") or ""),
+        )
+
+    def short_excerpt(self) -> str:
+        return trim(self.llm_error or self.summary, max_chars=1200)
+
+    def to_prompt_block(self) -> str:
+        attempt_label = (
+            f"attempt {self.attempt}" if self.attempt is not None else self.iteration_id
+        )
+        label = (
+            "LLM call failed" if self.kind == "llm_call" else "Could not parse LLM response"
+        )
+        lines = [
+            f"**Decision stage (`{attempt_label}`): {label}.**",
+            "",
+            f"- **Kind**: `{self.kind}`",
+            "",
+            self.llm_error or self.summary or "(no error detail captured)",
+        ]
+        if self.diagnostic_excerpt:
+            lines.extend(
+                [
+                    "",
+                    "### Raw model output (truncated)",
+                    "```",
+                    trim(self.diagnostic_excerpt, max_chars=2000),
+                    "```",
+                ]
+            )
+        return "\n".join(lines)
 
 
 # ---------------------------------------------------------------------------
@@ -218,9 +290,10 @@ class CodeFailureRecord:
         if self.kind == "infrastructure" and self.infrastructure_failure is not None:
             infra = self.infrastructure_failure
             lines = [
-                f"**Previous attempt (`{attempt_label}`) was blocked by an INFRASTRUCTURE failure — the test harness itself failed.**",
+                f"**Code stage (`{attempt_label}`) was blocked by an INFRASTRUCTURE failure — the test harness itself failed.**",
                 "",
-                f"- **Kind**: `{infra.kind}`",
+                f"- **Kind**: `{self.kind}`",
+                f"- **Harness kind**: `{infra.kind}`",
                 f"- **What broke**: {infra.description}",
             ]
             if infra.evidence:
@@ -242,8 +315,9 @@ class CodeFailureRecord:
         lines: list[str] = []
         if self.kind == "docker_build":
             lines.append(
-                f"**Previous attempt (`{attempt_label}`) failed during Docker image build** — the code did not compile, so functional tests never ran."
+                f"**Code stage (`{attempt_label}`) failed during Docker image build** — the code did not compile, so functional tests never ran."
             )
+            lines.extend(["", f"- **Kind**: `{self.kind}`"])
             if self.diagnostic_excerpt:
                 lines.extend(
                     [
@@ -257,19 +331,28 @@ class CodeFailureRecord:
             return "\n".join(lines)
 
         if self.kind in {"llm_call", "llm_parse", "ft_runner"}:
-            label = "LLM call failed" if self.kind == "llm_call" else "Could not parse LLM response" if self.kind == "llm_parse" else "Functional-test runner failed"
+            label = (
+                "LLM call failed"
+                if self.kind == "llm_call"
+                else "Could not parse LLM response"
+                if self.kind == "llm_parse"
+                else "Functional-test runner failed"
+            )
             return "\n".join(
                 [
-                    f"**Previous attempt (`{attempt_label}`): {label}.**",
+                    f"**Code stage (`{attempt_label}`): {label}.**",
+                    "",
+                    f"- **Kind**: `{self.kind}`",
                     "",
                     self.llm_error or self.summary or "(no error detail captured)",
                 ]
             )
 
         lines.append(
-            f"**Functional test outcome of the previous attempt (`{attempt_label}`)**: "
+            f"**Code stage (`{attempt_label}`) functional test outcome**: "
             f"{self.num_passed_ft}/{self.num_total_ft} tests passed."
         )
+        lines.extend(["", f"- **Kind**: `{self.kind}`"])
         lines.append("")
         lines.append(
             "Your new code MUST fix every failing test below **without breaking** any test in the passing list."
@@ -368,11 +451,19 @@ class SpecFailureRecord:
         return trim("\n".join(lines), max_chars=1200)
 
     def to_prompt_block(self) -> str:
-        label = "failed static validation" if self.kind == "spec_validation" else (
-            "LLM call failed" if self.kind == "llm_call" else "could not parse LLM response"
+        label = (
+            "failed static validation"
+            if self.kind == "spec_validation"
+            else "LLM call failed"
+            if self.kind == "llm_call"
+            else "could not parse LLM response"
         )
         attempt_label = f"attempt {self.attempt}" if self.attempt is not None else self.iteration_id
-        lines = [f"**Previous spec attempt (`{attempt_label}`) {label}.**"]
+        lines = [
+            f"**Spec stage (`{attempt_label}`): {label}.**",
+            "",
+            f"- **Kind**: `{self.kind}`",
+        ]
         if self.kind in {"llm_call", "llm_parse"}:
             lines.extend(["", self.llm_error or self.summary])
             return "\n".join(lines)
@@ -388,10 +479,24 @@ class SpecFailureRecord:
 # ---------------------------------------------------------------------------
 # Deploy failures
 # ---------------------------------------------------------------------------
+DeployFailureKind = Literal[
+    "image_pull",
+    "namespace_cleanup",
+    "unschedulable",
+    "crashloop",
+    "oomkilled",
+    "readiness_probe",
+    "endpoints_unavailable",
+    "kubectl_apply",
+    "timeout",
+    "unknown",
+]
+
+
 @dataclass(frozen=True)
 class DeployFailureRecord:
     phase: Literal["deploy"]
-    kind: Literal["deploy_probe"]
+    kind: DeployFailureKind
     iteration_id: str
     summary: str
     attempt: int | None = None
@@ -402,7 +507,7 @@ class DeployFailureRecord:
     def to_dict(self) -> dict[str, object]:
         out: dict[str, object] = {
             "phase": "deploy",
-            "kind": "deploy_probe",
+            "kind": self.kind,
             "iteration_id": self.iteration_id,
             "summary": self.summary,
             "attempt": self.attempt,
@@ -417,10 +522,13 @@ class DeployFailureRecord:
 
     @classmethod
     def from_dict(cls, data: dict[str, object]) -> "DeployFailureRecord":
+        from .classify import normalize_deploy_failure_kind
+
         details_raw = data.get("details")
+        raw_kind = str(data.get("kind") or "unknown")
         return cls(
             phase="deploy",
-            kind="deploy_probe",
+            kind=normalize_deploy_failure_kind(raw_kind),  # type: ignore[arg-type]
             iteration_id=str(data.get("iteration_id") or ""),
             summary=str(data.get("summary") or ""),
             attempt=int(data["attempt"]) if data.get("attempt") is not None else None,
@@ -436,7 +544,13 @@ class DeployFailureRecord:
         return trim("\n".join(parts), max_chars=1200)
 
     def to_prompt_block(self) -> str:
-        lines = ["## Deploy probe failed (previous attempt)", "", self.reason or self.summary]
+        lines = failure_prompt_header(
+            stage_label="Deploy stage",
+            iteration_id=self.iteration_id,
+            attempt=self.attempt,
+            kind=self.kind,
+        )
+        lines.append(self.reason or self.summary)
         wait_lines = [
             (k.removeprefix("wait/"), v)
             for k, v in self.details.items()
@@ -452,7 +566,15 @@ class DeployFailureRecord:
             for k, v in other_details.items():
                 lines.append(f"- **{k}**: {v}")
         if self.diagnostic_excerpt:
-            lines.extend(["", "### Details", "```", trim(self.diagnostic_excerpt, max_chars=2000), "```"])
+            lines.extend(
+                [
+                    "",
+                    "### Cluster diagnostics",
+                    "```",
+                    trim(self.diagnostic_excerpt, max_chars=2000),
+                    "```",
+                ]
+            )
         lines.extend(["", "Fix replicas, resources, and placement so pods schedule and become Ready."])
         return "\n".join(lines)
 
@@ -460,10 +582,18 @@ class DeployFailureRecord:
 # ---------------------------------------------------------------------------
 # Bench failures (exceptions / harness failures in 05-bench)
 # ---------------------------------------------------------------------------
+BenchFailureKind = Literal[
+    "locust_infra",
+    "target_unreachable",
+    "timeout_or_stall",
+    "unknown",
+]
+
+
 @dataclass(frozen=True)
 class BenchFailureRecord:
     phase: Literal["bench"]
-    kind: Literal["bench_run"]
+    kind: BenchFailureKind
     iteration_id: str
     summary: str
     attempt: int | None = None
@@ -472,7 +602,7 @@ class BenchFailureRecord:
     def to_dict(self) -> dict[str, object]:
         out: dict[str, object] = {
             "phase": "bench",
-            "kind": "bench_run",
+            "kind": self.kind,
             "iteration_id": self.iteration_id,
             "summary": self.summary,
             "attempt": self.attempt,
@@ -483,9 +613,15 @@ class BenchFailureRecord:
 
     @classmethod
     def from_dict(cls, data: dict[str, object]) -> "BenchFailureRecord":
+        from .classify import normalize_bench_failure_kind
+
+        raw_kind = str(data.get("kind") or "unknown")
+        legacy_reason = str(data.get("reason_kind") or "")
         return cls(
             phase="bench",
-            kind="bench_run",
+            kind=normalize_bench_failure_kind(
+                raw_kind, legacy_reason_kind=legacy_reason
+            ),  # type: ignore[arg-type]
             iteration_id=str(data.get("iteration_id") or ""),
             summary=str(data.get("summary") or ""),
             attempt=int(data["attempt"]) if data.get("attempt") is not None else None,
@@ -499,17 +635,39 @@ class BenchFailureRecord:
         return trim(base, max_chars=1200)
 
     def to_prompt_block(self) -> str:
-        lines = [f"**Previous benchmark run (`{self.iteration_id}`) failed.**", "", self.summary]
+        lines = failure_prompt_header(
+            stage_label="Bench stage",
+            iteration_id=self.iteration_id,
+            attempt=self.attempt,
+            kind=self.kind,
+        )
+        lines.append(self.summary)
         if self.diagnostic_excerpt:
-            lines.extend(["", "```", trim(self.diagnostic_excerpt, max_chars=2000), "```"])
+            lines.extend(
+                [
+                    "",
+                    "### Bench harness log",
+                    "```",
+                    trim(self.diagnostic_excerpt, max_chars=2000),
+                    "```",
+                ]
+            )
         return "\n".join(lines)
 
 
-FailureRecord: TypeAlias = CodeFailureRecord | SpecFailureRecord | DeployFailureRecord | BenchFailureRecord
+FailureRecord: TypeAlias = (
+    DecisionFailureRecord
+    | CodeFailureRecord
+    | SpecFailureRecord
+    | DeployFailureRecord
+    | BenchFailureRecord
+)
 
 
 def failure_record_from_dict(data: dict[str, object]) -> FailureRecord:
     phase = str(data.get("phase") or "")
+    if phase == "decision":
+        return DecisionFailureRecord.from_dict(data)
     if phase == "spec":
         return SpecFailureRecord.from_dict(data)
     if phase == "deploy":

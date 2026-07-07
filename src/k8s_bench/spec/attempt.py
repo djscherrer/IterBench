@@ -20,7 +20,6 @@ from llm.conversation import send_with_retries
 from scenarios.base import Scenario
 
 from ..cluster.capacity import ClusterCapacity
-from ..feedback import IterationFeedback
 from ..prompt_helpers import ArtifactPointers
 from ..failure import SpecFailureRecord
 from ..failure.persist import spec_attempt_dir
@@ -37,7 +36,6 @@ from .models import BackendSpec, K8sWorkloadSpec
 from .parse import merge_fragment_into_spec, parse_spec_fragment
 from .placement import normalize_spec_placement
 from .prompts import build_k8s_spec_prompt
-from .render import render_iteration
 from .validate import SpecValidationError, validate_spec_against_cluster
 
 
@@ -69,13 +67,6 @@ def rotate_top_level_into_attempt(
         src = spec_dir / name
         if src.is_file():
             shutil.move(str(src), str(attempt_dir / name))
-    for sub in ("manifests",):
-        src = spec_dir / sub
-        if src.is_dir():
-            dest = attempt_dir / sub
-            if dest.exists():
-                shutil.rmtree(dest)
-            shutil.move(str(src), str(dest))
 
 
 def _spec_attempt_dir(
@@ -169,34 +160,6 @@ def _write_spec_attempt_meta(
     )
 
 
-def record_spec_deploy_probe_failure(
-    iteration_path: pathlib.Path,
-    *,
-    attempt_index: int,
-    probe_reason: str,
-    probe_feedback: str,
-) -> None:
-    """Mark an outer spec attempt as ``deploy_probe_failed`` after rotation."""
-    attempt_dir = attempt_subdir(
-        iteration_spec_attempts_dir(iteration_path), attempt_index
-    )
-    meta_path = attempt_dir / _SPEC_ATTEMPT_META_FILENAME
-    if not meta_path.is_file():
-        return
-    try:
-        data = json.loads(meta_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return
-    if not isinstance(data, dict):
-        return
-    data["status"] = "deploy_probe_failed"
-    data["probe_reason"] = probe_reason
-    data["probe_feedback"] = probe_feedback
-    meta_path.write_text(
-        json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8"
-    )
-
-
 def generate_k8s_workload_spec(
     *,
     env: Env,
@@ -206,7 +169,7 @@ def generate_k8s_workload_spec(
     iteration_id: str,
     logger: logging.Logger,
     session: "Prompter",
-    prior_feedback: IterationFeedback | str | None = None,
+    refinement: bool = False,
     validation_feedback: str | None = None,
     max_validation_retries: int = 3,
     sample_dir: pathlib.Path | None = None,
@@ -239,7 +202,7 @@ def generate_k8s_workload_spec(
             iteration_id=iteration_id,
             iteration_index=iteration_index,
             total_iterations=total_iterations,
-            refinement=prior_feedback is not None,
+            refinement=refinement,
             validation_feedback=validation_hint,
             artifact_pointers=artifact_pointers,
         )
@@ -374,7 +337,6 @@ def write_spec_generation_artifacts(
     spec_path = iteration_spec_path(iteration_path)
     spec_path.parent.mkdir(parents=True, exist_ok=True)
     spec.write_yaml(spec_path)
-    render_iteration(iteration_path)
 
     meta = {
         "spec_path": str(spec_path),
@@ -394,7 +356,7 @@ def write_spec_generation_artifacts(
     if warnings:
         for w in warnings:
             logger.warning("spec validation: %s", w)
-    logger.info("Wrote %s and rendered manifests", spec_path)
+    logger.info("Wrote %s", spec_path)
     return spec_path
 
 
@@ -452,7 +414,7 @@ def run_spec_attempt(
     session: "Prompter",
     logger: logging.Logger,
     capacity: ClusterCapacity,
-    prior_feedback: IterationFeedback | None = None,
+    refinement: bool = False,
     validation_feedback: str | None = None,
     max_validation_retries: int = 1,
     attempt_index: int = 1,
@@ -476,8 +438,13 @@ def run_spec_attempt(
     from ..session import persist_session
 
     artifact_pointers = (
-        resolve_artifact_pointers(sample_dir, experiment_id=experiment_id)
-        if prior_feedback is not None
+        resolve_artifact_pointers(
+            sample_dir,
+            iteration_index=iteration_index,
+            experiment_id=experiment_id,
+            scope="spec",
+        )
+        if refinement
         else None
     )
     try:
@@ -488,7 +455,7 @@ def run_spec_attempt(
             capacity=capacity,
             iteration_id=iteration_id,
             logger=logger,
-            prior_feedback=prior_feedback,
+            refinement=refinement,
             validation_feedback=validation_feedback,
             max_validation_retries=max_validation_retries,
             sample_dir=sample_dir,

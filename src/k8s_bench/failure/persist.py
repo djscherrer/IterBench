@@ -11,6 +11,7 @@ from ..workspace.paths import (
     attempt_subdir,
     iteration_code_attempts_dir,
     iteration_code_phase_dir,
+    iteration_decision_dir,
     iteration_deploy_dir,
     iteration_spec_dir,
 )
@@ -28,6 +29,8 @@ FAILURE_FILENAME = "failure.json"
 
 
 def phase_dir_for(iteration_path: Path, phase: Phase) -> Path:
+    if phase == "decision":
+        return iteration_decision_dir(iteration_path)
     if phase == "deploy":
         return iteration_deploy_dir(iteration_path)
     if phase == "spec":
@@ -179,8 +182,8 @@ def load_terminal_failure_record(
         raw_kind = str(meta.get("failure_kind") or "code")
         phases = (
             (raw_kind,)
-            if raw_kind in {"code", "spec", "deploy", "bench"}
-            else ("code", "spec", "deploy", "bench")
+            if raw_kind in {"decision", "code", "spec", "deploy", "bench"}
+            else ("decision", "code", "spec", "deploy", "bench")
         )  # type: ignore[assignment]
     for ph in phases:
         loaded = load_iteration_failure(iteration_path, ph)
@@ -216,12 +219,12 @@ def load_prior_iteration_failure(
 
     meta = read_iteration_meta(iteration_path) or {}
     raw_kind = str(meta.get("failure_kind") or "")
-    if raw_kind in {"code", "spec", "deploy", "bench"}:
+    if raw_kind in {"decision", "code", "spec", "deploy", "bench"}:
         loaded = load_iteration_failure(iteration_path, raw_kind)  # type: ignore[arg-type]
         if loaded is not None:
             return loaded
 
-    for phase in ("code", "spec", "deploy", "bench"):
+    for phase in ("decision", "code", "spec", "deploy", "bench"):
         loaded = load_iteration_failure(iteration_path, phase)  # type: ignore[arg-type]
         if loaded is not None:
             return loaded
@@ -502,7 +505,7 @@ def build_deploy_iteration_failure(
     if terminal is None:
         terminal = fallback or DeployFailureRecord(
             phase="deploy",
-            kind="deploy_probe",
+            kind="unknown",
             iteration_id=iteration_id,
             summary="deploy phase failed",
         )
@@ -534,7 +537,7 @@ def build_bench_iteration_failure(
     if terminal is None:
         terminal = fallback or BenchFailureRecord(
             phase="bench",
-            kind="bench_run",
+            kind="unknown",
             iteration_id=iteration_id,
             summary="bench phase failed",
         )

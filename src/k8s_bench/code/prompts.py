@@ -5,7 +5,6 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from ..feedback import IterationFeedback
 from ..failure import CodeFailureRecord
 from ..prompt_helpers import (
     format_artifact_pointers_block,
@@ -133,19 +132,20 @@ def build_code_refinement_prompt(
     results_dir: Path,
     sample: int,
     iteration_id: str,
-    prior_feedback: IterationFeedback,
     prior_attempt_failure: CodeFailureRecord | None = None,
     prior_iteration_failure: CodeFailureRecord | None = None,
     iteration_index: int = 0,
     total_iterations: int = 0,
     experiment_id: str | None = None,
 ) -> str:
-    del prior_feedback  # pointers replace inline feedback in slim prompts
     sample_dir = task.get_sample_dir(results_dir, sample)
     pointers = resolve_artifact_pointers(
-        sample_dir, experiment_id=experiment_id
+        sample_dir,
+        iteration_index=iteration_index,
+        experiment_id=experiment_id,
+        scope="code",
     )
-    pointer_block = format_artifact_pointers_block(pointers)
+    pointer_block = format_artifact_pointers_block(pointers, scope="code")
 
     parts = [
         _codegen_experiment_preamble(

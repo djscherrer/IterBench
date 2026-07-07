@@ -102,7 +102,8 @@ def _ensure_header(
             "",
             "Each iteration below has a **spec generation** block (deployment snapshot, "
             "full **Changes vs** prior iteration, rationale) and a **Locust run** block "
-            "(adaptive ramp; collapsible utilization + run metrics when collected).",
+            "(one-line headline plus collapsible **Load test results** and **Diagnostics** "
+            "sections — same content as ``iteration_feedback.txt``).",
             "",
             f"- **LLM cost ledger**: `{k8s_workspace_root(sample_dir, experiment_id=experiment_id) / 'llm_cost_ledger.json'}` "
             "(estimated; pass --llm-max-cost to cap spend)",
@@ -1160,16 +1161,6 @@ def _build_perf_run_block_text(
     else:
         time_range = perf_run_dir.name
 
-    phases = _parse_adaptive_phases(log_text)
-    initial_users = _parse_initial_users(log_text)
-    v2_stop = _parse_adaptive_v2_stop(log_text)
-    adaptive_md = _adaptive_table_markdown(
-        phases,
-        initial_users=initial_users,
-        v2_stop=v2_stop,
-        log_text=log_text,
-        perf_run_dir=perf_run_dir,
-    )
     locust_line = _aggregate_locust_line(perf_run_dir)
 
     fb = feedback
@@ -1178,47 +1169,64 @@ def _build_perf_run_block_text(
 
         fb = load_feedback(perf_run_dir)
 
-    locust_table = ""
-    if fb and fb.locust_summary and "(no Locust stats" not in fb.locust_summary:
-        locust_table = f"\n**Per-endpoint Locust** (from feedback)\n\n{fb.locust_summary}\n"
+    feedback_txt = perf_run_dir / "iteration_feedback.txt"
+    feedback_ref = (
+        f"- **Iteration feedback**: `{feedback_txt}`"
+        if feedback_txt.is_file()
+        else ""
+    )
 
-    error_lines = ""
-    if fb and fb.error_excerpt and fb.error_excerpt.strip() not in (
-        "(no error report)",
-        "",
-    ):
-        excerpt = fb.error_excerpt.strip()
-        if len(excerpt) > 1200:
-            excerpt = excerpt[:1200] + "\n…(truncated)"
-        error_lines = f"\n**Top errors**\n\n```\n{excerpt}\n```\n"
-
-    pod_hint = ""
-    if fb and fb.pod_utilization:
-        pod_hint = _format_pod_utilization_for_summary(fb.pod_utilization)
-
-    diag_hint = _format_diagnostics_metrics_for_summary(perf_run_dir)
+    if fb is not None:
+        load_section = _collapsible_details(
+            "Load test results", fb.load_test_prompt_text()
+        )
+        diag_section = _collapsible_details(
+            "Diagnostics", fb.diagnostics_prompt_text()
+        )
+    else:
+        phases = _parse_adaptive_phases(log_text)
+        initial_users = _parse_initial_users(log_text)
+        v2_stop = _parse_adaptive_v2_stop(log_text)
+        adaptive_md = _adaptive_table_markdown(
+            phases,
+            initial_users=initial_users,
+            v2_stop=v2_stop,
+            log_text=log_text,
+            perf_run_dir=perf_run_dir,
+        )
+        load_section = _collapsible_details(
+            "Load test results (legacy fallback — no iteration_feedback.json)",
+            "\n".join(
+                [
+                    "**Adaptive ramp** (from `bench.log` + `logs/**/locust-*.log`)",
+                    "",
+                    adaptive_md,
+                ]
+            ),
+        )
+        diag_section = _format_diagnostics_metrics_for_summary(perf_run_dir) or ""
 
     notes_line = ""
     if fb and fb.notes and fb.notes.strip():
         notes_line = f"\n**Notes**\n\n{fb.notes.strip()}\n"
 
+    meta_lines = [
+        f"### Locust run ({time_range})",
+        "",
+        f"- **Recorded**: {_utc_now_label()}",
+        f"- **Perf directory**: `{perf_run_dir}`",
+        f"- **bench.log**: `{bench_log_path}`",
+    ]
+    if feedback_ref:
+        meta_lines.append(feedback_ref)
+
     return "\n".join(
         [
-            f"### Locust run ({time_range})",
-            "",
-            f"- **Recorded**: {_utc_now_label()}",
-            f"- **Perf directory**: `{perf_run_dir}`",
-            f"- **bench.log**: `{bench_log_path}`",
+            *meta_lines,
             "",
             locust_line,
-            locust_table,
-            "",
-            "**Adaptive ramp** (from `bench.log` + `logs/**/locust-*.log`)",
-            "",
-            adaptive_md,
-            error_lines,
-            pod_hint,
-            diag_hint,
+            load_section,
+            diag_section,
             notes_line,
             "",
             "---",
@@ -1431,16 +1439,6 @@ def append_perf_run_block(
     return path
 
 
-def _format_pod_utilization_for_summary(text: str) -> str:
-    """Render the ``pod_utilization`` payload as a collapsible Markdown section."""
-    body = (text or "").strip()
-    if not body:
-        return ""
-    if "unavailable" in body.splitlines()[0].lower():
-        return f"\n**K8s utilization**: {body.splitlines()[0]}\n"
-    return _collapsible_details("K8s utilization (kubectl top during the run)", body)
-
-
 def _collapsible_details(summary: str, body: str) -> str:
     return "\n".join(
         [
@@ -1470,7 +1468,7 @@ def _max_connections_from_perf_run(perf_run_dir: Path) -> int | None:
 
 
 def _format_diagnostics_metrics_for_summary(perf_run_dir: Path) -> str:
-    """Condensed Postgres / pooler / cache / replication metrics from the bench run."""
+    """Full diagnostics collapsible when ``iteration_feedback.json`` is unavailable."""
     diag_root = perf_run_dir / "diagnostics" / "kubernetes"
     if not diag_root.is_dir():
         return ""
@@ -1490,41 +1488,16 @@ def _format_diagnostics_metrics_for_summary(perf_run_dir: Path) -> str:
     except Exception:
         return ""
 
-    sections: list[str] = []
-    for title, block in (
-        ("PostgreSQL", diag.database.to_prompt_block()),
-        ("Replication", diag.replication.to_prompt_block()),
-        ("PgBouncer pools", diag.pooler.to_prompt_block()),
-        ("Redis cache", diag.cache.to_prompt_block()),
-        ("Pod health", diag.pod_health.to_prompt_block()),
-    ):
-        text = (block or "").strip()
-        if not text or text.startswith("(no "):
-            continue
-        sections.append(f"#### {title}\n\n{text}")
-
-    if diag.pod_errors.sources:
-        log_lines = [
-            "#### Pod log warnings/errors",
+    body = "\n".join(
+        [
+            "Pod logs, then run-scoped metrics (PostgreSQL, replication, pooler, "
+            "cache, pod health, cluster events, ``kubectl top``). "
+            "Bursty metrics use **min / p50 / avg / p95 / max** over samples.",
             "",
-            "| Source | Lines | Warnings | Errors |",
-            "|---|---:|---:|---:|",
+            diag.to_prompt_block().strip() or "(no diagnostics collected)",
         ]
-        for st in diag.pod_errors.sources:
-            if st.warnings or st.errors:
-                log_lines.append(
-                    f"| {st.source} | {st.lines_total} | {st.warnings} | {st.errors} |"
-                )
-        if len(log_lines) > 4:
-            sections.append("\n".join(log_lines))
-
-    if not sections:
-        return ""
-
-    return _collapsible_details(
-        "Run diagnostics (Postgres, pooler, cache, replication)",
-        "\n\n".join(sections),
     )
+    return _collapsible_details("Diagnostics", body)
 
 
 def append_iteration_failure_block(

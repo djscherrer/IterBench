@@ -271,15 +271,16 @@ def deploy_iteration(
     logger: logging.Logger | None = None,
 ) -> DeployResult:
     from ..spec.models import K8sWorkloadSpec
-    from ..spec.render import render_iteration
+    from ..spec.render import write_manifest_files
     from .cleanup import cleanup_baxbench_namespaces_before_deploy
 
     log = logger or logging.getLogger(__name__)
     cleanup_baxbench_namespaces_before_deploy(logger=log)
 
     # Spec may be patched after generation (e.g. real registry image replaces placeholder).
-    manifest_file = render_iteration(iteration_path)
-    spec = K8sWorkloadSpec.from_yaml_file(require_iteration_spec_path(iteration_path))
+    spec_path = require_iteration_spec_path(iteration_path)
+    spec = K8sWorkloadSpec.from_yaml_file(spec_path)
+    manifest_file = write_manifest_files(spec, iteration_manifests_dir(iteration_path))
     waits: list[str] = ["deployment/backend"]
     statefulset_waits: list[str] = []
     statefulset_wait_timeout_s = wait_timeout_s
@@ -322,9 +323,6 @@ def render_and_deploy(
     wait_timeout_s: int = 300,
     logger: logging.Logger | None = None,
 ) -> DeployResult:
-    from ..spec.render import render_iteration
-
-    render_iteration(iteration_path)
     result = deploy_iteration(iteration_path, wait_timeout_s=wait_timeout_s, logger=logger)
     if not result.success:
         raise RuntimeError(f"K8s deploy failed for {iteration_path}; see deploy/bench.json")

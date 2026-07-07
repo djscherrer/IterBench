@@ -64,33 +64,49 @@ class IterationFeedback:
             return self._to_prompt_text_failed()
         return self._to_prompt_text_success()
 
+    def load_test_prompt_text(self) -> str:
+        """Load-test block shared by iteration feedback and experiment summary."""
+        return "\n".join(
+            [
+                "### Adaptive ramp",
+                "Controller decision points only (per-second samples omitted).",
+                "",
+                self.load_run_summary.strip() or "(load run details unavailable)",
+                "",
+                "### Locust (per endpoint)",
+                "Source: Locust ``locust/results/<test>_stats.csv`` "
+                "(includes p95/p99 from Locust percentiles).",
+                "",
+                self.locust_summary or "(no Locust stats found)",
+                "",
+                "### Locust HTTP errors",
+                "Client-side failure messages from Locust "
+                "(often generic 500s; see diagnostics for root cause).",
+                "",
+                self.error_excerpt or "(no Locust error report)",
+            ]
+        )
+
+    def diagnostics_prompt_text(self) -> str:
+        """Diagnostics block shared by iteration feedback and experiment summary."""
+        return "\n".join(
+            [
+                "Pod logs, then run-scoped metrics (PostgreSQL, replication, pooler, "
+                "cache, pod health, cluster events, ``kubectl top``). "
+                "Bursty metrics use **min / p50 / avg / p95 / max** over samples.",
+                "",
+                self.diagnostics_summary.strip() or "(no diagnostics collected)",
+            ]
+        )
+
     def _to_prompt_text_success(self) -> str:
         parts = [
             "## Load test results",
             "",
-            "### Adaptive ramp",
-            "Controller decision points only (per-second samples omitted).",
-            "",
-            self.load_run_summary.strip() or "(load run details unavailable)",
-            "",
-            "### Locust (per endpoint)",
-            "Source: Locust ``locust/results/<test>_stats.csv`` "
-            "(includes p95/p99 from Locust percentiles).",
-            "",
-            self.locust_summary or "(no Locust stats found)",
-            "",
-            "### Locust HTTP errors",
-            "Client-side failure messages from Locust "
-            "(often generic 500s; see diagnostics for root cause).",
-            "",
-            self.error_excerpt or "(no Locust error report)",
+            self.load_test_prompt_text(),
             "",
             "## Diagnostics",
-            "Pod logs, then run-scoped metrics (PostgreSQL, replication, pooler, "
-            "cache, pod health, cluster events, ``kubectl top``). "
-            "Bursty metrics use **min / p50 / avg / p95 / max** over samples.",
-            "",
-            self.diagnostics_summary.strip() or "(no diagnostics collected)",
+            self.diagnostics_prompt_text(),
         ]
         if self.notes:
             parts.extend(["", "## Notes", self.notes])
@@ -608,12 +624,15 @@ def load_prior_feedback_for_iteration(
     experiment_id: str | None = None,
 ) -> IterationFeedback | None:
     """
-    Load feedback from the **immediately preceding** iteration (``iteration_index - 1``).
+    Load bench feedback from iteration **N−1 only** when that iteration
+    completed a successful load run.
 
-    Returns bench-derived :class:`IterationFeedback` only when N−1 completed a
-    successful load run. When N−1 failed, returns ``None`` — use
-    :func:`k8s_bench.failure.load_prior_iteration_failure` for the structured
-  failure envelope instead.
+    Returns ``None`` when N−1 failed before bench or produced no feedback.
+    Older successful benches are not re-inlined — they remain in conversation
+    history from the decision turn that originally consumed them.
+
+    When N−1 failed, use :func:`k8s_bench.failure.load_prior_iteration_failure`
+    for the structured failure envelope from that immediate predecessor.
     """
     if iteration_index <= 0:
         return None
@@ -626,12 +645,10 @@ def load_prior_feedback_for_iteration(
         resolve_iteration_dir,
     )
 
-    prev_idx = iteration_index - 1
-    prev_id = iteration_id_for_index(prev_idx)
+    prev_id = iteration_id_for_index(iteration_index - 1)
     ip = resolve_iteration_dir(
-        sample_dir, prev_id, experiment_id=experiment_id
+        sample_dir, prev_id, experiment_id=experiment_id, exclude_failed=False
     )
-
     if iteration_is_failed(ip):
         return None
 

@@ -31,8 +31,8 @@ class IterationLineage:
     """
     Snapshot of experiment disk state before routing this iteration.
 
-    - ``bench_feedback``: iteration N−1 Locust/diagnostics summary when N−1
-      completed a successful bench run (never a failure narrative).
+    - ``bench_feedback``: Locust/diagnostics from iteration N−1 when that
+      iteration completed a successful bench (``None`` otherwise).
     - ``prior_iteration_failure``: iteration N−1 ``failure.json`` envelope when
       N−1 failed (code, spec, deploy, or bench). Older failures are not carried
       forward — they remain in conversation history only.

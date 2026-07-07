@@ -43,9 +43,12 @@ class DiagnosticsSummary:
         ]
         parts: list[str] = []
         for heading, body in sections:
+            text = (body or "").strip()
+            if not text:
+                continue
             parts.append(heading)
             parts.append("")
-            parts.append(body)
+            parts.append(text)
             parts.append("")
         return "\n".join(parts).rstrip()
 

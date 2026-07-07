@@ -1,8 +1,8 @@
 """
 Locust bench stage (``05-bench/``).
 
-Orchestrates the bench phase: deploy the iteration image, run Locust load
-tests, refresh plots. Single-attempt logic and stage-level wiring live here.
+Runs Locust load tests against an iteration that already passed ``04-deploy``.
+Does not render manifests, ``kubectl apply``, build images, or push to the registry.
 """
 
 from __future__ import annotations
@@ -15,15 +15,16 @@ from typing import Any
 
 from locust_bench.paths import locust_csv_prefix
 
-from ..code.docker_image import ensure_docker_image
 from ..failure import BenchFailureRecord, fail_iteration_phase
+from ..failure.bench_diagnostics import collect_bench_failure_diagnostics
+from ..failure.classify import classify_bench_failure_kind
 from ..failure.persist import build_bench_iteration_failure
 from ..feedback import read_failed_iteration_error_excerpt
 from ..iteration import run_k8s_bench_iteration
 from ..orchestration.config import IterationPlan, RunConfig, SampleContext
 from ..workspace import (
     iteration_bench_dir,
-    resolve_bench_rebuild_code_dir,
+    iteration_bench_log_path,
     resolve_iteration_dir,
 )
 from ..workspace.skips import append_k8s_skip
@@ -44,9 +45,9 @@ class BenchAttemptResult:
 
 @dataclass(frozen=True)
 class BenchStageResult:
-    """Success when ``attempt`` is set (bench run completed)."""
+    """Set ``ok=True`` when the Locust run completed."""
 
-    attempt: BenchAttemptResult | None = None
+    ok: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -60,7 +61,7 @@ def rotate_top_level_into_attempt(
     """Move top-level bench artifacts into ``attempts/<NNN>/`` before retry."""
     bench_dir = iteration_bench_dir(iteration_path)
     attempt_dir.mkdir(parents=True, exist_ok=True)
-    for name in ("bench.log",):
+    for name in (iteration_bench_log_path(iteration_path).name,):
         src = bench_dir / name
         if src.is_file():
             shutil.move(str(src), str(attempt_dir / name))
@@ -73,16 +74,22 @@ def build_bench_failure_record(
     error: str,
     attempt: int | None = None,
 ) -> BenchFailureRecord:
-    excerpt = read_failed_iteration_error_excerpt(iteration_path)
-    if not excerpt:
-        excerpt = error
+    diagnostic_excerpt = collect_bench_failure_diagnostics(iteration_path)
+    classify_text = "\n".join(
+        part for part in (error, diagnostic_excerpt) if part and part.strip()
+    )
+    if not classify_text.strip():
+        classify_text = read_failed_iteration_error_excerpt(iteration_path) or error
+    kind = classify_bench_failure_kind(classify_text)
+    if not diagnostic_excerpt:
+        diagnostic_excerpt = classify_text
     return BenchFailureRecord(
         phase="bench",
-        kind="bench_run",
+        kind=kind,  # type: ignore[arg-type]
         iteration_id=iteration_id,
         attempt=attempt,
         summary=error or "benchmark run failed",
-        diagnostic_excerpt=excerpt,
+        diagnostic_excerpt=diagnostic_excerpt,
     )
 
 
@@ -93,16 +100,12 @@ def run_bench_attempt(
     sample: int,
     iteration_path: Path,
     run_dir: Path,
-    image_id: str,
-    timeout: int,
     bench_users: int | None,
     bench_spawn_rate: int | None,
     bench_run_time: int | None,
-    k8s_wait_timeout: int,
     iteration_index: int | None,
     iteration_id: str,
     logger: logging.Logger,
-    rebuild_code_dir: Path | None = None,
     load_profile: str = "default",
     k8s_cluster: str = "",
     attempt_index: int = 1,
@@ -114,15 +117,11 @@ def run_bench_attempt(
         sample=sample,
         iteration_path=iteration_path,
         run_dir=run_dir,
-        image_id=image_id,
-        timeout=timeout,
         bench_users=bench_users,
         bench_spawn_rate=bench_spawn_rate,
         bench_run_time=bench_run_time,
-        k8s_wait_timeout=k8s_wait_timeout,
         iteration_index=iteration_index,
         logger=logger,
-        rebuild_code_dir=rebuild_code_dir,
         load_profile=load_profile,
         k8s_cluster=k8s_cluster,
     )
@@ -154,15 +153,11 @@ def _run_locust(
     sample: int,
     iteration_path: Path,
     run_dir: Path,
-    image_id: str,
-    timeout: int,
     bench_users: int | None,
     bench_spawn_rate: int | None,
     bench_run_time: int | None,
-    k8s_wait_timeout: int,
     iteration_index: int | None,
     logger: logging.Logger,
-    rebuild_code_dir: Path | None,
     load_profile: str,
     k8s_cluster: str,
 ) -> tuple[bool, str]:
@@ -181,19 +176,6 @@ def _run_locust(
         )
         return False, "no performance tests configured"
 
-    image_id = ensure_docker_image(
-        task, results_dir, sample, image_id, logger, code_dir=rebuild_code_dir
-    )
-    if image_id is None:
-        append_k8s_skip(
-            task_run_dir,
-            sample,
-            f"skipped iteration {folder_id}: failed to build docker image"
-            if iteration_index
-            else "skipped: failed to build docker image for k8s bench",
-        )
-        return False, "failed to build docker image for k8s bench"
-
     locustfile = _resolve_locustfile(task, run_dir)
     if locustfile is None:
         append_k8s_skip(task_run_dir, sample, "skipped: missing locustfile")
@@ -203,7 +185,6 @@ def _run_locust(
         f"{esc(task.model)}-{esc(task.env.id)}-"
         f"{esc(task.scenario.id)}-sample{sample}"
     )
-    labels = _bench_labels(task, iteration_index=iteration_index)
 
     for test in tests:
         csv_prefix = locust_csv_prefix(run_dir, test)
@@ -216,19 +197,12 @@ def _run_locust(
             run_k8s_bench_iteration(
                 iteration_path=iteration_path,
                 run_dir=run_dir,
-                image_id=image_id,
                 sample_slug=sample_slug,
-                app_port=task.env.port,
-                needs_db=task.scenario.needs_db,
                 locustfile=locustfile,
                 csv_prefix=csv_prefix,
-                timeout=timeout,
-                locust_user=test,
                 bench_users=bench_users,
                 bench_spawn_rate=bench_spawn_rate,
                 bench_run_time=bench_run_time,
-                wait_timeout_s=k8s_wait_timeout,
-                labels=labels,
                 load_profile=load_profile,
                 k8s_cluster=k8s_cluster,
                 logger=logger,
@@ -273,19 +247,6 @@ def _resolve_locustfile(task: Any, run_dir: Path) -> Path | None:
     return None
 
 
-def _bench_labels(task: Any, *, iteration_index: int | None = None) -> dict[str, str]:
-    from tasks import esc
-
-    labels = {
-        "baxbench.dev/model": esc(task.model),
-        "baxbench.dev/scenario": esc(task.scenario.id),
-        "baxbench.dev/env": esc(task.env.id),
-    }
-    if iteration_index is not None:
-        labels["baxbench.dev/phase"] = str(iteration_index)
-    return labels
-
-
 # ---------------------------------------------------------------------------
 # Stage-level orchestration
 # ---------------------------------------------------------------------------
@@ -294,45 +255,32 @@ def run_bench_stage(
     ctx: SampleContext,
     plan: IterationPlan,
     run_dir: Path,
-    image_id: str,
     cfg: RunConfig,
     logger: logging.Logger,
-    *,
-    rebuild_code_dir: Path | None = None,
 ) -> BenchStageResult:
-    """Run the Locust bench for one iteration."""
+    """Run the Locust bench for one iteration (deploy must have succeeded)."""
     iteration_path = resolve_iteration_dir(
         ctx.sample_dir, plan.iteration_id, experiment_id=ctx.experiment_id
     )
-    if rebuild_code_dir is None:
-        rebuild_code_dir = resolve_bench_rebuild_code_dir(
-            ctx.sample_dir,
-            iteration_path,
-            experiment_id=ctx.experiment_id,
-        )
     result = run_bench_attempt(
         task=ctx.task,
         results_dir=ctx.results_dir,
         sample=ctx.sample,
         iteration_path=iteration_path,
         run_dir=run_dir,
-        image_id=image_id,
-        timeout=cfg.timeout,
         bench_users=cfg.bench_users,
         bench_spawn_rate=cfg.bench_spawn_rate,
         bench_run_time=cfg.bench_run_time,
-        k8s_wait_timeout=cfg.k8s_wait_timeout,
         iteration_index=plan.iteration_index,
         iteration_id=plan.iteration_id,
         logger=logger,
-        rebuild_code_dir=rebuild_code_dir,
         load_profile=cfg.load_profile,
         k8s_cluster=ctx.k8s_cluster,
         attempt_index=1,
         enable_attempts=False,
     )
     if result.ok:
-        return BenchStageResult(attempt=result)
+        return BenchStageResult(ok=True)
 
     iteration_failure = build_bench_iteration_failure(
         iteration_path,

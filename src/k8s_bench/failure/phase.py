@@ -12,6 +12,7 @@ from .persist import write_iteration_failure
 from .record import (
     BenchFailureRecord,
     CodeFailureRecord,
+    DecisionFailureRecord,
     DeployFailureRecord,
     IterationFailure,
     Phase,
@@ -36,11 +37,19 @@ def fail_iteration_phase(
     folder with ``-failed`` suffix, and append a failure block to the summary.
     """
     phase: Phase = (
-        kind if kind in {"code", "spec", "deploy", "bench"} else "code"
+        kind if kind in {"decision", "code", "spec", "deploy", "bench"} else "code"
     )  # type: ignore[assignment]
     if iteration_failure is None:
         summary = failure_reason or f"{phase} phase failed"
-        if phase == "spec":
+        if phase == "decision":
+            terminal = DecisionFailureRecord(
+                phase="decision",
+                kind="llm_call",
+                iteration_id=iteration_id,
+                summary=summary,
+                llm_error=summary,
+            )
+        elif phase == "spec":
             terminal = SpecFailureRecord(
                 phase="spec",
                 kind="spec_validation",
@@ -50,7 +59,7 @@ def fail_iteration_phase(
         elif phase == "deploy":
             terminal = DeployFailureRecord(
                 phase="deploy",
-                kind="deploy_probe",
+                kind="unknown",
                 iteration_id=iteration_id,
                 summary=summary,
                 reason=summary,
@@ -58,7 +67,7 @@ def fail_iteration_phase(
         elif phase == "bench":
             terminal = BenchFailureRecord(
                 phase="bench",
-                kind="bench_run",
+                kind="unknown",
                 iteration_id=iteration_id,
                 summary=summary,
             )

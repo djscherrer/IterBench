@@ -6,7 +6,8 @@ This package owns the *story* of one iterative k8s experiment
 
 - :mod:`config`     – frozen dataclasses for each scope (run / sample / iteration).
 - :mod:`preflight`  – sample workspace setup; postlude cleanup.
-- :mod:`plan`       – resolve iteration folder, skip checks, load prior signals.
+- :mod:`plan`       – resolve iteration folder, skip checks, load prior signals;
+                      :func:`finalize_iteration_plan` builds :class:`IterationPlan`.
 - :mod:`execute`    – run all stages of one iteration in order.
 
 The per-iteration stage work (decision, code, spec, bench, outcome) lives in

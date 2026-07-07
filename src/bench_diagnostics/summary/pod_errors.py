@@ -24,6 +24,8 @@ _NORMALIZE_PATTERNS: list[tuple[re.Pattern[str], str]] = [
     (re.compile(r"\b\d{1,3}(?:\.\d{1,3}){3}(?::\d+)?\b"), "<host>"),
     (re.compile(r"\b[0-9a-f]{8,}\b", re.I), "<id>"),
     (re.compile(r"\b\d{4,}\b"), "<n>"),
+    # Collapse driver-generated prepared statement names (s13, s245, ...).
+    (re.compile(r'prepared statement "s\d+"', re.I), 'prepared statement "s<n>"'),
     (re.compile(r"at \S+"), "at <frame>"),
     (re.compile(r"\s+"), " "),
 ]
@@ -33,6 +35,22 @@ _CLASS_RULES: list[tuple[str, re.Pattern[str]]] = [
     ("db_deadlock", re.compile(r"deadlock detected", re.I)),
     ("db_missing_relation", re.compile(r'relation "[^"]+" does not exist', re.I)),
     ("db_pool_exhausted", re.compile(r"(too many clients|remaining connection slots)", re.I)),
+    (
+        "db_prepared_statement_missing",
+        re.compile(r'prepared statement "s\d+" does not exist', re.I),
+    ),
+    (
+        "db_prepared_statement_exists",
+        re.compile(r'prepared statement "s\d+" already exists', re.I),
+    ),
+    (
+        "db_protocol_desync",
+        re.compile(r"insufficient data left in message", re.I),
+    ),
+    (
+        "db_invalid_utf8",
+        re.compile(r'invalid byte sequence for encoding "UTF8"', re.I),
+    ),
     (
         "db_connection_dropped",
         re.compile(r"(ETIMEDOUT|ECONNRESET|Connection terminated)", re.I),
@@ -62,6 +80,10 @@ _CLASS_LABELS: dict[str, str] = {
     "db_connection_dropped": "Database connection dropped",
     "app_startup_failure": "Application failed to start",
     "db_schema_race": "Schema initialization race (duplicate catalog object)",
+    "db_prepared_statement_missing": "Prepared statement missing (pooler/protocol mismatch)",
+    "db_prepared_statement_exists": "Prepared statement already exists (pooler/protocol mismatch)",
+    "db_protocol_desync": "PostgreSQL protocol desynchronization",
+    "db_invalid_utf8": "Invalid UTF-8 payload reaching PostgreSQL",
 }
 
 _LOG_LINE_PREFIX_RE = re.compile(
@@ -188,10 +210,15 @@ class PodErrorSummary:
                     f"{row.first_seen} | {row.last_seen} |"
                 )
             lines.append("")
-            lines.append("Example per class:")
-            for row in self.error_rows:
+            example_limit = 3
+            lines.append(
+                f"Example per class (top {min(example_limit, len(self.error_rows))} by count):"
+            )
+            for row in self.error_rows[:example_limit]:
+                lines.append(f"- `{row.class_id}`: `{_shorten_example_line(row.example_line)}`")
+            if len(self.error_rows) > example_limit:
                 lines.append(
-                    f"- `{row.class_id}`: `{_shorten_example_line(row.example_line)}`"
+                    f"- (examples omitted for {len(self.error_rows) - example_limit} smaller classes)"
                 )
             lines.append("")
 
@@ -210,13 +237,17 @@ class PodErrorSummary:
                     f"| `{row.class_id}` | {src} | {row.count} | "
                     f"{row.pod_count} | {row.first_seen} | {row.last_seen} |"
                 )
-            if len(self.warning_rows) <= 5:
-                lines.append("")
-                lines.append("Example per class:")
-                for row in self.warning_rows:
-                    lines.append(
-                        f"- `{row.class_id}`: `{_shorten_example_line(row.example_line)}`"
-                    )
+            lines.append("")
+            example_limit = 3
+            lines.append(
+                f"Example per class (top {min(example_limit, len(self.warning_rows))} by count):"
+            )
+            for row in self.warning_rows[:example_limit]:
+                lines.append(f"- `{row.class_id}`: `{_shorten_example_line(row.example_line)}`")
+            if len(self.warning_rows) > example_limit:
+                lines.append(
+                    f"- (examples omitted for {len(self.warning_rows) - example_limit} smaller classes)"
+                )
 
         return "\n".join(lines).rstrip()
 

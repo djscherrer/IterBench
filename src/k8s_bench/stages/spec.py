@@ -1,41 +1,31 @@
 """
 Spec preparation stage (``03-spec/``).
 
-Orchestrates retry loops, deploy probes, reuse, and failure handling.
+Orchestrates retry loops, reuse, and failure handling. Writes and validates
+``spec.yaml`` only; manifest rendering happens in the deploy stage.
 Single attempts live in :mod:`k8s_bench.spec.attempt` (``run_spec_attempt``).
 """
 
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
 from ..cluster.capacity import collect_cluster_capacity
 from ..failure import (
-    DeployFailureRecord,
     SpecFailureRecord,
     build_spec_iteration_failure,
     fail_iteration_phase,
 )
 from ..orchestration.config import IterationPlan, RunConfig, SampleContext
 from ..orchestration.lineage import prior_spec_failure_record
-from ..spec.attempt import (
-    SpecAttemptResult,
-    _record_failed_spec_attempt,
-    record_spec_deploy_probe_failure,
-    run_spec_attempt,
-)
+from ..spec.attempt import SpecAttemptResult, run_spec_attempt
 from ..spec.reuse import reuse_deployment_spec_for_iteration
 from ..workspace import (
     find_iteration_spec_path,
     resolve_iteration_dir,
     update_iteration_meta,
-)
-from ..stages.deploy import (
-    DeployAttemptResult,
-    baseline_deploy_probe_callback,
 )
 
 
@@ -58,9 +48,10 @@ def run_spec_stage(
     """
     Generate a new ``spec.yaml`` for this iteration (``03-spec``).
 
-    - ``mode="baseline"``: static validation + deploy probe per attempt.
-    - ``mode="refinement"``: static validation only (deploy stage runs later).
+    Static spec validation only; cluster deploy runs in ``04-deploy``.
     """
+    del image_id  # image is patched during deploy, not spec generation
+
     if max_attempts < 1:
         raise ValueError(f"max_attempts must be >= 1, got {max_attempts}")
 
@@ -69,12 +60,6 @@ def run_spec_stage(
     )
     is_baseline = mode == "baseline"
     enable_attempts = is_baseline or max_attempts > 1
-
-    deploy_probe: Callable[[], DeployAttemptResult] | None = None
-    if is_baseline:
-        deploy_probe = baseline_deploy_probe_callback(
-            ctx, plan, image_id, cfg, iteration_path, logger
-        )
 
     prior_spec_failure = prior_spec_failure_record(plan.lineage)
     validation_feedback: str | None = (
@@ -87,7 +72,7 @@ def run_spec_stage(
     last_validation_errors: tuple[str, ...] = ()
     last_validation_warnings: tuple[str, ...] = ()
     last_err = (
-        "baseline spec generation did not produce a deployable configuration"
+        "baseline spec generation did not produce a valid configuration"
         if is_baseline
         else "static spec validation failed"
     )
@@ -125,7 +110,7 @@ def run_spec_stage(
             session=ctx.session,
             logger=logger,
             capacity=capacity,
-            prior_feedback=plan.lineage.bench_feedback if not is_baseline else None,
+            refinement=not is_baseline,
             validation_feedback=validation_feedback,
             max_validation_retries=3 if is_baseline else 1,
             attempt_index=attempt,
@@ -172,53 +157,6 @@ def run_spec_stage(
             result=result,
             logger=logger,
         )
-
-        if deploy_probe is not None:
-            probe = deploy_probe()
-            if probe.ok:
-                logger.info(
-                    "baseline deploy probe passed on attempt %d for sample %d",
-                    attempt,
-                    ctx.sample,
-                )
-                break
-
-            last_err = probe.reason
-            deploy_failure = probe.failure
-            if deploy_failure is None:
-                deploy_failure = DeployFailureRecord(
-                    phase="deploy",
-                    kind="deploy_probe",
-                    iteration_id=plan.iteration_id,
-                    attempt=attempt,
-                    summary=probe.reason,
-                    reason=probe.reason,
-                )
-            validation_feedback = deploy_failure.to_prompt_block()
-            if enable_attempts:
-                _record_failed_spec_attempt(
-                    iteration_path=iteration_path,
-                    attempt_index=attempt,
-                    enable_attempts=True,
-                    status="deploy_probe_failed",
-                    error=probe.reason,
-                    validation_feedback=validation_feedback,
-                )
-            record_spec_deploy_probe_failure(
-                iteration_path,
-                attempt_index=attempt,
-                probe_reason=probe.reason,
-                probe_feedback=validation_feedback,
-            )
-            logger.warning(
-                "baseline deploy probe failed attempt %d/%d: %s",
-                attempt,
-                max_attempts,
-                probe.reason,
-            )
-            spec_file = None
-            continue
-
         break
 
     if spec_file is None:
@@ -288,7 +226,7 @@ def _append_spec_summary_on_success(
             spec=result.spec,
             raw_response=result.raw_response,
             warnings=list(result.warnings),
-            had_prior_feedback=plan.lineage.bench_feedback is not None,
+            had_prior_feedback=plan.iteration_index > 0,
             iteration_index=plan.iteration_index,
         )
     except Exception as exc:

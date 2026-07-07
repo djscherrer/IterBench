@@ -38,7 +38,6 @@ from .spec import (
     K8sWorkloadSpec,
     generate_k8s_workload_spec,
     prepare_iteration,
-    render_iteration,
     render_manifests,
 )
 
@@ -67,7 +66,6 @@ __all__ = [
     "make_k8s_perf_run_dir",
     "new_iteration_id",
     "prepare_iteration",
-    "render_iteration",
     "render_manifests",
     "resolve_iterations_to_run",
     "run_k8s_bench_iteration",

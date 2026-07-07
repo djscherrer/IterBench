@@ -34,7 +34,7 @@ class CacheSummary:
 
     def to_prompt_block(self) -> str:
         if self.samples <= 0:
-            return "(no Redis INFO samples — cache disabled or not reachable)"
+            return ""
         parts = [
             "Redis ``INFO`` samples (memory, clients, command throughput).",
             DISTRIBUTION_LEGEND,

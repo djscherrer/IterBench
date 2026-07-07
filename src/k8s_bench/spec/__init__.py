@@ -12,7 +12,7 @@ from .models import (
     ResourceSpec,
 )
 from .prompts import build_k8s_spec_prompt, format_iteration_progress
-from .render import render_iteration, render_manifests
+from .render import render_manifests, write_manifest_files
 
 __all__ = [
     "BackendSpec",
@@ -24,8 +24,8 @@ __all__ = [
     "format_iteration_progress",
     "generate_k8s_workload_spec",
     "prepare_iteration",
-    "render_iteration",
     "render_manifests",
+    "write_manifest_files",
     "run_spec_attempt",
     "write_spec_generation_artifacts",
 ]

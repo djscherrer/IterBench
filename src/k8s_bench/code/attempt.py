@@ -14,7 +14,6 @@ from typing import Any, Literal
 
 from llm import Prompter
 
-from ..feedback import IterationFeedback
 from ..failure import (
     CodeFailureRecord,
     build_code_failure_record,
@@ -186,7 +185,6 @@ def run_code_attempt(
     max_retries: int,
     base_delay: float,
     max_delay: float,
-    prior_feedback: IterationFeedback | None,
     prior_iteration_failure: CodeFailureRecord | None,
     iteration_index: int,
     total_iterations: int,
@@ -242,14 +240,11 @@ def run_code_attempt(
                 prior_attempt_failure=prior_attempt_failure,
             )
         else:
-            if prior_feedback is None:
-                raise ValueError("refinement codegen requires prior_feedback")
             prompt_text = build_code_refinement_prompt(
                 task=task,
                 results_dir=results_dir,
                 sample=sample,
                 iteration_id=iteration_id,
-                prior_feedback=prior_feedback,
                 prior_attempt_failure=prior_attempt_failure,
                 prior_iteration_failure=prior_iteration_failure,
                 iteration_index=iteration_index,

@@ -30,8 +30,8 @@ def ensure_iteration_core_layout(iteration_path: Path) -> None:
     iteration_path.mkdir(parents=True, exist_ok=True)
     for name in (
         PHASE_SPEC_DIRNAME,
-        f"{PHASE_SPEC_DIRNAME}/manifests",
         PHASE_DEPLOY_DIRNAME,
+        f"{PHASE_DEPLOY_DIRNAME}/manifests",
         PHASE_BENCH_DIRNAME,
     ):
         (iteration_path / name).mkdir(parents=True, exist_ok=True)

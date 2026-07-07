@@ -1,8 +1,9 @@
 """
 Prepare one iteration for execution: folder layout, skip checks, prior signals.
 
-Decision (code vs spec) and folder suffix routing is handled by
-``k8s_bench.orchestration.execute`` — not here.
+Refinement routing (baseline / forced / LLM) lives in
+:mod:`k8s_bench.stages.decision`; :func:`finalize_iteration_plan` applies the
+folder suffix and builds :class:`~k8s_bench.orchestration.config.IterationPlan`.
 """
 
 from __future__ import annotations
@@ -11,14 +12,16 @@ from pathlib import Path
 from typing import Any
 
 from ..workspace.skips import append_k8s_skip
+from ..stages.decision import DecisionStageResult
 from ..workspace import (
+    apply_iteration_folder_suffix,
     ensure_iteration_core_layout,
     init_iteration_meta,
     is_baseline_iteration,
     resolve_iteration_dir,
     update_iteration_meta,
 )
-from .config import IterationSetup, RunConfig, SampleContext
+from .config import IterationPlan, IterationSetup, RunConfig, SampleContext
 from .lineage import lineage_based_on_iteration_id, load_iteration_lineage
 
 
@@ -77,4 +80,39 @@ def _resolve_iteration_path(ctx: SampleContext, iteration_id: str) -> Path:
         iteration_id,
         experiment_id=ctx.experiment_id,
     )
+
+
+def finalize_iteration_plan(
+    ctx: SampleContext,
+    setup: IterationSetup,
+    decision_result: DecisionStageResult,
+) -> tuple[Path, IterationPlan]:
+    """Apply folder suffix from the decision and build the per-iteration plan."""
+    folder_kind = (
+        "baseline"
+        if decision_result.refinement_action == "baseline"
+        else ("code" if decision_result.refinement_action == "code" else "spec")
+    )
+    iteration_path = apply_iteration_folder_suffix(setup.iteration_path, folder_kind)
+    update_iteration_meta(iteration_path, folder=iteration_path.name)
+
+    lineage = setup.lineage
+    if decision_result.refinement_action == "deployment" and lineage.prior_code_dir is None:
+        raise RuntimeError(
+            f"No application code snapshot found for {setup.iteration_id} "
+            "(deployment/spec refinement requires `02-code/code/` from the "
+            "previous iteration)."
+        )
+
+    plan = IterationPlan(
+        iteration_id=setup.iteration_id,
+        iteration_index=setup.iteration_index,
+        refinement_action=decision_result.refinement_action,
+        decision=decision_result.decision,
+        lineage=lineage,
+    )
+    iteration_path = resolve_iteration_dir(
+        ctx.sample_dir, plan.iteration_id, experiment_id=ctx.experiment_id
+    )
+    return iteration_path, plan
 

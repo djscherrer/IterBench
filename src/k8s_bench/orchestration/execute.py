@@ -2,8 +2,9 @@
 Run one iteration end-to-end: decision → code → spec → deploy → bench → outcome.
 
 The orchestrator wires together the stages defined in :mod:`k8s_bench.stages`.
-Each stage receives a logger created here (one ``NN-<phase>/phase.log`` per
-stage). ``iteration.log`` at the iteration root holds only the header + outcome
+Each stage receives a logger created here (``NN-<phase>/phase.log`` for decision
+through deploy; ``05-bench/bench.log`` for bench via :func:`iteration_bench_log_path`).
+``iteration.log`` at the iteration root holds only the header + outcome
 (cheap, scannable index).
 """
 
@@ -14,35 +15,27 @@ from pathlib import Path
 
 from ..stages.bench import run_bench_stage
 from ..stages.code import run_code_stage, run_reuse_code_stage
-from ..stages.decision import (
-    RefinementDecision,
-    forced_refinement_action_after_failure,
-    persist_refinement_decision,
-    run_decision_stage,
-)
+from ..stages.decision import run_decision_stage
 from ..stages.deploy import run_deploy_stage
 from ..stages.outcome import run_outcome_stage
 from ..stages.spec import run_reuse_spec_stage, run_spec_stage
 from ..workspace import (
-    apply_iteration_folder_suffix,
     clear_bench_dir_if_present,
     iteration_bench_dir,
+    iteration_bench_log_path,
     iteration_code_log_path,
     iteration_decision_log_path,
     iteration_deploy_log_path,
     iteration_log_path,
     iteration_spec_log_path,
-    parse_iteration_index,
     resolve_iteration_dir,
-    update_iteration_meta,
 )
 from .config import (
     IterationOutcome,
-    IterationPlan,
     RunConfig,
     SampleContext,
 )
-from .plan import plan_iteration
+from .plan import finalize_iteration_plan, plan_iteration
 
 
 def execute_iteration(
@@ -59,106 +52,19 @@ def execute_iteration(
     # --------------------
     # 01-decision (routing)
     # --------------------
-    lineage = setup.lineage
-    decision: RefinementDecision | None = None
+    with ctx.task.create_logger(
+        iteration_decision_log_path(setup.iteration_path)
+    ) as decision_logger:
+        decision_result = run_decision_stage(ctx, setup, cfg, decision_logger)
 
-    if setup.is_baseline:
-        refinement_action = "baseline"
-    elif lineage.prior_iteration_failure is not None:
-        prior_fail = lineage.prior_iteration_failure
-        if parse_iteration_index(prior_fail.iteration_id) == 0:
-            return IterationOutcome(None, True)
-        forced = forced_refinement_action_after_failure(prior_fail.phase)
-        if forced is not None:
-            refinement_action = forced
-            decision = RefinementDecision(
-                action=refinement_action,
-                rationale=(
-                    f"Prior iteration `{prior_fail.iteration_id}` failed during "
-                    f"{prior_fail.phase} stage; automatically retrying "
-                    f"{'code' if refinement_action == 'code' else 'deployment/spec'} "
-                    "refinement (decision LLM skipped)."
-                ),
-                raw_response="",
-                iteration_index=setup.iteration_index,
-                based_on_iteration=prior_fail.iteration_id,
-            )
-            with ctx.task.create_logger(
-                iteration_decision_log_path(setup.iteration_path)
-            ) as decision_logger:
-                persist_refinement_decision(
-                    ctx,
-                    setup.iteration_path,
-                    setup.iteration_id,
-                    decision,
-                    cfg,
-                    decision_logger,
-                    based_on_iteration=prior_fail.iteration_id,
-                )
-                decision_logger.info(
-                    "iteration %s: forced refinement_action=%s after prior %s failure",
-                    setup.iteration_id,
-                    refinement_action,
-                    prior_fail.phase,
-                )
-        else:
-            with ctx.task.create_logger(
-                iteration_decision_log_path(setup.iteration_path)
-            ) as decision_logger:
-                decision = run_decision_stage(
-                    ctx,
-                    iteration_path=setup.iteration_path,
-                    iteration_index=setup.iteration_index,
-                    iteration_id=setup.iteration_id,
-                    cfg=cfg,
-                    lineage=lineage,
-                    logger=decision_logger,
-                )
-            refinement_action = decision.action
-    else:
-        # Prior iteration succeeded (or refinement_mode forces a path).
-        # -> Run the refinement decision stage (LLM or forced by mode).
-        with ctx.task.create_logger(
-            iteration_decision_log_path(setup.iteration_path)
-        ) as decision_logger:
-            decision = run_decision_stage(
-                ctx,
-                iteration_path=setup.iteration_path,
-                iteration_index=setup.iteration_index,
-                iteration_id=setup.iteration_id,
-                cfg=cfg,
-                lineage=lineage,
-                logger=decision_logger,
-            )
-        refinement_action = decision.action
+    if decision_result.abort_sample:
+        return IterationOutcome(None, True)
 
-    folder_kind = (
-        "baseline"
-        if refinement_action == "baseline"
-        else ("code" if refinement_action == "code" else "spec")
-    )
-    iteration_path = apply_iteration_folder_suffix(setup.iteration_path, folder_kind)
-    update_iteration_meta(iteration_path, folder=iteration_path.name)
-
-    if refinement_action == "deployment" and lineage.prior_code_dir is None:
-        raise RuntimeError(
-            f"No application code snapshot found for {setup.iteration_id} "
-            "(deployment/spec refinement requires `02-code/code/` from the "
-            "previous iteration)."
-        )
-
-    plan = IterationPlan(
-        iteration_id=setup.iteration_id,
-        iteration_index=setup.iteration_index,
-        refinement_action=refinement_action,  # type: ignore[arg-type]
-        decision=decision,
-        lineage=lineage,
-    )
-
-    iteration_path = resolve_iteration_dir(
-        ctx.sample_dir, plan.iteration_id, experiment_id=ctx.experiment_id
-    )
+    iteration_path, plan = finalize_iteration_plan(ctx, setup, decision_result)
     _write_iteration_header(iteration_path, plan, cfg)
+
+    refinement_action = plan.refinement_action
+    lineage = plan.lineage
 
     # -------
     # 02-code
@@ -228,17 +134,18 @@ def execute_iteration(
         iteration_deploy_log_path(iteration_path)
     ) as deploy_logger:
         deploy_result = run_deploy_stage(ctx, plan, image_id, cfg, deploy_logger)
-    if deploy_result.reason is not None:
+    if not deploy_result.ok:
         _append_iteration_outcome(iteration_path, "deploy-failed")
         return IterationOutcome(None, False)
 
     # --------
     # 05-bench
     # --------
-    bench_log = run_dir / "bench.log"
-    with ctx.task.create_logger(bench_log) as bench_logger:
-        bench_result = run_bench_stage(ctx, plan, run_dir, image_id, cfg, bench_logger)
-        if bench_result.attempt is None:
+    with ctx.task.create_logger(
+        iteration_bench_log_path(iteration_path)
+    ) as bench_logger:
+        bench_result = run_bench_stage(ctx, plan, run_dir, cfg, bench_logger)
+        if not bench_result.ok:
             _append_iteration_outcome(iteration_path, "bench-failed")
             return IterationOutcome(None, False)
         # ---------

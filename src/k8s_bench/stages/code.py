@@ -130,7 +130,6 @@ def run_code_stage(
             max_retries=cfg.max_retries,
             base_delay=cfg.base_delay,
             max_delay=cfg.max_delay,
-            prior_feedback=plan.lineage.bench_feedback,
             prior_iteration_failure=prior_code_failure_record(plan.lineage),
             iteration_index=plan.iteration_index,
             total_iterations=cfg.total_iterations,

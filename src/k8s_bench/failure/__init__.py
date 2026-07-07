@@ -23,8 +23,11 @@ from .persist import (
 )
 from .phase import fail_iteration_phase
 from .record import (
+    BenchFailureKind,
     BenchFailureRecord,
     CodeFailureRecord,
+    DecisionFailureRecord,
+    DeployFailureKind,
     DeployFailureRecord,
     IterationFailure,
     Phase,
@@ -35,8 +38,11 @@ FunctionalFailure = CodeFailureRecord.FunctionalFailure
 InfrastructureFailure = CodeFailureRecord.InfrastructureFailure
 
 __all__ = [
+    "BenchFailureKind",
     "BenchFailureRecord",
     "CodeFailureRecord",
+    "DecisionFailureRecord",
+    "DeployFailureKind",
     "DeployFailureRecord",
     "FunctionalFailure",
     "InfrastructureFailure",

@@ -9,7 +9,7 @@ projections of disk state for the duration of one logical scope:
   is set after iteration-000 baseline codegen completes.
 - :class:`IterationLineage` – built per iteration by ``plan.plan_iteration``.
 - :class:`IterationSetup` – built per iteration by ``plan.plan_iteration``.
-- :class:`IterationPlan` – built per iteration by the orchestrator (``orchestration.execute``).
+- :class:`IterationPlan` – built per iteration by :func:`plan.finalize_iteration_plan`.
 - :class:`IterationOutcome` – return value of ``execute.execute_iteration``;
                               the ``abort_sample`` flag preserves the legacy
                               ``break`` semantics on baseline failure.

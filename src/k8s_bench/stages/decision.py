@@ -9,9 +9,11 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
 from ..feedback import IterationFeedback
+from ..failure import DecisionFailureRecord, IterationFailure, fail_iteration_phase
 from ..prompt_helpers import format_artifact_pointers_block, resolve_artifact_pointers
 
 RefinementAction = Literal["deployment", "code"]
+RefinementActionFull = Literal["baseline", "deployment", "code"]
 RefinementMode = Literal["auto", "deployment", "code"]
 
 _DECISION_RE = re.compile(
@@ -20,6 +22,15 @@ _DECISION_RE = re.compile(
 _RATIONALE_RE = re.compile(
     r"<RATIONALE>\s*(.*?)\s*</RATIONALE>", re.IGNORECASE | re.DOTALL
 )
+
+
+@dataclass(frozen=True)
+class DecisionStageResult:
+    """Outcome of the decision stage (baseline routing, forced path, or LLM)."""
+
+    refinement_action: RefinementActionFull
+    decision: RefinementDecision | None = None
+    abort_sample: bool = False
 
 
 @dataclass(frozen=True)
@@ -99,6 +110,25 @@ def resolve_refinement_mode(refinement: str) -> RefinementMode:
     )
 
 
+def _format_decision_context(
+    *,
+    prior_feedback: IterationFeedback | None,
+    prior_iteration_failure: "IterationFailure | None",
+) -> str:
+    """Bench feedback from N−1 success, or N−1 failure — never both."""
+    if prior_feedback is not None:
+        return (
+            f"## Benchmark feedback ({prior_feedback.iteration_id})\n\n"
+            f"{prior_feedback.to_prompt_text()}"
+        )
+    if prior_iteration_failure is not None:
+        return (
+            f"## Previous iteration failure ({prior_iteration_failure.iteration_id})\n\n"
+            f"{prior_iteration_failure.terminal.to_prompt_block()}"
+        )
+    return "## Previous iteration\n\n(no prior iteration context available)"
+
+
 def build_refinement_decision_prompt(
     *,
     task: Any,
@@ -114,23 +144,21 @@ def build_refinement_decision_prompt(
 ) -> str:
     sample_dir = task.get_sample_dir(results_dir, sample)
     pointers = resolve_artifact_pointers(
-        sample_dir, experiment_id=experiment_id
+        sample_dir,
+        iteration_index=iteration_index,
+        experiment_id=experiment_id,
+        scope="decision",
     )
     from ..spec.prompts import format_iteration_progress
 
     progress = format_iteration_progress(
         iteration_index=iteration_index, total_iterations=total_iterations
     )
-    pointer_block = format_artifact_pointers_block(pointers)
-    if prior_feedback is not None:
-        context_text = prior_feedback.to_prompt_text()
-        context_heading = "## Benchmark feedback (previous iteration)"
-    elif prior_iteration_failure is not None:
-        context_text = prior_iteration_failure.terminal.to_prompt_block()
-        context_heading = "## Previous iteration failure"
-    else:
-        context_text = "(no prior iteration context available)"
-        context_heading = "## Previous iteration"
+    pointer_block = format_artifact_pointers_block(pointers, scope="decision")
+    context_text = _format_decision_context(
+        prior_feedback=prior_feedback,
+        prior_iteration_failure=prior_iteration_failure,
+    )
     return f"""You are a performance optimization strategist for BaxBench iterative experiments.
 
 After iteration `{based_on_iteration_id}`, decide what to refine **next** (`{next_iteration_id}`) to improve benchmark **goodput** (sustained rate of *successful* HTTP responses; failed requests do not count).
@@ -149,8 +177,6 @@ You may choose **exactly one** path:
 - Iteration: {next_iteration_id}
 
 {pointer_block}
-
-{context_heading}
 
 {context_text}
 
@@ -246,7 +272,9 @@ def decide_refinement_action(
 
     last_raw = ""
     last_exc: Exception | None = None
+    last_attempt: int | None = None
     for attempt in range(1, max_retries + 1):
+        last_attempt = attempt
         try:
             from ..llm_cost import check_k8s_llm_budget, record_k8s_llm_call
 
@@ -289,44 +317,182 @@ def decide_refinement_action(
             )
             time.sleep(delay)
 
-    logger.warning(
-        "refinement decision failed after %d attempts; defaulting to deployment: %s",
-        max_retries,
-        last_exc,
-    )
-    return RefinementDecision(
-        action="deployment",
-        rationale=f"Decision LLM failed ({last_exc}); defaulting to deployment tuning.",
+    raise DecisionLLMError(
+        iteration_id=next_iteration_id,
+        attempt=last_attempt,
         raw_response=last_raw,
-        iteration_index=iteration_index,
-        based_on_iteration=based_on_iteration_id,
+        exc=last_exc,
     )
+
+
+class DecisionLLMError(RuntimeError):
+    def __init__(
+        self,
+        *,
+        iteration_id: str,
+        attempt: int | None,
+        raw_response: str,
+        exc: Exception | None,
+    ) -> None:
+        self.iteration_id = iteration_id
+        self.attempt = attempt
+        self.raw_response = raw_response
+        self.exc = exc
+        super().__init__(str(exc or "unknown decision LLM error"))
 
 
 def run_decision_stage(
     ctx: "SampleContext",
-    *,
-    iteration_path: Path,
-    iteration_index: int,
-    iteration_id: str,
+    setup: "IterationSetup",
     cfg: "RunConfig",
-    lineage: "IterationLineage",
+    logger: logging.Logger,
+) -> DecisionStageResult:
+    """
+    Run the decision stage (``01-decision``): resolve baseline vs refinement path.
+
+    - Baseline (iteration 000): no LLM; returns ``refinement_action=baseline``.
+    - Prior iteration-000 failed: ``abort_sample=True`` (stop the sample).
+    - Prior code/spec failure: forced refinement without LLM when applicable.
+    - Otherwise: LLM (or ``refinement_mode`` override) chooses code vs deployment.
+
+    Does not rename the iteration folder; call :func:`finalize_iteration_plan` next.
+    """
+    from ..workspace import parse_iteration_index
+
+    if setup.is_baseline:
+        logger.info(
+            "iteration %s: baseline (no refinement decision LLM)",
+            setup.iteration_id,
+        )
+        return DecisionStageResult(refinement_action="baseline")
+
+    lineage = setup.lineage
+    prior_fail = lineage.prior_iteration_failure
+    if prior_fail is not None:
+        if parse_iteration_index(prior_fail.iteration_id) == 0:
+            logger.info(
+                "iteration %s: aborting sample (prior iteration-000 failed)",
+                setup.iteration_id,
+            )
+            return DecisionStageResult(
+                refinement_action="baseline",
+                abort_sample=True,
+            )
+        forced = forced_refinement_action_after_failure(prior_fail.phase)
+        if forced is not None:
+            decision = RefinementDecision(
+                action=forced,
+                rationale=(
+                    f"Prior iteration `{prior_fail.iteration_id}` failed during "
+                    f"{prior_fail.phase} stage; automatically retrying "
+                    f"{'code' if forced == 'code' else 'deployment/spec'} "
+                    "refinement (decision LLM skipped)."
+                ),
+                raw_response="",
+                iteration_index=setup.iteration_index,
+                based_on_iteration=prior_fail.iteration_id,
+            )
+            _persist_decision(
+                ctx,
+                setup,
+                cfg,
+                decision,
+                logger,
+                based_on_iteration=prior_fail.iteration_id,
+            )
+            logger.info(
+                "iteration %s: forced refinement_action=%s after prior %s failure",
+                setup.iteration_id,
+                forced,
+                prior_fail.phase,
+            )
+            return DecisionStageResult(
+                refinement_action=forced,
+                decision=decision,
+            )
+
+    try:
+        decision = _run_refinement_decision(ctx, setup, cfg, logger)
+        return DecisionStageResult(
+            refinement_action=decision.action,
+            decision=decision,
+        )
+    except DecisionLLMError as exc:
+        record = DecisionFailureRecord(
+            phase="decision",
+            kind="llm_parse"
+            if ("parse" in str(exc).lower() or "contain <decision>" in str(exc).lower())
+            else "llm_call",
+            iteration_id=setup.iteration_id,
+            attempt=exc.attempt,
+            summary="decision stage failed (LLM call or parse)",
+            llm_error=str(exc),
+            diagnostic_excerpt=(exc.raw_response or ""),
+        )
+        iteration_failure = IterationFailure(
+            iteration_id=setup.iteration_id,
+            phase="decision",
+            terminal=record,
+        )
+        if ctx.task_run_dir is not None:
+            fail_iteration_phase(
+                iteration_path=setup.iteration_path,
+                task_run_dir=ctx.task_run_dir,
+                sample_dir=ctx.sample_dir,
+                sample=ctx.sample,
+                iteration_id=setup.iteration_id,
+                kind="decision",
+                logger=logger,
+                iteration_failure=iteration_failure,
+            )
+        return DecisionStageResult(refinement_action="baseline", abort_sample=True)
+
+
+def _persist_decision(
+    ctx: "SampleContext",
+    setup: "IterationSetup",
+    cfg: "RunConfig",
+    decision: RefinementDecision,
+    logger: logging.Logger,
+    *,
+    based_on_iteration: str | None = None,
+) -> None:
+    from ..orchestration.lineage import lineage_based_on_iteration_id
+
+    based_on = based_on_iteration or lineage_based_on_iteration_id(setup.lineage)
+    if based_on is None:
+        return
+    persist_refinement_decision(
+        ctx,
+        setup.iteration_path,
+        setup.iteration_id,
+        decision,
+        cfg,
+        logger,
+        based_on_iteration=based_on,
+    )
+
+
+def _run_refinement_decision(
+    ctx: "SampleContext",
+    setup: "IterationSetup",
+    cfg: "RunConfig",
     logger: logging.Logger,
 ) -> RefinementDecision:
-    """
-    Run the decision stage (``01-decision``): choose code vs deployment-spec refinement.
-
-    Caller must skip this for baseline (iteration_index == 0). This stage does not
-    rename the iteration folder or build :class:`~k8s_bench.orchestration.config.IterationPlan`;
-    orchestration applies the folder suffix after this returns.
-    """
+    """LLM or ``refinement_mode`` forced choice for code vs deployment refinement."""
     from ..orchestration.lineage import lineage_based_on_iteration_id
     from ..workspace import update_iteration_meta
+
     if ctx.session is None:
         raise RuntimeError(
             "missing LLM session on SampleContext; expected sample_preflight() to "
             "initialize ctx.session for iterative experiments"
         )
+
+    lineage = setup.lineage
+    iteration_path = setup.iteration_path
+    iteration_index = setup.iteration_index
+    iteration_id = setup.iteration_id
 
     based_on_iteration_id = lineage_based_on_iteration_id(lineage)
     if based_on_iteration_id is None:

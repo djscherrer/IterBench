@@ -15,7 +15,7 @@ from ..workspace import (
     default_k8s_namespace,
 )
 from .models import K8sWorkloadSpec
-from .render import render_iteration
+
 
 def reuse_deployment_spec_for_iteration(
     *,
@@ -62,7 +62,6 @@ def reuse_deployment_spec_for_iteration(
     ensure_iteration_core_layout(iteration_path)
     dest = iteration_spec_path(iteration_path)
     reused.write_yaml(dest)
-    render_iteration(iteration_path)
 
     note = (
         f"Reused deployment spec from {source_path.name} ({source_iteration_id})\n"

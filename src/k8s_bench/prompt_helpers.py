@@ -4,23 +4,26 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 
 from .failure import CodeFailureRecord, load_terminal_failure_record
 from .workspace import (
-    find_latest_code_snapshot_iteration,
+    find_last_code_refinement_iteration,
+    find_last_spec_refinement_iteration,
     iteration_folder_is_failed,
     iteration_functional_tests_dir,
     iteration_id_for_index,
-    latest_spec_path,
     resolve_iteration_dir,
 )
+
+PointerScope = Literal["decision", "code", "spec"]
 
 
 @dataclass(frozen=True)
 class ArtifactPointers:
     """Iteration folder names for conversation-history artifact references."""
 
-    code_iteration_folder: str
+    code_iteration_folder: str | None
     code_status: str
     spec_iteration_folder: str | None
 
@@ -56,25 +59,47 @@ def _code_pointer_status(iteration_path: Path) -> str:
 
 
 def resolve_artifact_pointers(
-    sample_dir: Path, *, experiment_id: str | None = None
+    sample_dir: Path,
+    *,
+    iteration_index: int,
+    experiment_id: str | None = None,
+    scope: PointerScope = "decision",
 ) -> ArtifactPointers:
-    """Map on-disk code/spec lineage to iteration folder names for prompt pointers."""
-    latest_iteration = find_latest_code_snapshot_iteration(
-        sample_dir, experiment_id=experiment_id
-    )
-    if latest_iteration is None:
-        latest_iteration = resolve_iteration_dir(
-            sample_dir,
-            iteration_id_for_index(0),
-            experiment_id=experiment_id,
-        )
+    """
+    Map on-disk lineage to conversation-history artifact references.
 
-    spec_pair = latest_spec_path(sample_dir, experiment_id=experiment_id)
-    spec_folder = spec_pair[1].name if spec_pair is not None else None
+    Pointers aim at the artifact being edited in the current phase:
+    - **code** scope → last code-refinement iteration (usually N−1 on a code path)
+    - **spec** scope → last spec-refinement iteration (skips deploy-only copies)
+    - **decision** scope → both of the above
+    """
+    code_folder: str | None = None
+    code_status = ""
+    if scope in {"decision", "code"}:
+        code_iter = find_last_code_refinement_iteration(
+            sample_dir, iteration_index, experiment_id=experiment_id
+        )
+        if code_iter is None and iteration_index > 0:
+            code_iter = resolve_iteration_dir(
+                sample_dir,
+                iteration_id_for_index(0),
+                experiment_id=experiment_id,
+            )
+        if code_iter is not None:
+            code_folder = code_iter.name
+            code_status = _code_pointer_status(code_iter)
+
+    spec_folder: str | None = None
+    if scope in {"decision", "spec"}:
+        spec_iter = find_last_spec_refinement_iteration(
+            sample_dir, iteration_index, experiment_id=experiment_id
+        )
+        if spec_iter is not None:
+            spec_folder = spec_iter.name
 
     return ArtifactPointers(
-        code_iteration_folder=latest_iteration.name,
-        code_status=_code_pointer_status(latest_iteration),
+        code_iteration_folder=code_folder,
+        code_status=code_status,
         spec_iteration_folder=spec_folder,
     )
 
@@ -97,28 +122,31 @@ def format_code_history_pointer(
 def format_artifact_pointers_block(
     pointers: ArtifactPointers,
     *,
-    include_bench_telemetry: bool = False,
+    scope: PointerScope = "decision",
 ) -> str:
     """Bullet block pointing at prior turns in conversation history."""
-    lines = [
-        format_code_history_pointer(
-            pointers.code_iteration_folder,
-            status=pointers.code_status,
-        ),
-    ]
-    if pointers.spec_iteration_folder:
-        lines.append(
-            f"- **Kubernetes deployment**: see your `<SPEC>` response from "
-            f"`{pointers.spec_iteration_folder}` in conversation history."
-        )
-    else:
-        lines.append(
-            "- **Kubernetes deployment**: (no prior `<SPEC>` in conversation history yet)"
-        )
-    if include_bench_telemetry:
-        lines.append(
-            "- **Benchmark telemetry**: load-test results, diagnostics, and "
-            "failed-attempt anti-examples — see the **decision-phase** user "
-            "message in conversation history (where deployment vs code was chosen)."
-        )
+    lines: list[str] = []
+    if scope in {"decision", "code"}:
+        if pointers.code_iteration_folder:
+            lines.append(
+                format_code_history_pointer(
+                    pointers.code_iteration_folder,
+                    status=pointers.code_status,
+                )
+            )
+        else:
+            lines.append(
+                "- **Application code**: (no prior `<CODE>` in conversation history yet)"
+            )
+    if scope in {"decision", "spec"}:
+        if pointers.spec_iteration_folder:
+            lines.append(
+                f"- **Kubernetes deployment**: see your `<SPEC>` response from "
+                f"`{pointers.spec_iteration_folder}` in conversation history."
+            )
+        else:
+            lines.append(
+                "- **Kubernetes deployment**: "
+                "(no prior `<SPEC>` in conversation history yet)"
+            )
     return "\n".join(lines)

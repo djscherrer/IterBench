@@ -136,14 +136,14 @@ def build_manifest_documents(spec: K8sWorkloadSpec) -> list[dict[str, Any]]:
     return docs
 
 
-def render_manifests(
+def write_manifest_files(
     spec: K8sWorkloadSpec,
     out_dir: Path,
     *,
     combined_filename: str = "all.yaml",
 ) -> Path:
     """
-    Write generated manifests under ``out_dir``.
+    Write generated manifest YAML files under ``out_dir``.
 
     Returns path to the combined multi-document YAML file.
     """
@@ -160,6 +160,7 @@ def render_manifests(
     return combined_path
 
 
-def render_iteration(iteration_path: Path) -> Path:
+def render_manifests(iteration_path: Path) -> Path:
+    """Render ``04-deploy/manifests/`` from the iteration's ``spec.yaml``."""
     spec = K8sWorkloadSpec.from_yaml_file(iteration_spec_path(iteration_path))
-    return render_manifests(spec, iteration_manifests_dir(iteration_path))
+    return write_manifest_files(spec, iteration_manifests_dir(iteration_path))

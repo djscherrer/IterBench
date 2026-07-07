@@ -15,7 +15,7 @@ from bench_diagnostics.base import DiagnosticsCollector
 from bench_diagnostics.paths import kubernetes_pooler_dir
 
 _POOLS_HEADER = (
-    "ts_epoch_s,ts,pooler_role,pod,database,user,cl_active,cl_waiting,"
+    "ts_epoch_s,ts,pooler_role,pod,database,user,cl_active,cl_waiting,cl_cancel_req,"
     "sv_active,sv_idle,sv_used,sv_tested,sv_login,maxwait_s\n"
 )
 
@@ -141,6 +141,9 @@ def _capture_pooler_pools(
                     parts = [p.strip() for p in line.split(",")]
                     if len(parts) < 11:
                         continue
+                    # SHOW POOLS columns (PgBouncer):
+                    # database, user, cl_active, cl_waiting, cl_cancel_req,
+                    # sv_active, sv_idle, sv_used, sv_tested, sv_login, maxwait
                     writer.writerow(
                         [
                             f"{ts_epoch:.3f}",
@@ -149,15 +152,15 @@ def _capture_pooler_pools(
                             pod,
                             parts[0],
                             parts[1],
-                            parts[2],
-                            parts[3],
-                            parts[4],
-                            parts[5],
-                            parts[6],
-                            parts[7],
-                            parts[8],
-                            parts[9],
-                            parts[10] if len(parts) > 10 else "0",
+                            parts[2],  # cl_active
+                            parts[3],  # cl_waiting
+                            parts[4],  # cl_cancel_req
+                            parts[5],  # sv_active
+                            parts[6],  # sv_idle
+                            parts[7],  # sv_used
+                            parts[8],  # sv_tested
+                            parts[9],  # sv_login
+                            parts[10],  # maxwait_s
                         ]
                     )
         elapsed = time.time() - loop_start

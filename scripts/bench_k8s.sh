@@ -23,58 +23,44 @@
 
 set -euo pipefail
 
-# --- 1. Execution Targets ---
+# --- Experiment scope (what BaxBench task / sample to run) ---
 MODELS="deepseek/deepseek-v4-pro" # deepseek/deepseek-v3.2  anthropic/claude-opus-4-6 openai/gpt-5.4-2026-03-05
 PROVIDER="openrouter"           # openai | anthropic | together_ai | openrouter | swissai | vllm
                                 # required when the model prefix is not auto-detected (e.g. deepseek/…)
-USE_OPENHANDS_MODES="false"
-USE_OPENHANDS="false"
-ONLY_SAMPLES="0"   # e.g. "0"; empty → N_SAMPLES
+ONLY_SAMPLES="0"                # e.g. "0"; empty → N_SAMPLES
 N_SAMPLES=""
-
-# --- 2. Project Scope ---
-ENVS="Rust-Actix" # Go-net/http
+ENVS="Python-Flask"               # Go-net/http
 SCENARIOS="Petstore"
 TEMPERATURE="0.2"
 SAFETY_PROMPT="high_performance"
+RESULTS_DIR=""                  # empty → default results path
 
-# --- 3. Load profile (Locust users, spawn rate, runtime — from profile registry) ---
-BAXBENCH_LOAD_PROFILE=("k8s-goodput-plateau")
-
-# --- 4. Kubernetes settings ---
-BAXBENCH_K8S_CLUSTER="baxbench-emulab"
-KUBECONFIG_PATH=""              # empty = path from cluster profile
-# Workspace slug → results/.../sampleN/k8s-experiments/<slug>/ (always set this)
-K8S_EXPERIMENT="05-07-final-refactor-11-42"
-# Refinement phases after baseline: runs iteration-000 .. iteration-NNN (N = value below)
-K8S_ITERATIONS="40"
-K8S_DEPLOY_ONLY="false"          # true = deploy+bench existing iterations only (no LLM)
-K8S_WAIT_TIMEOUT="1200"
-# Locust runs on profile load_master/workers; backend exposed via NodePort
-K8S_AUTO_INIT="false"           # only used with K8S_DEPLOY_ONLY=true
-K8S_REFINEMENT="deployment"               # auto | deployment | code
-
+# --- Run configuration (k8s experiment workspace + iterative loop) ---
+# Cluster profile: kubeconfig, nodes, registry, Locust hosts (see k8s_bench/cluster/profiles.py).
+K8S_CLUSTER="baxbench-emulab"
+# Workspace slug → results/.../sampleN/k8s-experiments/<slug>/
+K8S_EXPERIMENT="06-07-final-validation-20-51"
+# Iterative loop: iteration-000 (baseline) .. iteration-NNN (N = value below)
+K8S_ITERATIONS="10"
+K8S_WAIT_TIMEOUT="1200"         # seconds to wait for K8s resources to become Ready
+K8S_REFINEMENT="auto"           # auto | deployment | code
 BASELINE_CODE_MAX_ATTEMPTS="10"
 BASELINE_SPEC_MAX_ATTEMPTS="10"
 
-# --- LLM cost tracking (estimated; see sampleN/k8s-experiments/<slug>/llm_cost_ledger.json) ---
-BAXBENCH_LLM_MAX_COST="10"            # e.g. "10.00" — stop when estimated experiment LLM spend exceeds this (USD)
+# --- LLM limits ---
+# Ledger: sampleN/k8s-experiments/<slug>/llm_cost_ledger.json
+BAXBENCH_LLM_MAX_COST="10"      # USD; stop when estimated experiment spend exceeds this
+MAX_RETRIES="3"                 # per-call LLM retry/backoff during codegen, spec, decision
 
-
-# --- 5. Bench configuration ---
-TIMEOUT="1200"
-FORCE="false"
-MAX_CONCURRENT_RUNS=""
-PORT="5001"
-MAX_RETRIES="3"
-
-# --- 6. Global settings ---
-RESULTS_DIR=""
-PLOT_AFTER_BENCH="false"
+# --- Bench configuration (Locust load + re-run behaviour) ---
+BAXBENCH_LOAD_PROFILE=("k8s-goodput-plateau")  # users, spawn rate, runtime from profile registry
+FORCE="false"                   # true = redo iterations even if a perf run already exists
 
 # --- Execution ---
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 export PYTHONPATH="${ROOT}/src${PYTHONPATH:+:${PYTHONPATH}}"
+# Suppress per-command ssh/scp spam in 05-bench/bench.log (set to 1 to debug remoting).
+export BAXBENCH_LOG_COMMANDS="${BAXBENCH_LOG_COMMANDS:-0}"
 
 add_arg() {
     local flag=$1
@@ -93,98 +79,72 @@ add_flag() {
     fi
 }
 
-_openhands_modes="${USE_OPENHANDS_MODES:-$USE_OPENHANDS}"
-if [ -z "$_openhands_modes" ]; then
-  _openhands_modes="false"
-fi
-
 MPLCONFIGDIR="${MPLCONFIGDIR:-/tmp/matplotlib-${USER}}"
 export MPLCONFIGDIR
 
-if [ -n "$BAXBENCH_K8S_CLUSTER" ]; then
+if [ -n "$K8S_CLUSTER" ]; then
   _kc=$(cd "$ROOT" && pipenv run python -c "
 from k8s_bench.cluster import resolve_cluster_profile
 import os
-p = resolve_cluster_profile('${BAXBENCH_K8S_CLUSTER}')
+p = resolve_cluster_profile('${K8S_CLUSTER}')
 print(os.path.expanduser(p.kubeconfig_path) if p.kubeconfig_path else '')
 " 2>/dev/null | tail -n 1) || true
   if [ -n "$_kc" ]; then
-    export KUBECONFIG="${KUBECONFIG_PATH:-$_kc}"
+    export KUBECONFIG="$_kc"
   fi
-  echo "Using K8s cluster profile: ${BAXBENCH_K8S_CLUSTER}"
-fi
-
-if [ -n "$KUBECONFIG_PATH" ]; then
-  export KUBECONFIG="$KUBECONFIG_PATH"
+  echo "Using K8s cluster profile: ${K8S_CLUSTER}"
 fi
 
 echo "kubectl context: $(kubectl config current-context 2>/dev/null || echo '(not configured)')"
-echo "KUBECONFIG=${KUBECONFIG:-<default>}  experiment=${K8S_EXPERIMENT:-default}  iterations=${K8S_ITERATIONS:-1}  deploy_only=${K8S_DEPLOY_ONLY}"
+echo "KUBECONFIG=${KUBECONFIG:-<default>}  experiment=${K8S_EXPERIMENT:-default}  iterations=${K8S_ITERATIONS:-1}"
 
 BASE_ENV=()
 RUN_I=0
 for _model in $MODELS; do
-  for _openhands in $_openhands_modes; do
-    ARGS=("--mode" "k8s-bench")
+  ARGS=("--mode" "k8s-bench")
 
-    add_arg "--models" "$_model"
-    add_arg "--provider" "$PROVIDER"
-    add_flag "--use_openhands" "$_openhands"
-    add_arg "--only_samples" "$ONLY_SAMPLES"
-    add_arg "--n_samples" "$N_SAMPLES"
+  add_arg "--models" "$_model"
+  add_arg "--provider" "$PROVIDER"
+  add_arg "--only_samples" "$ONLY_SAMPLES"
+  add_arg "--n_samples" "$N_SAMPLES"
+  add_arg "--envs" "$ENVS"
+  add_arg "--scenarios" "$SCENARIOS"
+  add_arg "--temperature" "$TEMPERATURE"
+  add_arg "--safety_prompt" "$SAFETY_PROMPT"
+  add_arg "--results_dir" "$RESULTS_DIR"
 
-    add_arg "--envs" "$ENVS"
-    add_arg "--scenarios" "$SCENARIOS"
-    add_arg "--temperature" "$TEMPERATURE"
-    add_arg "--safety_prompt" "$SAFETY_PROMPT"
+  add_arg "--k8s-cluster" "$K8S_CLUSTER"
+  ARGS+=("--k8s-experiment" "${K8S_EXPERIMENT:-default}")
+  ARGS+=("--k8s-iterations" "${K8S_ITERATIONS:-1}")
+  add_arg "--k8s-wait-timeout" "$K8S_WAIT_TIMEOUT"
+  add_arg "--k8s-refinement" "$K8S_REFINEMENT"
+  add_arg "--baseline-code-max-attempts" "$BASELINE_CODE_MAX_ATTEMPTS"
+  add_arg "--baseline-spec-max-attempts" "$BASELINE_SPEC_MAX_ATTEMPTS"
+  add_arg "--llm-max-cost" "$BAXBENCH_LLM_MAX_COST"
+  add_arg "--max_retries" "$MAX_RETRIES"
 
-    add_arg "--k8s-cluster" "$BAXBENCH_K8S_CLUSTER"
-    ARGS+=("--k8s-experiment" "${K8S_EXPERIMENT:-default}")
-    ARGS+=("--k8s-iterations" "${K8S_ITERATIONS:-1}")
-    add_arg "--k8s-wait-timeout" "$K8S_WAIT_TIMEOUT"
-    add_arg "--k8s-refinement" "$K8S_REFINEMENT"
-    add_arg "--baseline-code-max-attempts" "$BASELINE_CODE_MAX_ATTEMPTS"
-    add_arg "--baseline-spec-max-attempts" "$BASELINE_SPEC_MAX_ATTEMPTS"
-    add_arg "--llm-max-cost" "$BAXBENCH_LLM_MAX_COST"
-    add_arg "--max_retries" "$MAX_RETRIES"
-    if [ "$K8S_DEPLOY_ONLY" == "true" ]; then
-      ARGS+=("--deploy-only")
+  add_flag "--force" "$FORCE"
+
+  for profile in "${BAXBENCH_LOAD_PROFILE[@]}"; do
+    RUN_I=$((RUN_I+1))
+    EXTRA_ENV=("${BASE_ENV[@]}")
+    if [ -n "${KUBECONFIG:-}" ]; then
+      EXTRA_ENV+=("KUBECONFIG=$KUBECONFIG")
     fi
-    if [ "$K8S_AUTO_INIT" == "true" ]; then
-      ARGS+=("--k8s-auto-init")
+    PROFILE_ARGS=("${ARGS[@]}")
+    if [ -n "$profile" ]; then
+      PROFILE_ARGS+=("--load-profile" "$profile")
     fi
-
-    add_arg "--timeout" "$TIMEOUT"
-    add_arg "--max_concurrent_runs" "$MAX_CONCURRENT_RUNS"
-    add_flag "--force" "$FORCE"
-    add_arg "--results_dir" "$RESULTS_DIR"
-    add_arg "--port" "$PORT"
-
-    if [ "$PLOT_AFTER_BENCH" == "true" ]; then
-        ARGS+=("--plot-after-bench")
+    echo ""
+    echo "=== K8s bench run #$RUN_I: model='${_model}' experiment='${K8S_EXPERIMENT:-default}' load_profile='$profile' iterations=${K8S_ITERATIONS:-1} ==="
+    echo "Command: pipenv run python src/main.py ${PROFILE_ARGS[*]}"
+    (cd "$ROOT" && env "${EXTRA_ENV[@]}" pipenv run python src/main.py "${PROFILE_ARGS[@]}")
+    RC=$?
+    if [ $RC -ne 0 ]; then
+      echo "K8s bench run #$RUN_I failed (exit=$RC). Stopping."
+      exit $RC
     fi
-
-    for profile in "${BAXBENCH_LOAD_PROFILE[@]}"; do
-      RUN_I=$((RUN_I+1))
-      EXTRA_ENV=("${BASE_ENV[@]}")
-      if [ -n "${KUBECONFIG:-}" ]; then
-        EXTRA_ENV+=("KUBECONFIG=$KUBECONFIG")
-      fi
-      PROFILE_ARGS=("${ARGS[@]}")
-      if [ -n "$profile" ]; then
-        PROFILE_ARGS+=("--load-profile" "$profile")
-      fi
-      echo ""
-      echo "=== K8s iterative bench run #$RUN_I: model='${_model}' openhands='${_openhands}' experiment='${K8S_EXPERIMENT:-default}' load_profile='$profile' iterations=${K8S_ITERATIONS:-1} ==="
-      echo "Command: pipenv run python src/main.py ${PROFILE_ARGS[*]}"
-      (cd "$ROOT" && env "${EXTRA_ENV[@]}" pipenv run python src/main.py "${PROFILE_ARGS[@]}")
-      RC=$?
-      if [ $RC -ne 0 ]; then
-        echo "K8s bench run #$RUN_I failed (exit=$RC). Stopping."
-        exit $RC
-      fi
-    done  # profile
-  done    # openhands
+  done  # profile
 done      # model
 
 echo "All K8s bench runs completed."

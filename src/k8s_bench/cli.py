@@ -16,7 +16,7 @@ from .workspace import (
 )
 from .spec.dirs import prepare_iteration
 from .spec.models import BackendSpec, DatabaseSpec, K8sWorkloadSpec
-from .spec.render import render_iteration
+from .spec.render import render_manifests
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -108,14 +108,14 @@ def main(argv: list[str] | None = None) -> int:
             with_database=not args.no_database,
         )
         path = prepare_iteration(sample_dir, resolved_id, spec=spec)
-        render_iteration(path)
+        render_manifests(path)
         print(path)
         return 0
 
     iteration_path = _resolve_iteration_path(args.target, getattr(args, "iteration", None))
 
     if args.command == "render":
-        out = render_iteration(iteration_path)
+        out = render_manifests(iteration_path)
         print(out)
         return 0
     if args.command == "deploy":

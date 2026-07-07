@@ -44,11 +44,31 @@ def _log_commands_enabled() -> bool:
     )
 
 
+def _ssh_host_and_remote(cmd: list[str]) -> tuple[str | None, str]:
+    """Return (host, remote_command) from an ssh argv list."""
+    if not cmd or cmd[0] != "ssh":
+        return None, ""
+    i = 1
+    while i < len(cmd):
+        arg = cmd[i]
+        if arg == "-o":
+            i += 2
+            continue
+        if arg.startswith("-"):
+            i += 1
+            continue
+        host = arg
+        remote = cmd[i + 1] if i + 1 < len(cmd) else ""
+        return host, remote
+    return None, ""
+
+
 def format_command_for_log(cmd: list[str]) -> str:
     """One-line summary for bench logs (avoids multi-line ssh/bash -lc dumps)."""
-    if len(cmd) >= 2 and cmd[0] == "ssh":
-        host = cmd[1]
-        remote = cmd[2] if len(cmd) > 2 else ""
+    if cmd and cmd[0] == "ssh":
+        host, remote = _ssh_host_and_remote(cmd)
+        if host is None:
+            return " ".join(shlex.quote(x) for x in cmd)
         if "ctr" in remote and "images pull" in remote:
             m = re.search(r"--plain-http\s+(\S+)", remote)
             ref = m.group(1) if m else "…"

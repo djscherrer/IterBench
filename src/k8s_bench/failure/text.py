@@ -68,6 +68,23 @@ def trim(text: str, *, max_chars: int) -> str:
     return text[:max_chars] + "\n…(truncated)"
 
 
+def failure_prompt_header(
+    *,
+    stage_label: str,
+    iteration_id: str,
+    attempt: int | None,
+    kind: str,
+) -> list[str]:
+    """Shared opening lines for ``FailureRecord.to_prompt_block()``."""
+    attempt_label = f"attempt {attempt}" if attempt is not None else iteration_id
+    return [
+        f"**{stage_label} (`{attempt_label}`) failed.**",
+        "",
+        f"- **Kind**: `{kind}`",
+        "",
+    ]
+
+
 def tail(text: str, *, max_lines: int, max_chars: int = 1600) -> str:
     lines = (text or "").splitlines()
     excerpt = "\n".join(lines[-max_lines:])

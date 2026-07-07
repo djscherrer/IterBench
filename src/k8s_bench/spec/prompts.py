@@ -79,20 +79,16 @@ def build_k8s_spec_prompt(
     )
     if refinement:
         pointer_block = (
-            format_artifact_pointers_block(
-                artifact_pointers, include_bench_telemetry=True
-            )
+            format_artifact_pointers_block(artifact_pointers, scope="spec")
             if artifact_pointers is not None
             else "(artifact pointers unavailable)"
         )
         goal = f"""## Goal
-You are refining deployment parameters for iteration `{iteration_id}` after a benchmark of the **previous** iteration.
+You are refining deployment parameters for iteration `{iteration_id}`.
 
 **Progress**: {progress} Plan your remaining budget — bold experiments early, consolidate refinements toward the end.
 
 **Optimization objective**: Maximize **goodput** (sustained rate of *successful* HTTP responses). Failed requests do not count. Raw throughput with high error rates is NOT a win.
-
-Use the **Benchmark telemetry** pointer below (decision-phase turn in conversation history) when tuning levers — do not expect Locust or diagnostics to be repeated in this message.
 
 {performance_guidance}
 

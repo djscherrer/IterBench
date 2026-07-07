@@ -20,6 +20,7 @@ from typing import Any
 
 import tqdm
 
+from .code.docker_image import ensure_docker_image
 from .iteration import resolve_iterations_to_run
 from .orchestration.execute import execute_iteration
 from .orchestration.preflight import (
@@ -30,11 +31,13 @@ from .orchestration.preflight import (
     sample_preflight,
 )
 from .stages.bench import run_bench_attempt
+from .stages.deploy import run_deploy_attempt
 from .workspace.skips import append_k8s_skip
 from .workspace import (
     bench_dir_has_complete_run,
     ensure_iteration_core_layout,
     iteration_bench_dir,
+    iteration_bench_log_path,
     nonempty_code_snapshot_dir,
     parse_iteration_index,
     prior_iteration_code_dir,
@@ -299,7 +302,7 @@ def _run_deploy_only_for_task(
             run_dir = bench_dir
             run_dir.mkdir(parents=True, exist_ok=True)
             run_dirs.append(run_dir)
-            log_file = run_dir / "bench.log"
+            log_file = iteration_bench_log_path(iteration_path)
 
             code_snap = nonempty_code_snapshot_dir(iteration_path)
             if code_snap is not None:
@@ -323,22 +326,67 @@ def _run_deploy_only_for_task(
                     continue
 
             with task.create_logger(log_file) as logger:
+                from tasks import esc
+
+                image_id = ensure_docker_image(
+                    task,
+                    results_dir,
+                    sample,
+                    ctx.base_image_id,
+                    logger,
+                    code_dir=source_code_dir,
+                )
+                if image_id is None:
+                    append_k8s_skip(
+                        ctx.task_run_dir,
+                        ctx.sample,
+                        f"skipped: failed to build docker image for {iteration_id}",
+                    )
+                    continue
+
+                sample_slug = (
+                    f"{esc(task.model)}-{esc(task.env.id)}-"
+                    f"{esc(task.scenario.id)}-sample{sample}"
+                )
+                idx = parse_iteration_index(iteration_path.name)
+                deploy = run_deploy_attempt(
+                    iteration_path=iteration_path,
+                    iteration_id=iteration_id,
+                    image_id=image_id,
+                    sample_slug=sample_slug,
+                    app_port=task.env.port,
+                    needs_db=task.scenario.needs_db,
+                    k8s_cluster=cfg.k8s_cluster,
+                    wait_timeout_s=k8s_wait_timeout,
+                    labels={
+                        "baxbench.dev/model": esc(task.model),
+                        "baxbench.dev/scenario": esc(task.scenario.id),
+                        "baxbench.dev/env": esc(task.env.id),
+                        "baxbench.dev/spec-gen": "true",
+                        "baxbench.dev/phase": str(idx if idx is not None else 0),
+                    },
+                    logger=logger,
+                )
+                if not deploy.ok:
+                    append_k8s_skip(
+                        ctx.task_run_dir,
+                        ctx.sample,
+                        f"skipped: deploy failed for {iteration_id}: {deploy.error}",
+                    )
+                    continue
+
                 run_bench_attempt(
                     task=task,
                     results_dir=results_dir,
                     sample=sample,
                     iteration_path=iteration_path,
                     run_dir=run_dir,
-                    image_id=ctx.base_image_id,
-                    timeout=timeout,
                     bench_users=bench_users,
                     bench_spawn_rate=bench_spawn_rate,
                     bench_run_time=bench_run_time,
-                    k8s_wait_timeout=k8s_wait_timeout,
                     iteration_index=parse_iteration_index(iteration_path.name),
                     iteration_id=iteration_id,
                     logger=logger,
-                    rebuild_code_dir=source_code_dir,
                     load_profile=cfg.load_profile,
                     k8s_cluster=cfg.k8s_cluster,
                     attempt_index=1,

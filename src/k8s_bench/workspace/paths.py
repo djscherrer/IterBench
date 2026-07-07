@@ -276,8 +276,8 @@ def require_iteration_spec_path(iteration_path: Path) -> Path:
 
 
 def iteration_manifests_dir(iteration_path: Path) -> Path:
-    """Rendered K8s manifests live under the spec phase: ``03-spec/manifests/``."""
-    return iteration_spec_dir(iteration_path) / "manifests"
+    """Rendered K8s manifests live under the deploy phase: ``04-deploy/manifests/``."""
+    return iteration_deploy_dir(iteration_path) / "manifests"
 
 
 def iteration_deploy_dir(iteration_path: Path) -> Path:
@@ -321,6 +321,11 @@ def iteration_spec_log_path(iteration_path: Path) -> Path:
 def iteration_deploy_log_path(iteration_path: Path) -> Path:
     """Per-stage log file for cluster deploy + readiness probe (``04-deploy/phase.log``)."""
     return iteration_deploy_dir(iteration_path) / "phase.log"
+
+
+def iteration_bench_log_path(iteration_path: Path) -> Path:
+    """Per-stage log file for Locust + diagnostics (``05-bench/bench.log``)."""
+    return iteration_bench_dir(iteration_path) / "bench.log"
 
 
 def iteration_log_path(iteration_path: Path) -> Path:
@@ -422,6 +427,82 @@ def find_latest_code_snapshot_iteration(
         if best is None or idx > best[0]:
             best = (idx, child)
     return best[1] if best is not None else None
+
+
+def iteration_dirs_for_index(
+    sample_dir: Path,
+    index: int,
+    *,
+    experiment_id: str | None = None,
+) -> list[Path]:
+    """All iteration folders for one index (including ``-failed`` suffixes)."""
+    root = iterations_root(sample_dir, experiment_id=experiment_id)
+    if not root.is_dir():
+        return []
+    prefix = f"{ITERATION_PREFIX}{index:03d}"
+    matches = [
+        child
+        for child in root.iterdir()
+        if child.is_dir()
+        and (child.name == prefix or child.name.startswith(f"{prefix}-"))
+    ]
+    return sorted(matches, key=lambda p: p.name)
+
+
+def find_last_code_refinement_iteration(
+    sample_dir: Path,
+    before_index: int,
+    *,
+    experiment_id: str | None = None,
+) -> Path | None:
+    """
+    Newest iteration before ``before_index`` where application code was
+    generated or refined (baseline or ``-code`` path), including failed folders.
+    """
+    from .meta import read_iteration_meta
+
+    if before_index <= 0:
+        return None
+    for idx in range(before_index - 1, -1, -1):
+        for folder in iteration_dirs_for_index(
+            sample_dir, idx, experiment_id=experiment_id
+        ):
+            if nonempty_code_snapshot_dir(folder) is None:
+                continue
+            _, kind, _ = parse_iteration_folder_name(folder.name)
+            if idx == 0 or kind in {"baseline", "code"}:
+                return folder
+            if read_iteration_meta(folder).get("code_modified"):
+                return folder
+    return None
+
+
+def find_last_spec_refinement_iteration(
+    sample_dir: Path,
+    before_index: int,
+    *,
+    experiment_id: str | None = None,
+) -> Path | None:
+    """
+    Newest iteration before ``before_index`` where ``spec.yaml`` was
+    generated or refined (baseline or ``-spec`` path), including failed folders.
+    """
+    from .meta import read_iteration_meta
+
+    if before_index <= 0:
+        return None
+    for idx in range(before_index - 1, -1, -1):
+        for folder in iteration_dirs_for_index(
+            sample_dir, idx, experiment_id=experiment_id
+        ):
+            if find_iteration_spec_path(folder) is None:
+                continue
+            _, kind, _ = parse_iteration_folder_name(folder.name)
+            if idx == 0 or kind in {"baseline", "spec"}:
+                return folder
+            if read_iteration_meta(folder).get("spec_regenerated"):
+                return folder
+    return None
 
 
 def latest_spec_path(
