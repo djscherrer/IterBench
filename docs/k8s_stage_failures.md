@@ -49,8 +49,9 @@ Each phase record includes at least:
 - **`kind="ft_runner"`**
   - **Evidence**: runner error in `llm_error` / `summary`
 - **`kind="infrastructure"`**
-  - **When**: harness failures (e.g. port binding issues, container could not start, DB harness broken)
-  - **Evidence**: `infrastructure_failure{kind,description,evidence}` + blocked tests list
+  - **When**: harness / cluster wiring failures (port bind, image pull at FT harness, container could not start, true deploy networking issues)
+  - **Not infra**: app crash in container logs before HTTP comes up (e.g. missing Python dependency) — classified as `functional_test` so codegen can retry
+  - **Evidence**: `infrastructure_failure{description,evidence}` + blocked tests list
 
 ## 03-spec (generate + validate `spec.yaml`)
 
@@ -64,7 +65,9 @@ Each phase record includes at least:
   - **When**: static validation fails
   - **Evidence**: `errors[]` + `warnings[]`
 
-## 04-deploy (render manifests + `kubectl apply` + readiness probe)
+## 04-deploy (overlay spec in memory, render manifests, `kubectl apply`, probe)
+
+Deploy reads **`03-spec/spec.yaml`** (LLM plan), applies **`update_iteration_spec`** overlay in memory (image, port, labels — does not rewrite spec on disk), renders **`04-deploy/manifests/`**, applies to cluster, then writes **`04-deploy/probe.json`** including runtime fields (`image_reference`, `backend_port`, `nodeport_target`, `deploy_labels`).
 
 ### Failure records (`DeployFailureRecord`)
 
@@ -81,11 +84,13 @@ Typical sources:
 
 Captured evidence:
 
-- **`reason`** and **`summary`**
+- **`summary`**
 - **`details`** including per-resource **kubectl wait** details (`wait/<resource>`)
 - **`diagnostic_excerpt`**: pod snapshot (`kubectl get/describe/logs`, trimmed)
 
-## 05-bench (Locust + diagnostics)
+## 05-bench (Locust + diagnostics; consumes `probe.json`)
+
+Bench loads runtime facts from **`04-deploy/probe.json`** only (not re-derived from spec). It reads **`03-spec/spec.yaml`** only for diagnostics topology (DB/pooler/cache). Entry point: `run_distributed_locust` in `stages/bench.py`.
 
 ### Failure records (`BenchFailureRecord`)
 
