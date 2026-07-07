@@ -175,6 +175,10 @@ class CodeFailureRecord:
     infrastructure_failure: InfrastructureFailure | None = None
     llm_error: str = ""
 
+    @property
+    def is_infrastructure_failure(self) -> bool:
+        return self.kind == "infrastructure"
+
     def to_dict(self) -> dict[str, object]:
         out: dict[str, object] = {
             "phase": "code",
