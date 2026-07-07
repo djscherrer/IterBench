@@ -18,6 +18,7 @@ from typing import Any
 from .feedback import IterationFeedback
 from .workspace import (
     ITERATIONS_DIRNAME,
+    PLOTS_DIRNAME,
     experiment_root_from_iteration_path,
     find_iteration_spec_path,
     iteration_spec_path,
@@ -110,12 +111,13 @@ def _ensure_header(
     path.parent.mkdir(parents=True, exist_ok=True)
     experiment = resolve_k8s_experiment_id(experiment_id)
     profile = (load_profile or os.environ.get("BAXBENCH_LOAD_PROFILE", "")).strip() or "default"
+    ws_root = k8s_workspace_root(sample_dir, experiment_id=experiment_id)
     header = "\n".join(
         [
             "# K8s experiment summary",
             "",
             f"- **Experiment**: `{experiment}`",
-            f"- **Workspace**: `{k8s_workspace_root(sample_dir, experiment_id=experiment_id)}`",
+            f"- **Workspace**: [{ws_root.name}](.)",
             f"- **Started**: {_utc_now_label()}",
             f"- **Load profile**: `{profile}`",
             "",
@@ -123,7 +125,7 @@ def _ensure_header(
             "**stage failure**, and **Locust run** blocks. Load/diagnostics content is "
             "inlined in collapsible sections (not as bare filesystem paths).",
             "",
-            f"- **LLM cost ledger**: `{k8s_workspace_root(sample_dir, experiment_id=experiment_id) / 'llm_cost_ledger.json'}` "
+            "- **LLM cost ledger**: [llm_cost_ledger.json](llm_cost_ledger.json) "
             "(estimated; pass --llm-max-cost to cap spend)",
             "",
             "---",
@@ -287,17 +289,6 @@ def _format_validation_sections(
     return "\n".join(parts)
 
 
-def _llm_narrative_is_actionable(narrative: str) -> bool:
-    text = (narrative or "").strip()
-    if not text:
-        return False
-    placeholders = (
-        "(no LLM narrative in response.log)",
-        "(no prose rationale — model returned only the machine-readable spec",
-    )
-    return not any(text.startswith(prefix) for prefix in placeholders)
-
-
 def _stage_failure_heading(kind: str, *, is_baseline_iter: bool) -> str:
     if kind == "decision":
         return "Decision stage failed"
@@ -323,34 +314,6 @@ def _spec_diff_source_label(spec_path: Path) -> str:
     if iteration_dir.name.startswith("iteration-"):
         return f"`{iteration_dir.name}`"
     return f"`{spec_path.parent.name}`"
-
-
-def _extract_llm_narrative(raw_response: str) -> str:
-    """Text before the machine-readable SPEC / YAML block."""
-    raw = (raw_response or "").strip()
-    if not raw:
-        return "(no LLM narrative in response.log)"
-
-    for pattern in (
-        re.compile(r"<SPEC>\s*", re.I),
-        re.compile(r"```(?:ya?ml)?\s*\n", re.I),
-    ):
-        m = pattern.search(raw)
-        if m and m.start() > 0:
-            text = raw[: m.start()].strip()
-            if text:
-                raw = text
-                break
-
-    if re.match(r"^<SPEC>", raw, re.I) or raw.lstrip().startswith("backend:"):
-        return (
-            "(no prose rationale — model returned only the machine-readable spec; "
-            "see **Deployment** and **Changes vs** above.)"
-        )
-
-    if len(raw) > _MAX_NARRATIVE_CHARS:
-        return raw[:_MAX_NARRATIVE_CHARS].rstrip() + "\n\n…(truncated)"
-    return raw
 
 
 def _format_resources(label: str, res: ResourceSpec) -> str:
@@ -1052,6 +1015,41 @@ def _aggregate_locust_line(perf_run_dir: Path) -> str:
     return "(no locust/results/*_stats.csv found)"
 
 
+def _perf_run_load_profile_line(perf_run_dir: Path) -> str:
+    from bench_diagnostics.summary import load_profile_from_config, read_run_config
+
+    cfg = read_run_config(perf_run_dir)
+    name = load_profile_from_config(cfg) or "default"
+    resolved = cfg.get("resolved_load_profile")
+    if isinstance(resolved, dict):
+        mode = resolved.get("mode") or resolved.get("profile_mode") or ""
+        run_time = resolved.get("run_time_s")
+        extras: list[str] = []
+        if mode:
+            extras.append(str(mode))
+        if run_time is not None:
+            extras.append(f"run_time={run_time}s")
+        if extras:
+            return f"- **Load profile**: `{name}` ({', '.join(extras)})"
+    return f"- **Load profile**: `{name}`"
+
+
+def _adaptive_ramp_plot_markdown(
+    experiment_root: Path,
+    perf_run_dir: Path,
+) -> str:
+    from .plots.adaptive_ramp import ADAPTIVE_RAMP_PLOT_FILENAME
+
+    plot_path = perf_run_dir / PLOTS_DIRNAME / ADAPTIVE_RAMP_PLOT_FILENAME
+    if not plot_path.is_file():
+        return ""
+    try:
+        rel = plot_path.resolve().relative_to(experiment_root.resolve()).as_posix()
+    except ValueError:
+        return ""
+    return f"![Adaptive load ramp]({rel})"
+
+
 def append_baseline_codegen_block(
     *,
     sample_dir: Path,
@@ -1122,7 +1120,12 @@ def append_baseline_codegen_block(
         if err:
             err_excerpt = err if len(err) <= 200 else err[:200].rstrip() + "…"
             line += f" — {err_excerpt}"
-        line += f" → `{_attempts_dir(iteration_path)}/{int(idx):03d}/`"
+        attempt_link = _relative_workspace_link(
+            experiment_root,
+            _attempts_dir(iteration_path) / f"{int(idx):03d}",
+            label=f"attempt {idx}",
+        )
+        line += f" → {attempt_link}"
         attempt_blocks.append(line)
 
         # Inline a short tail of test.log on infra failures so the operator
@@ -1152,7 +1155,7 @@ def append_baseline_codegen_block(
             f"- **Attempts used**: {attempts_used} / {max_attempts}",
             f"- **Model**: `{task.model}` (provider `{task.provider}`, "
             f"temperature {task.temperature})",
-            f"- **Code path**: `{iteration_path / '02-code' / 'code'}`",
+            f"- **Code path**: {_relative_workspace_link(experiment_root, iteration_path / '02-code' / 'code')}",
             "",
             "**Attempts**" if attempt_blocks else "**Attempts**: (none recorded)",
             "",
@@ -1181,7 +1184,6 @@ def _build_spec_generation_block_text(
     *,
     iteration_path: Path,
     spec: K8sWorkloadSpec,
-    raw_response: str,
     warnings: list[str],
     errors: list[str] | None = None,
     had_prior_feedback: bool,
@@ -1202,7 +1204,6 @@ def _build_spec_generation_block_text(
         diff_text = "First iteration in this experiment (no prior spec to diff)."
         diff_source = "—"
 
-    narrative = _extract_llm_narrative(raw_response)
     validation_block = _format_validation_sections(
         errors=errors or (),
         warnings=warnings,
@@ -1228,15 +1229,6 @@ def _build_spec_generation_block_text(
         "",
         diff_text,
     ]
-    if _llm_narrative_is_actionable(narrative):
-        lines.extend(
-            [
-                "",
-                "**LLM rationale** (text before `<SPEC>` in response log)",
-                "",
-                narrative,
-            ]
-        )
     if validation_block:
         lines.append(validation_block)
     lines.extend(["", "---", ""])
@@ -1249,8 +1241,8 @@ def append_spec_generation_block(
     iteration_id: str,
     iteration_path: Path,
     spec: K8sWorkloadSpec,
-    raw_response: str,
     warnings: list[str],
+    errors: list[str] | None = None,
     had_prior_feedback: bool,
     iteration_index: int,
     load_profile: str | None = None,
@@ -1269,8 +1261,8 @@ def append_spec_generation_block(
     body = _build_spec_generation_block_text(
         iteration_path=iteration_path,
         spec=spec,
-        raw_response=raw_response,
         warnings=warnings,
+        errors=errors,
         had_prior_feedback=had_prior_feedback,
         iteration_index=iteration_index,
     )
@@ -1284,6 +1276,7 @@ def _build_perf_run_block_text(
     *,
     perf_run_dir: Path,
     feedback: IterationFeedback | None = None,
+    experiment_root: Path | None = None,
 ) -> str:
     """Markdown body for one iteration's ``### Locust run`` subsection."""
     log_text = _gather_perf_log_text(perf_run_dir)
@@ -1295,6 +1288,11 @@ def _build_perf_run_block_text(
         time_range = perf_run_dir.name
 
     locust_line = _aggregate_locust_line(perf_run_dir)
+    load_profile_line = _perf_run_load_profile_line(perf_run_dir)
+
+    if experiment_root is None:
+        experiment_root = experiment_root_from_iteration_path(perf_run_dir.parent)
+    ramp_plot = _adaptive_ramp_plot_markdown(experiment_root, perf_run_dir)
 
     fb = feedback
     if fb is None:
@@ -1304,7 +1302,7 @@ def _build_perf_run_block_text(
 
     if fb is not None:
         load_section = _collapsible_details(
-            "Load test results", fb.load_test_prompt_text()
+            "Load test results", fb.load_test_summary_text()
         )
         diag_section = _collapsible_details(
             "Diagnostics", fb.diagnostics_prompt_text()
@@ -1320,15 +1318,30 @@ def _build_perf_run_block_text(
             log_text=log_text,
             perf_run_dir=perf_run_dir,
         )
-        load_section = _collapsible_details(
-            "Load test results (legacy fallback — no iteration_feedback.json)",
-            "\n".join(
+        load_body = "\n".join(
+            [
+                "### Locust (per endpoint)",
+                "",
+                "(no iteration_feedback.json — endpoint table unavailable)",
+                "",
+                "### Locust HTTP errors",
+                "",
+                "(no iteration_feedback.json)",
+            ]
+        )
+        if not ramp_plot:
+            load_body = "\n".join(
                 [
                     "**Adaptive ramp** (from `bench.log` + `logs/**/locust-*.log`)",
                     "",
                     adaptive_md,
+                    "",
+                    load_body,
                 ]
-            ),
+            )
+        load_section = _collapsible_details(
+            "Load test results (legacy fallback — no iteration_feedback.json)",
+            load_body,
         )
         diag_section = _format_diagnostics_metrics_for_summary(perf_run_dir) or ""
 
@@ -1336,13 +1349,19 @@ def _build_perf_run_block_text(
     if fb and fb.notes and fb.notes.strip():
         notes_line = f"\n**Notes**\n\n{fb.notes.strip()}\n"
 
+    ramp_block = ""
+    if ramp_plot:
+        ramp_block = f"\n{ramp_plot}\n"
+
     return "\n".join(
         [
             f"### Locust run ({time_range})",
             "",
             f"- **Recorded**: {_utc_now_label()}",
+            load_profile_line,
             "",
             locust_line,
+            ramp_block,
             load_section,
             diag_section,
             notes_line,
@@ -1408,14 +1427,12 @@ def _replace_spec_generation_block(
 
 
 def regenerate_experiment_summary_spec_blocks(experiment_root: Path) -> Path:
-    """Rebuild every ``### Spec generation`` subsection from on-disk specs + response logs."""
+    """Rebuild every ``### Spec generation`` subsection from on-disk specs."""
     from .workspace import (
         ITERATIONS_DIRNAME,
         iteration_folder_is_failed,
-        iteration_spec_dir,
         parse_iteration_index,
     )
-    from .workspace.artifacts import RESPONSE_LOG_FILENAME
 
     experiment_path = experiment_root.expanduser().resolve()
     if (experiment_path / ITERATIONS_DIRNAME).is_dir():
@@ -1446,17 +1463,13 @@ def regenerate_experiment_summary_spec_blocks(experiment_root: Path) -> Path:
             spec = K8sWorkloadSpec.from_yaml_file(spec_path)
         except ValueError:
             continue
-        response_path = iteration_spec_dir(child) / RESPONSE_LOG_FILENAME
-        raw_response = ""
-        if response_path.is_file():
-            raw_response = response_path.read_text(encoding="utf-8", errors="replace")
 
         iid = f"iteration-{idx:03d}"
         block = _build_spec_generation_block_text(
             iteration_path=child,
             spec=spec,
-            raw_response=raw_response,
             warnings=[],
+            errors=[],
             had_prior_feedback=idx > 0,
             iteration_index=idx,
         )

@@ -224,8 +224,8 @@ def _append_spec_summary_on_success(
             iteration_id=plan.iteration_id,
             iteration_path=iteration_path,
             spec=result.spec,
-            raw_response=result.raw_response,
             warnings=list(result.warnings),
+            errors=list(result.validation_errors),
             had_prior_feedback=plan.iteration_index > 0,
             iteration_index=plan.iteration_index,
         )

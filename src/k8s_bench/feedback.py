@@ -80,6 +80,24 @@ class IterationFeedback:
             ]
         )
 
+    def load_test_summary_text(self) -> str:
+        """Load-test details for experiment summary (adaptive ramp shown as plot)."""
+        return "\n".join(
+            [
+                "### Locust (per endpoint)",
+                "Source: Locust ``locust/results/<test>_stats.csv`` "
+                "(includes p95/p99 from Locust percentiles).",
+                "",
+                self.locust_summary or "(no Locust stats found)",
+                "",
+                "### Locust HTTP errors",
+                "Client-side failure messages from Locust "
+                "(often generic 500s; see diagnostics for root cause).",
+                "",
+                self.error_excerpt or "(no Locust error report)",
+            ]
+        )
+
     def diagnostics_prompt_text(self) -> str:
         """Diagnostics block shared by iteration feedback and experiment summary."""
         return "\n".join(
