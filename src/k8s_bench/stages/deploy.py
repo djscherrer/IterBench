@@ -108,7 +108,6 @@ def build_deploy_failure_record(
         iteration_id=iteration_id,
         attempt=attempt,
         summary=error,
-        reason=error,
         details=merged_details,
         diagnostic_excerpt=diagnostic_excerpt,
     )

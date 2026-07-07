@@ -59,6 +59,9 @@ def execute_iteration(
 
     if decision_result.abort_sample:
         return IterationOutcome(None, True)
+    if not decision_result.ok:
+        _append_iteration_outcome(setup.iteration_path, "decision-failed")
+        return IterationOutcome(None, False)
 
     iteration_path, plan = finalize_iteration_plan(ctx, setup, decision_result)
     _write_iteration_header(iteration_path, plan, cfg)

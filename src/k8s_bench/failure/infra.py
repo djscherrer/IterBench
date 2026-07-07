@@ -24,7 +24,6 @@ def detect_infrastructure_failure(test_log: str) -> CodeFailureRecord.Infrastruc
                 if port:
                     detail = f"{description} (port {port})"
             return CodeFailureRecord.InfrastructureFailure(
-                kind=kind,
                 description=detail,
                 evidence=trim(line.strip(), max_chars=600),
             )

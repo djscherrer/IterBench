@@ -25,7 +25,6 @@ class DecisionFailureRecord:
     summary: str
     attempt: int | None = None
     llm_error: str = ""
-    diagnostic_excerpt: str = ""
 
     def to_dict(self) -> dict[str, object]:
         out: dict[str, object] = {
@@ -37,8 +36,6 @@ class DecisionFailureRecord:
         }
         if self.llm_error:
             out["llm_error"] = self.llm_error
-        if self.diagnostic_excerpt:
-            out["diagnostic_excerpt"] = self.diagnostic_excerpt
         return out
 
     @classmethod
@@ -50,7 +47,6 @@ class DecisionFailureRecord:
             summary=str(data.get("summary") or ""),
             attempt=int(data["attempt"]) if data.get("attempt") is not None else None,
             llm_error=str(data.get("llm_error") or ""),
-            diagnostic_excerpt=str(data.get("diagnostic_excerpt") or ""),
         )
 
     def short_excerpt(self) -> str:
@@ -63,6 +59,8 @@ class DecisionFailureRecord:
         label = (
             "LLM call failed" if self.kind == "llm_call" else "Could not parse LLM response"
         )
+        # We persist `diagnostic_excerpt` (typically raw model output) for debugging,
+        # but we do not include it in the refinement prompt by default.
         lines = [
             f"**Decision stage (`{attempt_label}`): {label}.**",
             "",
@@ -70,16 +68,6 @@ class DecisionFailureRecord:
             "",
             self.llm_error or self.summary or "(no error detail captured)",
         ]
-        if self.diagnostic_excerpt:
-            lines.extend(
-                [
-                    "",
-                    "### Raw model output (truncated)",
-                    "```",
-                    trim(self.diagnostic_excerpt, max_chars=2000),
-                    "```",
-                ]
-            )
         return "\n".join(lines)
 
 
@@ -154,13 +142,11 @@ class CodeFailureRecord:
         tests — they never exercised the application.
         """
 
-        kind: str
         description: str
         evidence: str = ""
 
         def to_dict(self) -> dict[str, str]:
             return {
-                "kind": self.kind,
                 "description": self.description,
                 "evidence": self.evidence,
             }
@@ -168,7 +154,6 @@ class CodeFailureRecord:
         @classmethod
         def from_dict(cls, data: dict[str, object]) -> CodeFailureRecord.InfrastructureFailure:
             return cls(
-                kind=str(data.get("kind", "")),
                 description=str(data.get("description", "")),
                 evidence=str(data.get("evidence", "")),
             )
@@ -293,7 +278,6 @@ class CodeFailureRecord:
                 f"**Code stage (`{attempt_label}`) was blocked by an INFRASTRUCTURE failure — the test harness itself failed.**",
                 "",
                 f"- **Kind**: `{self.kind}`",
-                f"- **Harness kind**: `{infra.kind}`",
                 f"- **What broke**: {infra.description}",
             ]
             if infra.evidence:
@@ -500,7 +484,6 @@ class DeployFailureRecord:
     iteration_id: str
     summary: str
     attempt: int | None = None
-    reason: str = ""
     details: dict[str, Any] = field(default_factory=dict)
     diagnostic_excerpt: str = ""
 
@@ -512,8 +495,6 @@ class DeployFailureRecord:
             "summary": self.summary,
             "attempt": self.attempt,
         }
-        if self.reason:
-            out["reason"] = self.reason
         if self.details:
             out["details"] = dict(self.details)
         if self.diagnostic_excerpt:
@@ -526,19 +507,20 @@ class DeployFailureRecord:
 
         details_raw = data.get("details")
         raw_kind = str(data.get("kind") or "unknown")
+        legacy_reason = str(data.get("reason") or "")
+        summary = str(data.get("summary") or "") or legacy_reason
         return cls(
             phase="deploy",
             kind=normalize_deploy_failure_kind(raw_kind),  # type: ignore[arg-type]
             iteration_id=str(data.get("iteration_id") or ""),
-            summary=str(data.get("summary") or ""),
+            summary=summary,
             attempt=int(data["attempt"]) if data.get("attempt") is not None else None,
-            reason=str(data.get("reason") or ""),
             details=dict(details_raw) if isinstance(details_raw, dict) else {},
             diagnostic_excerpt=str(data.get("diagnostic_excerpt") or ""),
         )
 
     def short_excerpt(self) -> str:
-        parts = [self.reason or self.summary]
+        parts = [self.summary]
         if self.diagnostic_excerpt:
             parts.append(trim(self.diagnostic_excerpt, max_chars=400))
         return trim("\n".join(parts), max_chars=1200)
@@ -550,7 +532,7 @@ class DeployFailureRecord:
             attempt=self.attempt,
             kind=self.kind,
         )
-        lines.append(self.reason or self.summary)
+        lines.append(self.summary)
         wait_lines = [
             (k.removeprefix("wait/"), v)
             for k, v in self.details.items()

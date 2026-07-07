@@ -1571,7 +1571,7 @@ def append_iteration_failure_block(
         body_lines.extend(
             [
                 "- **Cause**: **Infrastructure failure (not an application "
-                f"bug)** — `{infra.kind}`: {infra.description}",
+                f"bug)** — {infra.description}",
             ]
         )
 

@@ -28,6 +28,7 @@ _RATIONALE_RE = re.compile(
 class DecisionStageResult:
     """Outcome of the decision stage (baseline routing, forced path, or LLM)."""
 
+    ok: bool = True
     refinement_action: RefinementActionFull
     decision: RefinementDecision | None = None
     abort_sample: bool = False
@@ -427,7 +428,6 @@ def run_decision_stage(
             attempt=exc.attempt,
             summary="decision stage failed (LLM call or parse)",
             llm_error=str(exc),
-            diagnostic_excerpt=(exc.raw_response or ""),
         )
         iteration_failure = IterationFailure(
             iteration_id=setup.iteration_id,
@@ -445,7 +445,9 @@ def run_decision_stage(
                 logger=logger,
                 iteration_failure=iteration_failure,
             )
-        return DecisionStageResult(refinement_action="baseline", abort_sample=True)
+        # Decision failures are rare; treat them as an iteration failure but do not
+        # abort the entire sample. The next iteration will see this failure as N−1.
+        return DecisionStageResult(ok=False, refinement_action="baseline", abort_sample=False)
 
 
 def _persist_decision(
@@ -530,7 +532,7 @@ def _run_refinement_decision(
         prior_fail = lineage.prior_iteration_failure
         decision_failure = (
             prior_fail
-            if prior_fail is not None and prior_fail.phase in {"deploy", "bench"}
+            if prior_fail is not None and prior_fail.phase in {"decision", "deploy", "bench"}
             else None
         )
         decision = decide_refinement_action(

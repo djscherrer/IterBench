@@ -62,7 +62,6 @@ def fail_iteration_phase(
                 kind="unknown",
                 iteration_id=iteration_id,
                 summary=summary,
-                reason=summary,
             )
         elif phase == "bench":
             terminal = BenchFailureRecord(
