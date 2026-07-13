@@ -35,6 +35,17 @@ def normalize_experiment_id(raw: str) -> str:
     return slug
 
 
+def k8s_dns_slug(raw: str) -> str:
+    """Convert a slug to a valid Kubernetes DNS label (RFC 1123)."""
+    slug = re.sub(r"[^a-z0-9-]+", "-", raw.strip().lower())
+    slug = re.sub(r"-+", "-", slug).strip("-")
+    slug = re.sub(r"^[^a-z0-9]+", "", slug)
+    slug = re.sub(r"[^a-z0-9]+$", "", slug)
+    if not slug:
+        raise ValueError("k8s DNS slug must not be empty")
+    return slug
+
+
 def resolve_k8s_experiment_id(experiment_id: str | None = None) -> str:
     """Normalize an experiment slug; ``None`` or empty → ``default``."""
     if experiment_id and experiment_id.strip():
@@ -640,8 +651,8 @@ def default_k8s_namespace(
     iteration_id: str, *, experiment_id: str | None = None
 ) -> str:
     """Kubernetes namespace for an iteration (includes experiment slug)."""
-    iid = normalize_iteration_id(iteration_id)
-    eid = resolve_k8s_experiment_id(experiment_id)
+    iid = k8s_dns_slug(normalize_iteration_id(iteration_id))
+    eid = k8s_dns_slug(resolve_k8s_experiment_id(experiment_id))
     return f"baxbench-{eid}-{iid}"
 
 
