@@ -93,14 +93,23 @@ K8S_CLUSTER_REGISTRY: dict[str, K8sClusterProfile] = {
         name="baxbench-emulab",
         description=(
             "Emulab: node0 control+BaxBench+registry :5000; "
-            "node1 Locust master, node2 Locust worker; workers node3–5."
+            "node1 Locust master + 30 workers, node2 32 workers; workers node3–5."
         ),
         kube_context="kubernetes-admin@kubernetes",
         kubeconfig_path="/tmp/dscherre/.kube/config-baxbench-emulab",
         control_node="node0",
         worker_nodes=("node3", "node4", "node5"),
         load_master="node1",
-        load_workers=("node1", "node2"),
+        load_workers=(
+            "node1", "node1", "node1", "node1", "node1", "node1", "node1", "node1",
+            "node1", "node1", "node1", "node1", "node1", "node1", "node1", "node1",
+            "node1", "node1", "node1", "node1", "node1", "node1", "node1", "node1",
+            "node1", "node1", "node1", "node1", "node1", "node1",
+            "node2", "node2", "node2", "node2", "node2", "node2", "node2", "node2",
+            "node2", "node2", "node2", "node2", "node2", "node2", "node2", "node2",
+            "node2", "node2", "node2", "node2", "node2", "node2", "node2", "node2",
+            "node2", "node2", "node2", "node2", "node2", "node2", "node2", "node2",
+        ),
         registry_enabled=True,
         registry_host="",  # auto-detect node0 lab IP at bench time
         registry_port=5000,
