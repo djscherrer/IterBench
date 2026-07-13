@@ -24,13 +24,13 @@
 set -euo pipefail
 
 # --- Experiment scope (what BaxBench task / sample to run) ---
-MODELS="deepseek/deepseek-v4-pro" # deepseek/deepseek-v3.2  anthropic/claude-opus-4-6 openai/gpt-5.4-2026-03-05
-PROVIDER="openrouter"           # openai | anthropic | together_ai | openrouter | swissai | vllm
+MODELS="openai/gpt-5.5-2026-04-23" # deepseek/deepseek-v3.2  anthropic/claude-opus-4-6 openai/gpt-5.5-2026-04-23 anthropic/claude-opus-4-8 (temp deprecated) 
+PROVIDER=""           # openai | anthropic | together_ai | openrouter | swissai | vllm
                                 # required when the model prefix is not auto-detected (e.g. deepseek/…)
 ONLY_SAMPLES="0"                # e.g. "0"; empty → N_SAMPLES
 N_SAMPLES=""
-ENVS="Python-Flask"               # Go-net/http
-SCENARIOS="Petstore"
+ENVS="Python-Flask Go-net/http Rust-Actix"               # Go-net/http
+SCENARIOS="Petstore Recipes ClickCount TextWeaver_WordCountDatasets" # Recipes LexiTally_WordCountDatasets BranchWeave_InteractiveStoryGraph TextWeaver_WordCountDatasets BranchWeave_Petstore goes to 5k users
 TEMPERATURE="0.2"
 SAFETY_PROMPT="high_performance"
 RESULTS_DIR=""                  # empty → default results path
@@ -39,9 +39,9 @@ RESULTS_DIR=""                  # empty → default results path
 # Cluster profile: kubeconfig, nodes, registry, Locust hosts (see k8s_bench/cluster/profiles.py).
 K8S_CLUSTER="baxbench-emulab"
 # Workspace slug → results/.../sampleN/k8s-experiments/<slug>/
-K8S_EXPERIMENT="07-07-final-validation-15-15"
+K8S_EXPERIMENT="results"
 # Iterative loop: iteration-000 (baseline) .. iteration-NNN (N = value below)
-K8S_ITERATIONS="20"
+K8S_ITERATIONS="10"
 K8S_WAIT_TIMEOUT="1200"         # seconds to wait for K8s resources to become Ready
 K8S_REFINEMENT="auto"           # auto | deployment | code
 BASELINE_CODE_MAX_ATTEMPTS="10"
