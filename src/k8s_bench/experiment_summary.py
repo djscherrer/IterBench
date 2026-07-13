@@ -23,8 +23,8 @@ from .workspace import (
     find_iteration_spec_path,
     iteration_spec_path,
     k8s_workspace_root,
-    normalize_iteration_id,
     parse_iteration_folder_name,
+    parse_iteration_index,
     resolve_k8s_experiment_id,
 )
 from .spec.models import K8sWorkloadSpec, ResourceSpec
@@ -44,12 +44,16 @@ _STAGE_FAILURE_BLOCK_RE = re.compile(
 _BASELINE_CODE_FAILED_BLOCK_RE = re.compile(
     r"^### Baseline code generation failed[^\n]*\n.*?\n---\n", re.M | re.S
 )
+_BASELINE_CODEGEN_BLOCK_RE = re.compile(
+    r"^### Baseline code generation \([^\n]*\n.*?\n---\n", re.M | re.S
+)
 _SPEC_GENERATION_BLOCK_RE = re.compile(
     r"^### Spec generation[^\n]*\n.*?\n---\n", re.M | re.S
 )
 _LOCUST_RUN_BLOCK_RE = re.compile(
     r"^### Locust run \([^)]*\)\n.*?\n---\n", re.M | re.S
 )
+_NEXT_ITERATION_SECTION_RE = re.compile(r"^## iteration-", re.M)
 _LOG_TS_RE = re.compile(
     r"^\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2},\d{3})\]"
 )
@@ -81,6 +85,27 @@ _ADAPTIVE_V2_STOP_RE = re.compile(
 )
 
 
+def _summary_section_id(iteration_path: Path) -> str:
+    """Markdown section heading — matches the iteration folder name (e.g. ``iteration-003-code``)."""
+    return iteration_path.name
+
+
+def _iteration_folder_kind(iteration_path: Path) -> str | None:
+    _idx, kind, _failed = parse_iteration_folder_name(iteration_path.name)
+    return kind
+
+
+def _should_record_spec_generation(iteration_path: Path) -> bool:
+    """Spec blocks only for baseline / spec iterations where the LLM wrote a new spec."""
+    if _iteration_folder_kind(iteration_path) == "code":
+        return False
+    from .workspace.meta import read_iteration_meta
+
+    if read_iteration_meta(iteration_path).get("spec_reused_from"):
+        return False
+    return True
+
+
 def experiment_summary_path(
     sample_dir: Path, *, experiment_id: str | None = None
 ) -> Path:
@@ -97,6 +122,86 @@ def experiment_summary_path_for_iteration(iteration_path: Path) -> Path:
 
 def _utc_now_label() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+
+
+def _sample_index_from_root(experiment_root: Path) -> str | None:
+    """``.../sampleN/k8s-experiments/<exp>`` → ``"N"``."""
+    try:
+        sample_name = experiment_root.parent.parent.name
+    except Exception:
+        return None
+    m = re.search(r"(\d+)$", sample_name)
+    return m.group(1) if m else (sample_name or None)
+
+
+def _experiment_metadata(experiment_root: Path) -> dict[str, str]:
+    """Best-effort model / scenario / environment / sample for the summary header.
+
+    Prefers the baseline ``codegen.json`` (authoritative model/provider/temperature),
+    then falls back to the ``results/<model>/<scenario>/<env>/<config>/sampleN`` layout.
+    """
+    meta: dict[str, str] = {}
+    iterations_dir = experiment_root / ITERATIONS_DIRNAME
+    if iterations_dir.is_dir():
+        for child in sorted(iterations_dir.iterdir()):
+            if not child.is_dir():
+                continue
+            from .workspace import baseline_codegen_meta_path
+
+            codegen_path = baseline_codegen_meta_path(child)
+            if not codegen_path.is_file():
+                continue
+            try:
+                data = json.loads(codegen_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                continue
+            if not isinstance(data, dict):
+                continue
+            for key in ("model", "provider", "scenario", "env"):
+                if data.get(key):
+                    meta.setdefault(key, str(data[key]))
+            if data.get("temperature") is not None:
+                meta.setdefault("temperature", str(data["temperature"]))
+            break
+
+    # Path-based fallbacks: .../<model>/<scenario>/<env>/<config>/sampleN/k8s-experiments/<exp>
+    try:
+        sample_dir = experiment_root.parent.parent
+        config_dir = sample_dir.parent
+        meta.setdefault("env", config_dir.parent.name)
+        meta.setdefault("scenario", config_dir.parent.parent.name)
+        meta.setdefault("model", config_dir.parent.parent.parent.name)
+    except Exception:
+        pass
+
+    sample = _sample_index_from_root(experiment_root)
+    if sample is not None:
+        meta.setdefault("sample", sample)
+    return meta
+
+
+def _header_metadata_lines(experiment_root: Path) -> list[str]:
+    meta = _experiment_metadata(experiment_root)
+    lines: list[str] = []
+    if meta.get("model"):
+        provider = meta.get("provider")
+        temperature = meta.get("temperature")
+        suffix = ""
+        if provider or temperature is not None:
+            bits = []
+            if provider:
+                bits.append(f"provider `{provider}`")
+            if temperature is not None:
+                bits.append(f"temperature {temperature}")
+            suffix = " (" + ", ".join(bits) + ")"
+        lines.append(f"- **Model**: `{meta['model']}`{suffix}")
+    if meta.get("scenario"):
+        lines.append(f"- **Scenario**: `{meta['scenario']}`")
+    if meta.get("env"):
+        lines.append(f"- **Environment**: `{meta['env']}`")
+    if meta.get("sample"):
+        lines.append(f"- **Sample**: `{meta['sample']}`")
+    return lines
 
 
 def _ensure_header(
@@ -118,6 +223,7 @@ def _ensure_header(
             "",
             f"- **Experiment**: `{experiment}`",
             f"- **Workspace**: [{ws_root.name}](.)",
+            *_header_metadata_lines(ws_root),
             f"- **Started**: {_utc_now_label()}",
             f"- **Load profile**: `{profile}`",
             "",
@@ -135,6 +241,43 @@ def _ensure_header(
     path.write_text(header, encoding="utf-8")
 
 
+def _refresh_experiment_summary_header(experiment_root: Path) -> None:
+    """Rewrite the header block (up to the first ``---``) with current metadata."""
+    path = experiment_summary_path(experiment_root)
+    if not path.is_file():
+        return
+    content = path.read_text(encoding="utf-8")
+    m = re.search(r"^---\s*$", content, re.M)
+    if not m:
+        return
+    body = content[m.start():]
+
+    experiment = experiment_root.name
+    profile_m = re.search(r"^- \*\*Load profile\*\*: `([^`]*)`", content, re.M)
+    profile = profile_m.group(1) if profile_m else "default"
+    started_m = re.search(r"^- \*\*Started\*\*: (.+)$", content, re.M)
+    started = started_m.group(1) if started_m else _utc_now_label()
+
+    header_lines = [
+        "# K8s experiment summary",
+        "",
+        f"- **Experiment**: `{experiment}`",
+        f"- **Workspace**: [{experiment_root.name}](.)",
+        *_header_metadata_lines(experiment_root),
+        f"- **Started**: {started}",
+        f"- **Load profile**: `{profile}`",
+        "",
+        "Each iteration may include **refinement decision**, **code**, **spec**, "
+        "**stage failure**, and **Locust run** blocks. Load/diagnostics content is "
+        "inlined in collapsible sections (not as bare filesystem paths).",
+        "",
+        "- **LLM cost ledger**: [llm_cost_ledger.json](llm_cost_ledger.json) "
+        "(estimated; pass --llm-max-cost to cap spend)",
+        "",
+    ]
+    path.write_text("\n".join(header_lines) + "\n" + body, encoding="utf-8")
+
+
 def _append(path: Path, text: str) -> None:
     with path.open("a", encoding="utf-8") as f:
         f.write(text)
@@ -142,41 +285,38 @@ def _append(path: Path, text: str) -> None:
             f.write("\n")
 
 
-def _iteration_heading_present(path: Path, iteration_id: str) -> bool:
+def _iteration_heading_present(path: Path, section_id: str) -> bool:
     if not path.is_file():
         return False
-    iid = normalize_iteration_id(iteration_id)
-    return re.search(rf"^## {re.escape(iid)}\s*$", path.read_text(encoding="utf-8"), re.M) is not None
+    return re.search(rf"^## {re.escape(section_id)}\s*$", path.read_text(encoding="utf-8"), re.M) is not None
 
 
-def _maybe_write_iteration_heading(path: Path, iteration_id: str) -> str:
+def _maybe_write_iteration_heading(path: Path, section_id: str) -> str:
     """Deprecated for new writes — use :func:`_append_for_iteration` instead."""
-    iid = normalize_iteration_id(iteration_id)
-    if _iteration_heading_present(path, iid):
+    if _iteration_heading_present(path, section_id):
         return ""
-    return f"\n## {iid}\n\n"
+    return f"\n## {section_id}\n\n"
 
 
-def _insert_pos_for_iteration_section(content: str, iteration_id: str) -> int | None:
+def _insert_pos_for_iteration_section(content: str, section_id: str) -> int | None:
     """
-    Return the byte offset where new blocks for ``iteration_id`` should be inserted.
+    Return the byte offset where new blocks for ``section_id`` should be inserted.
 
     Inserts immediately before the next ``## iteration-…`` heading, or at EOF if
     this is the last iteration section. Returns ``None`` when the heading is absent.
     """
-    iid = normalize_iteration_id(iteration_id)
-    heading_re = re.compile(rf"^## {re.escape(iid)}\s*$", re.M)
+    heading_re = re.compile(rf"^## {re.escape(section_id)}\s*$", re.M)
     m = heading_re.search(content)
     if not m:
         return None
     after_heading = m.end()
-    next_iter = re.search(r"^## iteration-\d+", content[after_heading:], re.M)
+    next_iter = _NEXT_ITERATION_SECTION_RE.search(content[after_heading:])
     if next_iter:
         return after_heading + next_iter.start()
     return len(content)
 
 
-def _append_for_iteration(path: Path, iteration_id: str, text: str) -> None:
+def _append_for_iteration(path: Path, section_id: str, text: str) -> None:
     """
     Append summary blocks for one iteration, keeping them under that iteration's section.
 
@@ -187,21 +327,20 @@ def _append_for_iteration(path: Path, iteration_id: str, text: str) -> None:
     end of the file — new blocks are inserted at the end of that iteration's
     section (before the next ``## iteration-…`` heading).
     """
-    iid = normalize_iteration_id(iteration_id)
     block = text if text.endswith("\n") else text + "\n"
 
     if not path.is_file():
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(f"## {iid}\n\n{block}", encoding="utf-8")
+        path.write_text(f"## {section_id}\n\n{block}", encoding="utf-8")
         return
 
     content = path.read_text(encoding="utf-8")
-    if not _iteration_heading_present(path, iid):
+    if not _iteration_heading_present(path, section_id):
         prefix = "\n" if content and not content.endswith("\n\n") else ""
-        _append(path, f"{prefix}## {iid}\n\n{block}")
+        _append(path, f"{prefix}## {section_id}\n\n{block}")
         return
 
-    insert_at = _insert_pos_for_iteration_section(content, iid)
+    insert_at = _insert_pos_for_iteration_section(content, section_id)
     if insert_at is None:
         _append(path, block)
         return
@@ -217,36 +356,56 @@ def _append_for_iteration(path: Path, iteration_id: str, text: str) -> None:
 
 def _upsert_iteration_block(
     path: Path,
-    iteration_id: str,
+    section_id: str,
     text: str,
     *,
     block_pattern: re.Pattern[str],
 ) -> None:
     """Replace the first matching block under an iteration section, or append."""
-    iid = normalize_iteration_id(iteration_id)
     block = text if text.endswith("\n") else text + "\n"
-    if not path.is_file() or not _iteration_heading_present(path, iid):
-        _append_for_iteration(path, iid, block)
+    if not path.is_file() or not _iteration_heading_present(path, section_id):
+        _append_for_iteration(path, section_id, block)
         return
 
     content = path.read_text(encoding="utf-8")
-    heading_re = re.compile(rf"^## {re.escape(iid)}\s*$", re.M)
+    heading_re = re.compile(rf"^## {re.escape(section_id)}\s*$", re.M)
     heading = heading_re.search(content)
     if not heading:
-        _append_for_iteration(path, iid, block)
+        _append_for_iteration(path, section_id, block)
         return
 
     sec_start = heading.end()
-    next_iter = re.search(r"^## iteration-\d+", content[sec_start:], re.M)
+    next_iter = _NEXT_ITERATION_SECTION_RE.search(content[sec_start:])
     sec_end = sec_start + next_iter.start() if next_iter else len(content)
     section = content[sec_start:sec_end]
     block_match = block_pattern.search(section)
     if not block_match:
-        _append_for_iteration(path, iid, block)
+        _append_for_iteration(path, section_id, block)
         return
 
     new_section = section[: block_match.start()] + block + section[block_match.end() :]
     path.write_text(content[:sec_start] + new_section + content[sec_end:], encoding="utf-8")
+
+
+def _delete_iteration_block(
+    content: str,
+    section_id: str,
+    block_pattern: re.Pattern[str],
+) -> str:
+    """Remove the first matching block under one iteration section, if present."""
+    heading_re = re.compile(rf"^## {re.escape(section_id)}\s*$", re.M)
+    heading = heading_re.search(content)
+    if not heading:
+        return content
+    sec_start = heading.end()
+    next_iter = _NEXT_ITERATION_SECTION_RE.search(content[sec_start:])
+    sec_end = sec_start + next_iter.start() if next_iter else len(content)
+    section = content[sec_start:sec_end]
+    block_match = block_pattern.search(section)
+    if not block_match:
+        return content
+    new_section = section[: block_match.start()] + section[block_match.end() :]
+    return content[:sec_start] + new_section + content[sec_end:]
 
 
 def _relative_workspace_link(root: Path, target: Path, *, label: str | None = None) -> str:
@@ -1050,56 +1209,42 @@ def _adaptive_ramp_plot_markdown(
     return f"![Adaptive load ramp]({rel})"
 
 
-def append_baseline_codegen_block(
+def _load_codegen_meta(iteration_path: Path) -> dict[str, Any]:
+    from .workspace import baseline_codegen_meta_path
+
+    meta_path = baseline_codegen_meta_path(iteration_path)
+    if not meta_path.is_file():
+        return {}
+    try:
+        data = json.loads(meta_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _build_baseline_codegen_block_text(
     *,
-    sample_dir: Path,
     iteration_path: Path,
-    task: Any,
+    experiment_root: Path,
+    status: str,
     attempts_used: int,
     max_attempts: int,
     winning_attempt: int | None,
-    status: str,
     error: str | None,
-    load_profile: str | None = None,
-) -> Path:
-    """
-    Append a baseline-codegen subsection under ``iteration-000``.
+) -> str:
+    """Body for the baseline ``### Baseline code generation`` subsection.
 
-    Renders one line per attempt (status + FT pass counts + error excerpt) so
-    a reader can see at a glance how many tries it took to get the application
-    code to pass the functional test suite — and which attempts' transcripts
-    live under ``02-code/attempts/<NNN>/`` for forensics on the failures.
+    Layout: overall status / attempts used / code link first, then a per-attempt
+    section listing each try and the failure that occurred.
     """
-    path = experiment_summary_path_for_iteration(iteration_path)
-    experiment_root = experiment_root_from_iteration_path(iteration_path)
-    _ensure_header(
-        path,
-        sample_dir=experiment_root.parent.parent,
-        load_profile=load_profile,
-        experiment_id=experiment_root.name,
-    )
-    iid = normalize_iteration_id("iteration-000")
+    from .workspace import iteration_code_attempts_dir as _attempts_dir
 
-    from .workspace import (
-        baseline_codegen_meta_path as _meta_path,
-        iteration_code_attempts_dir as _attempts_dir,
-    )
+    meta = _load_codegen_meta(iteration_path)
+    attempts_data = [
+        a for a in (meta.get("attempts") or []) if isinstance(a, dict)
+    ]
 
     attempt_blocks: list[str] = []
-    meta_path = _meta_path(iteration_path)
-    attempts_data: list[dict[str, Any]] = []
-    if meta_path.is_file():
-        try:
-            payload = (
-                __import__("json").loads(meta_path.read_text(encoding="utf-8"))
-            )
-            if isinstance(payload, dict):
-                raw = payload.get("attempts")
-                if isinstance(raw, list):
-                    attempts_data = [a for a in raw if isinstance(a, dict)]
-        except Exception:
-            attempts_data = []
-
     any_infra = False
     for a in attempts_data:
         idx = a.get("attempt_index", "?")
@@ -1116,21 +1261,17 @@ def append_baseline_codegen_block(
             else "FT=—"
         )
         infra_tag = " **[infra]**" if is_infra else ""
-        line = f"- **Attempt {idx}**: `{st}`{infra_tag} ({ft_part})"
-        if err:
-            err_excerpt = err if len(err) <= 200 else err[:200].rstrip() + "…"
-            line += f" — {err_excerpt}"
         attempt_link = _relative_workspace_link(
             experiment_root,
             _attempts_dir(iteration_path) / f"{int(idx):03d}",
             label=f"attempt {idx}",
         )
-        line += f" → {attempt_link}"
+        line = f"- **Attempt {idx}** ({attempt_link}): `{st}`{infra_tag} ({ft_part})"
+        if err:
+            err_excerpt = err if len(err) <= 200 else err[:200].rstrip() + "…"
+            line += f" — {err_excerpt}"
         attempt_blocks.append(line)
 
-        # Inline a short tail of test.log on infra failures so the operator
-        # sees the docker/port error directly in the summary without having
-        # to dig into the per-attempt directory.
         if is_infra:
             log_excerpt = (a.get("error_excerpt") or "").strip()
             if log_excerpt:
@@ -1145,17 +1286,17 @@ def append_baseline_codegen_block(
                 attempt_blocks.append("")
                 attempt_blocks.append("  </details>")
 
+    code_link = _relative_workspace_link(
+        experiment_root, iteration_path / "02-code" / "code", label="02-code/code"
+    )
     body = "\n".join(
         [
             f"### Baseline code generation ({_utc_now_label()})",
             "",
-            f"- **Mode**: `regenerate` (baseline LLM codegen + FT gate)",
             f"- **Status**: `{status}`"
             + (f" (winning attempt: **{winning_attempt}**)" if winning_attempt else ""),
             f"- **Attempts used**: {attempts_used} / {max_attempts}",
-            f"- **Model**: `{task.model}` (provider `{task.provider}`, "
-            f"temperature {task.temperature})",
-            f"- **Code path**: {_relative_workspace_link(experiment_root, iteration_path / '02-code' / 'code')}",
+            f"- **Code**: {code_link}",
             "",
             "**Attempts**" if attempt_blocks else "**Attempts**: (none recorded)",
             "",
@@ -1164,7 +1305,11 @@ def append_baseline_codegen_block(
             *(
                 [
                     "**Failure reason**"
-                    + (" — host environment issue (no LLM retries spent)" if status == "infra_failed" or any_infra else ""),
+                    + (
+                        " — host environment issue (no LLM retries spent)"
+                        if status == "infra_failed" or any_infra
+                        else ""
+                    ),
                     "",
                     f"> {error}" if error else "> (no error message recorded)",
                     "",
@@ -1176,8 +1321,110 @@ def append_baseline_codegen_block(
             "",
         ]
     )
-    _append_for_iteration(path, iid, body)
+    return body
+
+
+def append_baseline_codegen_block(
+    *,
+    sample_dir: Path,
+    iteration_path: Path,
+    task: Any,
+    attempts_used: int,
+    max_attempts: int,
+    winning_attempt: int | None,
+    status: str,
+    error: str | None,
+    load_profile: str | None = None,
+) -> Path:
+    """
+    Append a baseline-codegen subsection under the baseline iteration.
+
+    Renders one line per attempt (status + FT pass counts + error excerpt) so
+    a reader can see at a glance how many tries it took to get the application
+    code to pass the functional test suite — and which attempts' transcripts
+    live under ``02-code/attempts/<NNN>/`` for forensics on the failures.
+    """
+    del task
+    path = experiment_summary_path_for_iteration(iteration_path)
+    experiment_root = experiment_root_from_iteration_path(iteration_path)
+    _ensure_header(
+        path,
+        sample_dir=experiment_root.parent.parent,
+        load_profile=load_profile,
+        experiment_id=experiment_root.name,
+    )
+    iid = _summary_section_id(iteration_path)
+    body = _build_baseline_codegen_block_text(
+        iteration_path=iteration_path,
+        experiment_root=experiment_root,
+        status=status,
+        attempts_used=attempts_used,
+        max_attempts=max_attempts,
+        winning_attempt=winning_attempt,
+        error=error,
+    )
+    _upsert_iteration_block(
+        path, iid, body, block_pattern=_BASELINE_CODEGEN_BLOCK_RE
+    )
     return path
+
+
+def _spec_attempts_section(iteration_path: Path, experiment_root: Path) -> str:
+    """Attempt breakdown for a spec-generation block (baseline design + validation).
+
+    Mirrors the baseline code layout: reports how many attempts were spent and,
+    for each failed attempt under ``03-spec/attempts/<NNN>/``, the validation
+    failure that occurred. Returns ``""`` when there is nothing useful to show.
+    """
+    from .workspace import iteration_spec_attempts_dir
+
+    attempts_dir = iteration_spec_attempts_dir(iteration_path)
+    failed: list[tuple[int, dict[str, Any], Path]] = []
+    if attempts_dir.is_dir():
+        for child in sorted(attempts_dir.iterdir()):
+            if not child.is_dir():
+                continue
+            try:
+                idx = int(child.name)
+            except ValueError:
+                continue
+            meta_path = child / "attempt.json"
+            data: dict[str, Any] = {}
+            if meta_path.is_file():
+                try:
+                    loaded = json.loads(meta_path.read_text(encoding="utf-8"))
+                    if isinstance(loaded, dict):
+                        data = loaded
+                except (OSError, json.JSONDecodeError):
+                    data = {}
+            failed.append((idx, data, child))
+
+    # The winning attempt is the top-level spec (not rotated into attempts/).
+    winning_index = len(failed) + 1
+    attempts_used = winning_index
+
+    lines = [
+        "",
+        f"- **Attempts used**: {attempts_used} (design + validation; winning attempt: **{winning_index}**)",
+        "",
+        "**Attempts**",
+        "",
+    ]
+    for idx, data, child in failed:
+        link = _relative_workspace_link(
+            experiment_root, child, label=f"attempt {idx}"
+        )
+        status = data.get("status", "failed")
+        detail = (data.get("error") or data.get("validation_feedback") or "").strip()
+        line = f"- **Attempt {idx}** ({link}): `{status}`"
+        if detail:
+            excerpt = detail if len(detail) <= 200 else detail[:200].rstrip() + "…"
+            line += f" — {excerpt}"
+        lines.append(line)
+    lines.append(
+        f"- **Attempt {winning_index}**: `passed` (spec validated against cluster capacity)"
+    )
+    return "\n".join(lines)
 
 
 def _build_spec_generation_block_text(
@@ -1220,15 +1467,26 @@ def _build_spec_generation_block_text(
         f"- **Iteration index**: {iteration_index}",
         f"- **Prior Locust feedback in prompt**: {'yes' if had_prior_feedback else 'no (first iteration)'}",
         f"- **Spec**: {spec_link}",
-        "",
-        "**Deployment**",
-        "",
-        "\n".join(_spec_bullets(spec)),
-        "",
-        f"**Changes vs {diff_source}**",
-        "",
-        diff_text,
     ]
+    attempts_section = (
+        _spec_attempts_section(iteration_path, experiment_root)
+        if iteration_index == 0 or (iteration_path / "03-spec" / "attempts").is_dir()
+        else ""
+    )
+    if attempts_section:
+        lines.append(attempts_section)
+    lines.extend(
+        [
+            "",
+            "**Deployment**",
+            "",
+            "\n".join(_spec_bullets(spec)),
+            "",
+            f"**Changes vs {diff_source}**",
+            "",
+            diff_text,
+        ]
+    )
     if validation_block:
         lines.append(validation_block)
     lines.extend(["", "---", ""])
@@ -1248,6 +1506,8 @@ def append_spec_generation_block(
     load_profile: str | None = None,
 ) -> Path:
     """Append spec-generation subsection for one iteration."""
+    if not _should_record_spec_generation(iteration_path):
+        return experiment_summary_path_for_iteration(iteration_path)
     path = experiment_summary_path_for_iteration(iteration_path)
     experiment_root = experiment_root_from_iteration_path(iteration_path)
     _ensure_header(
@@ -1256,7 +1516,7 @@ def append_spec_generation_block(
         load_profile=load_profile,
         experiment_id=experiment_root.name,
     )
-    iid = normalize_iteration_id(iteration_id)
+    iid = _summary_section_id(iteration_path)
 
     body = _build_spec_generation_block_text(
         iteration_path=iteration_path,
@@ -1374,18 +1634,17 @@ def _build_perf_run_block_text(
 
 def _replace_locust_run_block(
     content: str,
-    iteration_id: str,
+    section_id: str,
     new_block: str,
 ) -> tuple[str, bool]:
     """Replace the ``### Locust run`` subsection under one iteration heading."""
-    iid = normalize_iteration_id(iteration_id)
-    heading_re = re.compile(rf"^## {re.escape(iid)}\s*$", re.M)
+    heading_re = re.compile(rf"^## {re.escape(section_id)}\s*$", re.M)
     heading = heading_re.search(content)
     if not heading:
         return content, False
 
     sec_start = heading.end()
-    next_iter = re.search(r"^## iteration-\d+", content[sec_start:], re.M)
+    next_iter = _NEXT_ITERATION_SECTION_RE.search(content[sec_start:])
     sec_end = sec_start + next_iter.start() if next_iter else len(content)
     section = content[sec_start:sec_end]
 
@@ -1401,18 +1660,17 @@ def _replace_locust_run_block(
 
 def _replace_spec_generation_block(
     content: str,
-    iteration_id: str,
+    section_id: str,
     new_block: str,
 ) -> tuple[str, bool]:
     """Replace the ``### Spec generation`` subsection under one iteration heading."""
-    iid = normalize_iteration_id(iteration_id)
-    heading_re = re.compile(rf"^## {re.escape(iid)}\s*$", re.M)
+    heading_re = re.compile(rf"^## {re.escape(section_id)}\s*$", re.M)
     heading = heading_re.search(content)
     if not heading:
         return content, False
 
     sec_start = heading.end()
-    next_iter = re.search(r"^## iteration-\d+", content[sec_start:], re.M)
+    next_iter = _NEXT_ITERATION_SECTION_RE.search(content[sec_start:])
     sec_end = sec_start + next_iter.start() if next_iter else len(content)
     section = content[sec_start:sec_end]
 
@@ -1424,6 +1682,50 @@ def _replace_spec_generation_block(
     new_section = section[: block.start()] + new_block + section[block.end() :]
     new_content = content[:sec_start] + new_section + content[sec_end:]
     return new_content, True
+
+
+def _iteration_folder_map(experiment_root: Path) -> dict[int, str]:
+    """Map iteration index → successful folder name (e.g. ``3`` → ``iteration-003-code``)."""
+    from .workspace import iteration_folder_is_failed
+
+    mapping: dict[int, str] = {}
+    iterations_dir = experiment_root / ITERATIONS_DIRNAME
+    if not iterations_dir.is_dir():
+        return mapping
+    for child in sorted(iterations_dir.iterdir()):
+        if not child.is_dir() or iteration_folder_is_failed(child.name):
+            continue
+        idx = parse_iteration_index(child.name)
+        if idx is not None:
+            mapping[idx] = child.name
+    return mapping
+
+
+def migrate_summary_section_headings(content: str, experiment_root: Path) -> str:
+    """Rewrite legacy ``## iteration-NNN`` headings to match on-disk folder slugs."""
+    for idx, folder_name in sorted(_iteration_folder_map(experiment_root).items()):
+        content = re.sub(
+            rf"^## iteration-{idx:03d}\s*$",
+            f"## {folder_name}",
+            content,
+            flags=re.M,
+        )
+    return content
+
+
+def strip_irrelevant_summary_blocks(content: str, experiment_root: Path) -> str:
+    """Drop code-reuse blocks and spec-generation blocks where they do not apply."""
+    content = _CODE_REUSE_BLOCK_RE.sub("", content)
+    iterations_dir = experiment_root / ITERATIONS_DIRNAME
+    if not iterations_dir.is_dir():
+        return content
+    for child in sorted(iterations_dir.iterdir()):
+        if not child.is_dir():
+            continue
+        section_id = child.name
+        if _iteration_folder_kind(child) == "code":
+            content = _delete_iteration_block(content, section_id, _SPEC_GENERATION_BLOCK_RE)
+    return content
 
 
 def regenerate_experiment_summary_spec_blocks(experiment_root: Path) -> Path:
@@ -1450,11 +1752,18 @@ def regenerate_experiment_summary_spec_blocks(experiment_root: Path) -> Path:
     if not iterations_dir.is_dir():
         return path
 
+    content = migrate_summary_section_headings(content, root)
+    content = strip_irrelevant_summary_blocks(content, root)
+
     for child in sorted(iterations_dir.iterdir()):
         if not child.is_dir() or iteration_folder_is_failed(child.name):
             continue
         idx = parse_iteration_index(child.name)
         if idx is None:
+            continue
+        section_id = child.name
+        if not _should_record_spec_generation(child):
+            content = _delete_iteration_block(content, section_id, _SPEC_GENERATION_BLOCK_RE)
             continue
         spec_path = find_iteration_spec_path(child)
         if spec_path is None:
@@ -1464,7 +1773,6 @@ def regenerate_experiment_summary_spec_blocks(experiment_root: Path) -> Path:
         except ValueError:
             continue
 
-        iid = f"iteration-{idx:03d}"
         block = _build_spec_generation_block_text(
             iteration_path=child,
             spec=spec,
@@ -1473,11 +1781,12 @@ def regenerate_experiment_summary_spec_blocks(experiment_root: Path) -> Path:
             had_prior_feedback=idx > 0,
             iteration_index=idx,
         )
-        updated_content, replaced = _replace_spec_generation_block(content, iid, block)
+        updated_content, replaced = _replace_spec_generation_block(content, section_id, block)
         if replaced:
             content = updated_content
         else:
-            _append_for_iteration(path, iid, block)
+            path.write_text(content, encoding="utf-8")
+            _append_for_iteration(path, section_id, block)
             content = path.read_text(encoding="utf-8")
 
     path.write_text(content, encoding="utf-8")
@@ -1518,29 +1827,131 @@ def regenerate_experiment_summary_perf_blocks(
     if not iterations_dir.is_dir():
         return path
 
+    content = migrate_summary_section_headings(content, root)
+
     for child in sorted(iterations_dir.iterdir()):
         if not child.is_dir() or iteration_folder_is_failed(child.name):
             continue
-        idx = parse_iteration_index(child.name)
-        if idx is None:
+        if parse_iteration_index(child.name) is None:
             continue
         bench_dir = iteration_bench_dir(child)
         if not (bench_dir / "bench.log").is_file():
             continue
 
-        iid = f"iteration-{idx:03d}"
+        section_id = child.name
         block = _build_perf_run_block_text(
             perf_run_dir=bench_dir,
             feedback=load_feedback(bench_dir),
+            experiment_root=root,
         )
-        updated_content, replaced = _replace_locust_run_block(content, iid, block)
+        updated_content, replaced = _replace_locust_run_block(content, section_id, block)
         if replaced:
             content = updated_content
         else:
-            _append_for_iteration(path, iid, block)
+            path.write_text(content, encoding="utf-8")
+            _append_for_iteration(path, section_id, block)
             content = path.read_text(encoding="utf-8")
 
     path.write_text(content, encoding="utf-8")
+    return path
+
+
+def regenerate_experiment_summary_baseline_blocks(experiment_root: Path) -> Path:
+    """Rebuild every ``### Baseline code generation`` block from ``codegen.json``."""
+    from .workspace import (
+        ITERATIONS_DIRNAME,
+        iteration_folder_is_failed,
+        k8s_workspace_root,
+        parse_iteration_index,
+    )
+
+    experiment_path = experiment_root.expanduser().resolve()
+    if (experiment_path / ITERATIONS_DIRNAME).is_dir():
+        root = experiment_path
+    else:
+        root = k8s_workspace_root(experiment_path)
+    path = experiment_summary_path(root)
+    if not path.is_file():
+        return path
+
+    content = path.read_text(encoding="utf-8")
+    iterations_dir = root / ITERATIONS_DIRNAME
+    if not iterations_dir.is_dir():
+        return path
+
+    content = migrate_summary_section_headings(content, root)
+
+    for child in sorted(iterations_dir.iterdir()):
+        if not child.is_dir() or iteration_folder_is_failed(child.name):
+            continue
+        if parse_iteration_index(child.name) is None:
+            continue
+        meta = _load_codegen_meta(child)
+        if not meta:
+            continue
+        section_id = child.name
+        block = _build_baseline_codegen_block_text(
+            iteration_path=child,
+            experiment_root=root,
+            status=str(meta.get("status", "?")),
+            attempts_used=int(meta.get("attempts_used", 0) or 0),
+            max_attempts=int(meta.get("max_attempts", 0) or 0),
+            winning_attempt=meta.get("winning_attempt"),
+            error=meta.get("error"),
+        )
+        updated_content, replaced = _replace_baseline_codegen_block(content, section_id, block)
+        if replaced:
+            content = updated_content
+        else:
+            path.write_text(content, encoding="utf-8")
+            _append_for_iteration(path, section_id, block)
+            content = path.read_text(encoding="utf-8")
+
+    path.write_text(content, encoding="utf-8")
+    return path
+
+
+def _replace_baseline_codegen_block(
+    content: str, section_id: str, new_block: str
+) -> tuple[str, bool]:
+    """Replace the ``### Baseline code generation`` subsection under one iteration."""
+    heading_re = re.compile(rf"^## {re.escape(section_id)}\s*$", re.M)
+    heading = heading_re.search(content)
+    if not heading:
+        return content, False
+    sec_start = heading.end()
+    next_iter = _NEXT_ITERATION_SECTION_RE.search(content[sec_start:])
+    sec_end = sec_start + next_iter.start() if next_iter else len(content)
+    section = content[sec_start:sec_end]
+    block = _BASELINE_CODEGEN_BLOCK_RE.search(section)
+    if not block:
+        return content, False
+    new_section = section[: block.start()] + new_block + section[block.end() :]
+    return content[:sec_start] + new_section + content[sec_end:], True
+
+
+def regenerate_experiment_summary(
+    experiment_root: Path,
+    *,
+    load_profile: str | None = None,
+) -> Path:
+    """Migrate headings, strip irrelevant blocks, and rebuild all iteration blocks."""
+    from .workspace import k8s_workspace_root
+
+    experiment_path = experiment_root.expanduser().resolve()
+    if (experiment_path / ITERATIONS_DIRNAME).is_dir():
+        root = experiment_path
+    else:
+        root = k8s_workspace_root(experiment_path)
+    path = experiment_summary_path(root)
+    if path.is_file():
+        content = migrate_summary_section_headings(path.read_text(encoding="utf-8"), root)
+        content = strip_irrelevant_summary_blocks(content, root)
+        path.write_text(content, encoding="utf-8")
+    _refresh_experiment_summary_header(root)
+    regenerate_experiment_summary_baseline_blocks(root)
+    regenerate_experiment_summary_spec_blocks(root)
+    regenerate_experiment_summary_perf_blocks(root, load_profile=load_profile)
     return path
 
 
@@ -1563,7 +1974,7 @@ def append_perf_run_block(
         load_profile=load_profile,
         experiment_id=experiment_root.name,
     )
-    iid = normalize_iteration_id(iteration_id)
+    iid = _summary_section_id(iteration_path)
 
     body = _build_perf_run_block_text(perf_run_dir=perf_run_dir, feedback=feedback)
     _upsert_iteration_block(path, iid, body, block_pattern=_LOCUST_RUN_BLOCK_RE)
@@ -1657,7 +2068,7 @@ def append_iteration_failure_block(
         load_profile=load_profile,
         experiment_id=experiment_root.name,
     )
-    iid = normalize_iteration_id(iteration_id)
+    iid = _summary_section_id(iteration_path)
 
     from .failure import load_terminal_failure_record
 
@@ -1722,7 +2133,7 @@ def append_code_refinement_block(
         load_profile=load_profile,
         experiment_id=experiment_root.name,
     )
-    iid = normalize_iteration_id(iteration_id)
+    iid = _summary_section_id(iteration_path)
     ft_counts = _read_ft_counts(iteration_path)
     ft_line = (
         f"- **Functional tests**: {ft_counts[0]}/{ft_counts[1]} passed"
@@ -1746,40 +2157,6 @@ def append_code_refinement_block(
     return path
 
 
-def append_code_reuse_block(
-    *,
-    sample_dir: Path,
-    iteration_id: str,
-    iteration_path: Path,
-    source_iteration_id: str,
-    load_profile: str | None = None,
-) -> Path:
-    """Record that application code was copied from a prior iteration."""
-    del sample_dir
-    path = experiment_summary_path_for_iteration(iteration_path)
-    experiment_root = experiment_root_from_iteration_path(iteration_path)
-    _ensure_header(
-        path,
-        sample_dir=experiment_root.parent.parent,
-        load_profile=load_profile,
-        experiment_id=experiment_root.name,
-    )
-    iid = normalize_iteration_id(iteration_id)
-    body = "\n".join(
-        [
-            f"### Code reuse ({_utc_now_label()})",
-            "",
-            "- **Status**: `reused` (no LLM codegen this iteration)",
-            f"- **Source iteration**: `{source_iteration_id}`",
-            "",
-            "---",
-            "",
-        ]
-    )
-    _upsert_iteration_block(path, iid, body, block_pattern=_CODE_REUSE_BLOCK_RE)
-    return path
-
-
 def append_refinement_decision_block(
     *,
     sample_dir: Path,
@@ -1798,7 +2175,7 @@ def append_refinement_decision_block(
         load_profile=load_profile,
         experiment_id=experiment_root.name,
     )
-    iid = normalize_iteration_id(iteration_id)
+    iid = _summary_section_id(iteration_path)
     body = "\n".join(
         [
             f"### Refinement decision ({_utc_now_label()})",
