@@ -228,11 +228,12 @@ class GoodputPlateauLoadProfile(BaseLoadProfile):
     """
     Goodput plateau finder.
 
-    Control loop runs in ``_baxbench_shape.GoodputPlateauShape`` and ramps users
-    until marginal goodput gains flatten (plateau), backing off on failures or
-    goodput collapse. Each level's reported goodput is the mean of per-interval
-    samples in the settle window; ``stability_drift_threshold_pct`` gates
-    decisions on p95 spread across that same window.
+    Control loop runs in ``_baxbench_shape.GoodputPlateauShape``: ramp with an
+    initial ``max_step_users`` jump, then efficiency-based steps (``step_up_gain``
+    when marginal efficiency is high, eff³ when low). Backs off up to
+    ``overload_backoff_max`` times on overload, then stops. Also stops after
+    ``plateau_stop_steps`` consecutive passing steps (stable or unstable-cap)
+    that do not beat the best stable goodput seen so far.
     """
 
     failure_threshold_pct: float
@@ -258,8 +259,80 @@ class GoodputPlateauLoadProfile(BaseLoadProfile):
 
     plateau_stop_steps: int
     plateau_goodput_threshold_pct: float
+    overload_backoff_max: int
 
     run_time_s: int
+
+    @property
+    def effective_users(self) -> int:
+        return int(self.max_users)
+
+    @property
+    def effective_spawn_rate(self) -> int:
+        return max(1, int(self.spawn_rate))
+
+    @property
+    def effective_run_time_s(self) -> int:
+        return int(self.run_time_s)
+
+
+@dataclass(frozen=True)
+class ExploreRefineLoadProfile(BaseLoadProfile):
+    """
+    Explore then refine goodput finder.
+
+    Health thresholds (``failure_threshold_pct``, ``overload_p95_ms``, etc.) apply
+    across all phases. Phase-specific tuning uses ``explore_*``, ``recovery_*``,
+    and ``refine_*`` prefixes.
+    """
+
+    # Health / SLA (all phases)
+    failure_threshold_pct: float
+    collapse_threshold_pct: float
+    overload_p95_ms: float
+
+    # Run limits
+    start_users: int
+    max_users: int
+    spawn_rate: int
+    run_time_s: int
+
+    # Shared sampling
+    sample_every_s: int
+    quantile: float
+    stability_drift_threshold_pct: float
+
+    # Explore
+    explore_warmup_duration_s: int
+    explore_ramp_user_fraction_per_s: float
+    explore_min_step_users: int
+    explore_goodput_stop_ratio: float
+    explore_stop_steps: int
+
+    # Recovery (fraction floor + settle, latency-gated exit)
+    recovery_floor_fraction: float
+    recovery_settle_duration_s: int
+    recovery_retry_drop_fraction: float
+
+    # Refine (fixed-level observation and stepping)
+    refine_min_step_duration_s: int
+    refine_max_step_duration_s: int
+    refine_min_settle_samples: int
+    refine_measure_window_s: int
+    refine_min_step_users: int
+    refine_max_step_users: int
+    refine_initial_step_fraction: float
+    refine_max_step_fraction: float
+    refine_efficiency_good_threshold: float
+    refine_step_growth: float
+    refine_stop_steps: int
+    refine_overload_backoff_max: int
+
+    # Shape runtime (written to manifest; no implicit defaults in the shape)
+    health_grace_s: int
+    spawn_target_duration_s: float
+    spawn_settle_buffer_s: float
+    abort_on_no_users: bool
 
     @property
     def effective_users(self) -> int:
@@ -282,4 +355,5 @@ LoadProfile: TypeAlias = (
     | AdaptiveLoadProfile
     | AdaptiveV2LoadProfile
     | GoodputPlateauLoadProfile
+    | ExploreRefineLoadProfile
 )

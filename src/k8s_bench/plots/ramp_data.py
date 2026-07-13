@@ -9,7 +9,13 @@ from pathlib import Path
 import pandas as pd
 
 _WARMUP_END_RE = re.compile(
-    r"adaptive-v2 warmup end t=(\d+)s at users=(\d+)"
+    r"(?:adaptive-v2|explore-refine) warmup end t=(\d+)s at users=(\d+)"
+)
+_EXPLORE_RAMP_RE = re.compile(
+    r"explore ramp \+(?P<step>\d+) .* -> users=(?P<users>\d+)"
+)
+_RECOVERY_RAMP_RE = re.compile(
+    r"recovery retry attempt=\d+ -(?P<step>\d+) .* -> users=(?P<users>\d+)"
 )
 _ADAPTIVE_PHASE_RE = re.compile(
     r"adaptive phase end t=(\d+)s: (?P<action>.*?) \| "
@@ -29,6 +35,10 @@ _P95_SAMPLE_RE = re.compile(
 )
 _GOODPUT_SAMPLE_RE = re.compile(
     r"adaptive goodput sample t=(\d+)s users=(\d+) goodput=([\d.]+)/s"
+)
+_ADAPTIVE_SAMPLE_RE = re.compile(
+    r"adaptive sample t=(\d+)s users=(\d+) goodput=([\d.]+)/s "
+    r"fail_pct=([\d.]+)% p95=([\d.]+)ms"
 )
 _GOODPUT_HISTORY_ENTRY_RE = re.compile(r"(\d+)u:([\d.]+)/s")
 _ADAPTIVE_V2_STOP_RE = re.compile(
@@ -116,6 +126,7 @@ def load_adaptive_plot_params(bench_dir: Path) -> AdaptivePlotParams:
     from locust_bench.load_profiles.models import (
         AdaptiveLoadProfile,
         AdaptiveV2LoadProfile,
+        ExploreRefineLoadProfile,
         GoodputPlateauLoadProfile,
     )
     from locust_bench.load_profiles.registry import resolve_load_profile
@@ -123,10 +134,17 @@ def load_adaptive_plot_params(bench_dir: Path) -> AdaptivePlotParams:
     resolved = resolved_profile_from_bench_config(config)
     if resolved is not None:
         mode = str(resolved.get("mode") or "")
-        if mode in ("adaptive_v2", "goodput_plateau", "adaptive"):
-            settle = resolved.get("min_settle_samples", resolved.get("settle_samples"))
+        if mode in ("adaptive_v2", "goodput_plateau", "explore_refine", "adaptive"):
+            settle = resolved.get(
+                "refine_min_settle_samples",
+                resolved.get("min_settle_samples", resolved.get("settle_samples")),
+            )
+            trim_s = resolved.get(
+                "refine_measure_window_s",
+                resolved.get("trim_s", _DEFAULT_V2_TRIM_S),
+            )
             return AdaptivePlotParams(
-                trim_s=int(resolved["trim_s"]),
+                trim_s=int(trim_s),
                 sample_every_s=int(resolved["sample_every_s"]),
                 min_settle_samples=int(settle),
                 sla_ms=float(resolved.get("sla_ms", _DEFAULT_V2_SLA_MS)),
@@ -146,6 +164,13 @@ def load_adaptive_plot_params(bench_dir: Path) -> AdaptivePlotParams:
             sample_every_s=int(profile.sample_every_s),
             min_settle_samples=int(profile.min_settle_samples),
             sla_ms=float(profile.sla_ms),
+        )
+    if isinstance(profile, ExploreRefineLoadProfile):
+        return AdaptivePlotParams(
+            trim_s=int(profile.refine_measure_window_s),
+            sample_every_s=int(profile.sample_every_s),
+            min_settle_samples=int(profile.refine_min_settle_samples),
+            sla_ms=_DEFAULT_V2_SLA_MS,
         )
     if isinstance(profile, GoodputPlateauLoadProfile):
         return AdaptivePlotParams(
@@ -181,12 +206,17 @@ def load_sustained_goodput_params(bench_dir: Path) -> SustainedGoodputParams:
 
     from bench_diagnostics.summary.load_run import load_profile_from_config
     from locust_bench.load_profiles.manifest import resolved_profile_from_bench_config
-    from locust_bench.load_profiles.models import AdaptiveV2LoadProfile, GoodputPlateauLoadProfile
+    from locust_bench.load_profiles.models import (
+        AdaptiveV2LoadProfile,
+        ExploreRefineLoadProfile,
+        GoodputPlateauLoadProfile,
+    )
     from locust_bench.load_profiles.registry import resolve_load_profile
 
     resolved = resolved_profile_from_bench_config(config)
     if resolved is not None and str(resolved.get("mode") or "") in (
         "goodput_plateau",
+        "explore_refine",
         "adaptive_v2",
     ):
         return SustainedGoodputParams(
@@ -203,7 +233,7 @@ def load_sustained_goodput_params(bench_dir: Path) -> SustainedGoodputParams:
     except KeyError:
         return defaults
 
-    if isinstance(profile, (GoodputPlateauLoadProfile, AdaptiveV2LoadProfile)):
+    if isinstance(profile, (GoodputPlateauLoadProfile, ExploreRefineLoadProfile, AdaptiveV2LoadProfile)):
         return SustainedGoodputParams(
             window_s=_DEFAULT_SUSTAINED_WINDOW_S,
             failure_threshold_pct=float(profile.failure_threshold_pct),
@@ -343,6 +373,25 @@ class GoodputTimeline:
     has_full_timeline: bool
 
 
+def build_controller_goodput_continuous_series(
+    t_s: pd.Series,
+    samples: list[GoodputSample],
+) -> pd.Series:
+    """Forward-fill controller goodput samples onto the stats-history time grid."""
+    if not samples:
+        return pd.Series(float("nan"), index=t_s.index)
+    ordered = sorted(samples, key=lambda s: s.t_s)
+    values: list[float] = []
+    idx = 0
+    current = float("nan")
+    for t in t_s:
+        while idx < len(ordered) and ordered[idx].t_s <= t:
+            current = float(ordered[idx].goodput_rps)
+            idx += 1
+        values.append(current)
+    return pd.Series(values, index=t_s.index)
+
+
 def gather_bench_log_text(bench_dir: Path) -> str:
     """Merge ``bench.log`` and ``locust/logs/**`` (adaptive lines may live in either)."""
     chunks: list[str] = []
@@ -473,26 +522,31 @@ def format_decision_tuple(decision: AdaptiveDecision) -> tuple[str, str, str]:
     """
     Compact three-line decision box.
 
-    Line 1: ``(P95 ms, err%)``
-    Line 2: virtual users at this step (``@643u``)
-    Line 3: user change (``+200``, ``-94``, ``stop``, …)
+    Line 1: ``(goodput, err%)``
+    Line 2: virtual users + change (``@643u → +200`` / ``@643u stop``)
+    Line 3: reserved (kept for backwards compatibility with the 3-line renderer)
     """
-    p95 = f"{decision.p95_ms:.0f}ms" if decision.p95_ms is not None else "—"
+    gp = (
+        f"{decision.step_goodput_rps:.0f}/s"
+        if decision.step_goodput_rps is not None and decision.step_goodput_rps > 0
+        else "—"
+    )
     err = f"{decision.fail_pct:.1f}%" if decision.fail_pct is not None else "—"
-    line1 = f"({p95}, {err})"
+    line1 = f"({gp}, {err})"
     users = decision.users_at_step
-    line2 = f"@{users}u" if users is not None else "—"
-    line3 = _format_user_delta_short(decision)
-    return line1, line2, line3
+    u = f"@{users}u" if users is not None else "—"
+    delta = _format_user_delta_short(decision)
+    line2 = f"{u} {delta}" if delta not in {"—", ""} else u
+    return line1, line2, ""
 
 
 def _format_user_delta_short(decision: AdaptiveDecision) -> str:
     if "stop" in decision.label.lower():
         return "stop"
     if decision.user_delta is not None and decision.user_delta != 0:
-        return f"{decision.user_delta:+d}"
+        return f"→ {decision.user_delta:+d}"
     if decision.users_after is not None:
-        return f"→{decision.users_after}"
+        return f"→ {decision.users_after}"
     return "—"
 
 
@@ -821,6 +875,7 @@ def parse_controller_p95_timeline(
             explicit,
             decisions,
             trim_s=trim_s,
+            sample_every_s=sample_every_s,
             min_settle_samples=min_settle_samples,
         )
         return P95Timeline(
@@ -846,17 +901,28 @@ def parse_controller_goodput_timeline(
     decisions: list[AdaptiveDecision],
     *,
     trim_s: int = _DEFAULT_V2_TRIM_S,
+    sample_every_s: int = _DEFAULT_V2_SAMPLE_EVERY_S,
     min_settle_samples: int = _DEFAULT_V2_MIN_SETTLE_SAMPLES,
 ) -> GoodputTimeline:
     """
     Build the controller goodput timeline for plotting.
 
     Uses explicit ``adaptive goodput sample`` lines when present.
-    ``decision_samples`` marks the last ``min_settle_samples`` readings before
-    each step decision (mirrors P95 decision-window selection).
+    ``decision_samples`` marks the last ``min_settle_samples`` readings (~10s
+    with default 1s sampling) before each step decision.
     """
     all_samples: list[GoodputSample] = []
     for line in log_text.splitlines():
+        m2 = _ADAPTIVE_SAMPLE_RE.search(line)
+        if m2:
+            all_samples.append(
+                GoodputSample(
+                    t_s=int(m2.group(1)),
+                    users=int(m2.group(2)),
+                    goodput_rps=float(m2.group(3)),
+                )
+            )
+            continue
         m = _GOODPUT_SAMPLE_RE.search(line)
         if not m:
             continue
@@ -875,6 +941,7 @@ def parse_controller_goodput_timeline(
         all_samples,
         decisions,
         trim_s=trim_s,
+        sample_every_s=sample_every_s,
         min_settle_samples=min_settle_samples,
     )
     return GoodputTimeline(
@@ -889,6 +956,7 @@ def _decision_window_goodput_samples(
     decisions: list[AdaptiveDecision],
     *,
     trim_s: int,
+    sample_every_s: int,
     min_settle_samples: int,
 ) -> list[GoodputSample]:
     warmup = next((d for d in decisions if d.label == "warmup end"), None)
@@ -899,10 +967,14 @@ def _decision_window_goodput_samples(
     for i, decision in enumerate(phases):
         level_start = warmup.t_s if warmup and i == 0 else phases[i - 1].t_s
         first_sample_t = int(round(level_start + trim_s))
-        level_samples = [s for s in all_samples if first_sample_t <= s.t_s <= decision.t_s]
+        window_s = int(max(1, int(min_settle_samples) * int(sample_every_s)))
+        window_start_t = max(first_sample_t, int(decision.t_s - window_s))
+        level_samples = [
+            s for s in all_samples if window_start_t <= s.t_s <= decision.t_s
+        ]
         if not level_samples:
             continue
-        relevant.extend(level_samples[-min_settle_samples:])
+        relevant.extend(level_samples)
     return relevant
 
 
@@ -927,6 +999,16 @@ def parse_controller_p95_samples(
 def _parse_explicit_p95_samples(log_text: str) -> list[LatencySample]:
     explicit: list[LatencySample] = []
     for line in log_text.splitlines():
+        m2 = _ADAPTIVE_SAMPLE_RE.search(line)
+        if m2:
+            explicit.append(
+                LatencySample(
+                    t_s=int(m2.group(1)),
+                    users=int(m2.group(2)),
+                    p95_ms=float(m2.group(5)),
+                )
+            )
+            continue
         m = _P95_SAMPLE_RE.search(line)
         if not m:
             continue
@@ -950,9 +1032,10 @@ def _decision_window_samples(
     decisions: list[AdaptiveDecision],
     *,
     trim_s: int,
+    sample_every_s: int,
     min_settle_samples: int,
 ) -> list[LatencySample]:
-    """Last ``min_settle_samples`` readings before each step decision."""
+    """Samples in the trailing decision window before each step decision."""
     warmup = next((d for d in decisions if d.label == "warmup end"), None)
     phases = _phase_decisions(decisions)
     if not phases:
@@ -962,15 +1045,12 @@ def _decision_window_samples(
     for i, decision in enumerate(phases):
         level_start = warmup.t_s if warmup and i == 0 else phases[i - 1].t_s
         first_sample_t = int(round(level_start + trim_s))
-        level_samples = [
-            s
-            for s in all_samples
-            if first_sample_t <= s.t_s <= decision.t_s
-        ]
+        window_s = int(max(1, int(min_settle_samples) * int(sample_every_s)))
+        window_start_t = max(first_sample_t, int(decision.t_s - window_s))
+        level_samples = [s for s in all_samples if window_start_t <= s.t_s <= decision.t_s]
         if not level_samples:
             continue
-        window = level_samples[-min_settle_samples:]
-        relevant.extend(window)
+        relevant.extend(level_samples)
     return relevant
 
 
@@ -1022,6 +1102,24 @@ def group_latency_sample_segments(
         return []
     ordered = sorted(samples, key=lambda s: s.t_s)
     segments: list[list[LatencySample]] = [[ordered[0]]]
+    for sample in ordered[1:]:
+        if sample.t_s - segments[-1][-1].t_s > max_gap_s:
+            segments.append([sample])
+        else:
+            segments[-1].append(sample)
+    return segments
+
+
+def group_goodput_sample_segments(
+    samples: list[GoodputSample],
+    *,
+    max_gap_s: int = 2,
+) -> list[list[GoodputSample]]:
+    """Split goodput samples into contiguous segments (breaks across trim gaps)."""
+    if not samples:
+        return []
+    ordered = sorted(samples, key=lambda s: s.t_s)
+    segments: list[list[GoodputSample]] = [[ordered[0]]]
     for sample in ordered[1:]:
         if sample.t_s - segments[-1][-1].t_s > max_gap_s:
             segments.append([sample])

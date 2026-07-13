@@ -11,6 +11,7 @@ from .models import (
     AdaptiveLoadProfile,
     AdaptiveV2LoadProfile,
     ContinuousLoadProfile,
+    ExploreRefineLoadProfile,
     GoodputPlateauLoadProfile,
     LoadProfile,
     SpikeLoadProfile,
@@ -27,6 +28,8 @@ def load_profile_mode(load_profile: LoadProfile) -> str:
         return "adaptive_v2"
     if isinstance(load_profile, GoodputPlateauLoadProfile):
         return "goodput_plateau"
+    if isinstance(load_profile, ExploreRefineLoadProfile):
+        return "explore_refine"
     if isinstance(load_profile, AdaptiveLoadProfile):
         return "adaptive"
     if isinstance(load_profile, ContinuousLoadProfile):
@@ -38,15 +41,35 @@ def load_profile_mode(load_profile: LoadProfile) -> str:
     return "steady"
 
 
+def _adaptive_trim_s(load_profile: LoadProfile) -> int:
+    if isinstance(load_profile, ExploreRefineLoadProfile):
+        return max(0, int(load_profile.refine_measure_window_s))
+    if isinstance(
+        load_profile,
+        (AdaptiveLoadProfile, AdaptiveV2LoadProfile, GoodputPlateauLoadProfile),
+    ):
+        return max(0, int(load_profile.trim_s))
+    return 10
+
+
 def _shape_runtime_extras(load_profile: LoadProfile) -> dict[str, Any]:
     """Fields used by adaptive shapes but not stored on profile dataclasses."""
+    if isinstance(load_profile, ExploreRefineLoadProfile):
+        return {}
     if isinstance(
-        load_profile, (AdaptiveLoadProfile, AdaptiveV2LoadProfile, GoodputPlateauLoadProfile)
+        load_profile,
+        (
+            AdaptiveLoadProfile,
+            AdaptiveV2LoadProfile,
+            GoodputPlateauLoadProfile,
+        ),
     ):
-        trim_s = max(0, int(load_profile.trim_s))
+        trim_s = _adaptive_trim_s(load_profile)
         return {
             "health_grace_s": max(15, trim_s),
             "abort_on_no_users": True,
+            "spawn_target_duration_s": 10.0,
+            "spawn_settle_buffer_s": 2.0,
         }
     return {}
 

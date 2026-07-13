@@ -143,7 +143,7 @@ warm-up (30 s at start_users)
 | `min_step_duration_s` / `max_step_duration_s` | 20 / 40 | Per-level time bounds |
 | `trim_s` | 15 | Ignore measurements right after user change |
 | `sample_every_s` | 1 | Sampling interval |
-| `min_settle_samples` | 10 | Samples required before decision |
+| `min_settle_samples` | 10 | Samples required before decision (~10s at 1s sampling) |
 | `quantile` | 0.95 | Latency percentile tracked |
 | `stability_drift_threshold_pct` | 5.0 | p95 spread gate |
 | `plateau_stop_steps` | 3 | Consecutive flat steps → stop |

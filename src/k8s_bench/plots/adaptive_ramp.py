@@ -5,6 +5,7 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import pandas as pd
 from matplotlib.lines import Line2D
+from matplotlib.patches import Patch
 from matplotlib.transforms import blended_transform_factory
 
 from ..workspace import PLOTS_DIRNAME
@@ -18,6 +19,7 @@ from .ramp_data import (
     anchor_users_at_decision,
     format_decision_tuple,
     gather_bench_log_text,
+    group_goodput_sample_segments,
     group_latency_sample_segments,
     load_adaptive_plot_params,
     load_stats_timeseries,
@@ -26,13 +28,13 @@ from .ramp_data import (
     parse_controller_p95_timeline,
     plottable_decisions,
     resolve_run_goodput_marker,
-    smooth_series,
 )
 
 ADAPTIVE_RAMP_PLOT_FILENAME = "adaptive_ramp.png"
-# Locust stats_history already aggregates over ~3 s; a 3 s rolling mean
-# smooths residual jitter without washing out ramp steps.
-DEFAULT_SMOOTHING_WINDOW_S = 3
+#
+# Note: Locust's stats_history throughput columns (Requests/s, Failures/s)
+# are already based on a trailing rolling window (see Locust's current_rps).
+# We intentionally do not apply any additional smoothing in this plot.
 
 _COLOR_GOODPUT = "#16a34a"
 _COLOR_GOODPUT_LIGHT = "#86efac"
@@ -43,6 +45,8 @@ _COLOR_P95 = "#9333ea"
 _COLOR_P95_OBSERVE = "#94a3b8"
 _COLOR_DECISION = "#64748b"
 _COLOR_PEAK = "#dc2626"
+_COLOR_TRIM_SHADE = "#f59e0b"  # darker amber/yellow
+_TRIM_SHADE_ALPHA = 0.20
 
 _DECISION_BBOX = {
     "boxstyle": "round,pad=0.3",
@@ -59,7 +63,6 @@ def plot_adaptive_ramp(
     bench_dir: Path,
     *,
     out_dir: Path | None = None,
-    smoothing_window_s: int = DEFAULT_SMOOTHING_WINDOW_S,
     show: bool = False,
 ) -> Path:
     """
@@ -86,16 +89,16 @@ def plot_adaptive_ramp(
         log_text,
         decisions,
         trim_s=plot_params.trim_s,
+        sample_every_s=plot_params.sample_every_s,
         min_settle_samples=plot_params.min_settle_samples,
     )
     peak = resolve_run_goodput_marker(bench_dir, log_text, decisions)
 
-    w = smoothing_window_s
     df = df.copy()
-    df["goodput_smooth"] = smooth_series(df["goodput_rps"], w)
-    df["req_smooth"] = smooth_series(df["req_rps"], w)
-    df["fail_smooth"] = smooth_series(df["fail_rps"], w)
-    df["users_smooth"] = smooth_series(df["users"], w)
+    df["goodput_plot"] = df["goodput_rps"]
+    df["req_plot"] = df["req_rps"]
+    df["fail_plot"] = df["fail_rps"]
+    df["users_plot"] = df["users"]
 
     plots_dir = out_dir or (bench_dir / PLOTS_DIRNAME)
     plots_dir.mkdir(parents=True, exist_ok=True)
@@ -106,7 +109,7 @@ def plot_adaptive_ramp(
 
     ax.plot(
         df["t_s"],
-        df["users_smooth"],
+        df["users_plot"],
         color=_COLOR_USERS,
         linewidth=2.0,
         alpha=0.85,
@@ -115,29 +118,29 @@ def plot_adaptive_ramp(
     )
     ax.plot(
         df["t_s"],
-        df["goodput_smooth"],
+        df["goodput_plot"],
         color=_COLOR_GOODPUT_LIGHT,
         linewidth=2.0,
-        label=f"Goodput ({w}s avg)",
+        label="Goodput (Locust stats, ~10s rolling)",
         zorder=3,
     )
     ax.plot(
         df["t_s"],
-        df["req_smooth"],
+        df["req_plot"],
         color=_COLOR_REQ,
         linewidth=1.6,
         alpha=0.85,
-        label=f"Total req/s ({w}s avg)",
+        linestyle=":",
+        label="Total req/s (Locust stats, ~10s rolling)",
         zorder=2,
     )
     ax.plot(
         df["t_s"],
-        df["fail_smooth"],
+        df["fail_plot"],
         color=_COLOR_FAIL,
         linewidth=1.4,
-        linestyle="--",
         alpha=0.9,
-        label=f"Failures/s ({w}s avg)",
+        label="Failures/s (Locust stats, ~10s rolling)",
         zorder=2,
     )
     p95_has_data = bool(p95_timeline.all_samples)
@@ -145,6 +148,8 @@ def plot_adaptive_ramp(
         _plot_p95_timeline(ax_p95, p95_timeline, plot_params=plot_params)
     if goodput_timeline.has_full_timeline:
         _plot_goodput_samples(ax, goodput_timeline, plot_params=plot_params)
+
+    _add_trim_shading(ax, decisions, plot_params=plot_params)
 
     ax.set_xlabel("Time (s)")
     ax.set_ylabel("Virtual users / throughput (req/s)")
@@ -164,9 +169,9 @@ def plot_adaptive_ramp(
         )
 
     y_max = max(
-        df["users_smooth"].max(),
-        df["goodput_smooth"].max(),
-        df["req_smooth"].max(),
+        df["users_plot"].max(),
+        df["goodput_plot"].max(),
+        df["req_plot"].max(),
         1.0,
     )
     ax.set_ylim(0, y_max * 1.12)
@@ -179,7 +184,7 @@ def plot_adaptive_ramp(
 
     ax.set_title(
         f"Adaptive load ramp — {bench_dir.parent.name}\n"
-        f"(goodput = successful req/s, {w}s rolling average; "
+        f"(goodput = successful req/s over Locust's ~10s rolling window; "
         f"{_p95_subtitle(plot_params)})"
     )
     ax.grid(True, linestyle=":", alpha=0.4)
@@ -189,6 +194,8 @@ def plot_adaptive_ramp(
         handles_p95, labels_p95 = ax_p95.get_legend_handles_labels()
         handles += handles_p95
         labels += labels_p95
+    handles.append(Patch(facecolor=_COLOR_TRIM_SHADE, edgecolor="none", alpha=_TRIM_SHADE_ALPHA))
+    labels.append(f"Trim window ({plot_params.trim_s}s, ignored for decisions)")
     peak_handle = Line2D(
         [0],
         [0],
@@ -215,6 +222,36 @@ def plot_adaptive_ramp(
     plt.close(fig)
     return out_path
 
+
+def _add_trim_shading(
+    ax: plt.Axes,
+    decisions: list[AdaptiveDecision],
+    *,
+    plot_params: AdaptivePlotParams,
+) -> None:
+    """Shade per-level trim windows (controller ignores these for decisions)."""
+    trim_s = max(0, int(plot_params.trim_s))
+    if trim_s <= 0 or not decisions:
+        return
+
+    # We treat "warmup end" as the first level start; each subsequent level
+    # starts at the previous phase-end decision timestamp.
+    ordered = sorted(decisions, key=lambda d: d.t_s)
+    warmup = next((d for d in ordered if d.label == "warmup end"), None)
+    phases = [d for d in ordered if d.label != "warmup end"]
+    if not phases:
+        return
+
+    for i, dec in enumerate(phases):
+        level_start = warmup.t_s if warmup and i == 0 else phases[i - 1].t_s
+        ax.axvspan(
+            level_start,
+            level_start + trim_s,
+            facecolor=_COLOR_TRIM_SHADE,
+            edgecolor="none",
+            alpha=_TRIM_SHADE_ALPHA,
+            zorder=0,
+        )
 
 def _p95_axis_limits(
     timeline: P95Timeline,
@@ -253,7 +290,7 @@ def _draw_decision_format_hint(
     ax.text(
         bbox.x0,
         bbox.y0 - 0.008,
-        "Decisions\n  (P95, err%)\n  @users\n  Δusers",
+        "Decisions\n  (goodput, err%)\n  @users → Δusers",
         transform=ax.transAxes,
         fontsize=_DECISION_FORMAT_FONTSIZE,
         va="top",
@@ -360,10 +397,11 @@ def _plot_latency_segments(
 
 
 def _p95_subtitle(params: AdaptivePlotParams) -> str:
+    window_s = params.min_settle_samples * params.sample_every_s
     return (
         f"P95 = Locust trailing ~10s window, sampled every {params.sample_every_s}s "
         f"after {params.trim_s}s level trim; purple = last "
-        f"{params.min_settle_samples} decision samples"
+        f"~{window_s:.0f}s decision window"
     )
 
 
@@ -427,10 +465,11 @@ def _plot_p95_timeline(
         clip_on=False,
     )
     n = plot_params.min_settle_samples
+    window_s = n * plot_params.sample_every_s
     label = (
-        f"P95 samples (decision window, last {n})"
+        f"P95 samples (~{window_s:.0f}s rolling window)"
         if timeline.has_full_timeline
-        else f"P95 samples (decision window, legacy log, last {n})"
+        else f"P95 samples (legacy log, ~{window_s:.0f}s window)"
     )
     ax_p95.plot(
         [],
@@ -459,6 +498,15 @@ def _plot_goodput_samples(
     observe = [s for s in all_samples if s not in decision_set]
 
     if observe:
+        for seg in group_goodput_sample_segments(observe):
+            ax.plot(
+                [s.t_s for s in seg],
+                [s.goodput_rps for s in seg],
+                color=_COLOR_GOODPUT_LIGHT,
+                linewidth=1.2,
+                alpha=0.35,
+                zorder=1,
+            )
         ax.scatter(
             [s.t_s for s in observe],
             [s.goodput_rps for s in observe],
@@ -478,6 +526,15 @@ def _plot_goodput_samples(
             label="Goodput samples (observe only)",
         )
 
+    for seg in group_goodput_sample_segments(decision_samples):
+        ax.plot(
+            [s.t_s for s in seg],
+            [s.goodput_rps for s in seg],
+            color=_COLOR_GOODPUT,
+            linewidth=1.8,
+            alpha=0.85,
+            zorder=3,
+        )
     ax.scatter(
         [s.t_s for s in decision_samples],
         [s.goodput_rps for s in decision_samples],
@@ -488,6 +545,7 @@ def _plot_goodput_samples(
         clip_on=False,
     )
     n = plot_params.min_settle_samples
+    window_s = n * plot_params.sample_every_s
     ax.plot(
         [],
         [],
@@ -495,7 +553,7 @@ def _plot_goodput_samples(
         marker="o",
         linestyle="None",
         markersize=5,
-        label=f"Goodput samples (decision window, last {n})",
+        label=f"Goodput samples (~{window_s:.0f}s rolling window)",
     )
 
 def _add_p95_decision_anchors(
@@ -586,7 +644,8 @@ def _add_peak_goodput_marker(
     if peak is None:
         return
     nearest_idx = (df["t_s"] - peak.t_s).abs().idxmin()
-    y_on_curve = float(df.loc[nearest_idx, "goodput_smooth"])
+    # Plot the marker on the Locust stats goodput curve (10s rolling).
+    y_on_curve = float(df.loc[nearest_idx, "goodput_plot"])
     ax.scatter(
         peak.t_s,
         y_on_curve,
