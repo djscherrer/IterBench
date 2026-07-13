@@ -1513,7 +1513,7 @@ import string
 import uuid
 from typing import Dict, List, Optional
 
-from locust import HttpUser, task
+from locust import FastHttpUser, task
 
 from _baxbench_shape import BaxbenchShape, baxbench_wait_time
 
@@ -1554,7 +1554,7 @@ def random_rule() -> Dict:
         }
 
 
-class TextWeaverUser(HttpUser):
+class TextWeaverUser(FastHttpUser):
     wait_time = baxbench_wait_time()
 
     def on_start(self):

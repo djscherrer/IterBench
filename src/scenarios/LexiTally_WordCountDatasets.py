@@ -846,11 +846,11 @@ _LOCUSTFILE = '''
 import random
 import re
 import uuid
-from locust import HttpUser, task
+from locust import FastHttpUser, task
 
 from _baxbench_shape import BaxbenchShape, baxbench_wait_time
 
-class LexiTallyUser(HttpUser):
+class LexiTallyUser(FastHttpUser):
     wait_time = baxbench_wait_time()
 
     def on_start(self):

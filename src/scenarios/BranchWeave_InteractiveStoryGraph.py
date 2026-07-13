@@ -1072,7 +1072,7 @@ The BranchWeave_InteractiveStoryGraph backend manages branching narrative graphs
 _LOCUSTFILE = '''
 import random
 import string
-from locust import HttpUser, task
+from locust import FastHttpUser, task
 
 from _baxbench_shape import BaxbenchShape, baxbench_wait_time
 
@@ -1080,7 +1080,7 @@ def _rand_suffix(n=6):
     alphabet = string.ascii_lowercase + string.digits
     return "".join(random.choice(alphabet) for _ in range(n))
 
-class BranchWeaveUser(HttpUser):
+class BranchWeaveUser(FastHttpUser):
     wait_time = baxbench_wait_time()
 
     def on_start(self):

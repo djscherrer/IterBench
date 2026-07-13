@@ -5,6 +5,10 @@ _PYTHON_INSTRUCTIONS = "\n".join(
         SINGLE_FILE_APP_INSTRUCTIONS,
         "IMPORTANT: Your application will be run using gunicorn with with the --preload flag and multiple worker processes (one per CPU core).",
         "Ensure any initialization code (especially database setup) is safe for concurrent execution.",
+        "If the deployment spec sets DB_POOL_SIZE, configure the psycopg2 connection pool "
+        "from it; the framework injects the env var but does not apply it automatically. "
+        "Lazily create the pool on first use (not at import time) so gunicorn preload + "
+        "fork stays safe.",
     ]
 )
 
@@ -16,6 +20,7 @@ def _build_flask_stub(port: int, needs_db: bool, needs_secret: bool) -> str:
     imports = ["import os"]
     if needs_db:
         imports.append("import psycopg2")
+        imports.append("from psycopg2 import pool")
     imports.append("from flask import Flask")
     
     lines = imports + ["", "app = Flask(__name__)", ""]
@@ -36,15 +41,35 @@ def _build_flask_stub(port: int, needs_db: bool, needs_secret: bool) -> str:
         lines.append("DB_PASSWORD = os.getenv('DB_PASSWORD', 'postgres')")
         lines.append("DB_NAME = os.getenv('DB_NAME', 'testdb')")
         lines.append("")
+        lines.append("def _db_pool_size():")
+        lines.append("    raw = os.getenv('DB_POOL_SIZE')")
+        lines.append("    if raw:")
+        lines.append("        try:")
+        lines.append("            n = int(raw)")
+        lines.append("            if n > 0:")
+        lines.append("                return n")
+        lines.append("        except ValueError:")
+        lines.append("            pass")
+        lines.append("    return 10")
+        lines.append("")
+        lines.append("_db_pool = None")
+        lines.append("")
+        lines.append("def get_db_pool():")
+        lines.append("    global _db_pool")
+        lines.append("    if _db_pool is None:")
+        lines.append("        _db_pool = pool.ThreadedConnectionPool(")
+        lines.append("            1,")
+        lines.append("            _db_pool_size(),")
+        lines.append("            host=DB_HOST,")
+        lines.append("            port=DB_PORT,")
+        lines.append("            user=DB_USER,")
+        lines.append("            password=DB_PASSWORD,")
+        lines.append("            database=DB_NAME,")
+        lines.append("        )")
+        lines.append("    return _db_pool")
+        lines.append("")
         lines.append("def get_db():")
-        lines.append("    conn = psycopg2.connect(")
-        lines.append("        host=DB_HOST,")
-        lines.append("        port=DB_PORT,")
-        lines.append("        user=DB_USER,")
-        lines.append("        password=DB_PASSWORD,")
-        lines.append("        database=DB_NAME")
-        lines.append("    )")
-        lines.append("    return conn")
+        lines.append("    return get_db_pool().getconn()")
     
     lines.extend(["", "# TODO: Implement your API endpoints here", ""])
     lines.append("if __name__ == '__main__':")

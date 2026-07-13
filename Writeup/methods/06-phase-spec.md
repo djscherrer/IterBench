@@ -26,6 +26,8 @@ Summarize as a table in the thesis (see also `docs/k8s_approach.md`).
 | `resources.cpu_request`, `memory_request`, limits | Per-pod scheduling / throttling |
 | `placement.workers` | Optional node allow-list |
 | `placement.spread_replicas` | Spread pods across nodes (anti-affinity) |
+| `env.WEB_CONCURRENCY` | Optional per-pod web parallelism env var (Python/Flask: gunicorn worker **processes**; Node/Express: PM2 worker **processes**; Rust/Actix: worker **threads**) |
+| `env.GOMAXPROCS` | Optional Go-only CPU parallelism env var (Go runtime reads `GOMAXPROCS`) |
 
 ### Database (Postgres)
 

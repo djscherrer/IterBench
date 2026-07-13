@@ -147,7 +147,7 @@ Schedulable **workers only** (control-plane excluded). Use **requests** for sche
 2. **Cluster budget**: sum of all pod requests (backends + primary + read replicas + `pooler.replicas` + `read_pooler.replicas` (if enabled) + `cache.replicas` + dedicated `database.cache` Redis if `use_shared: false`) must fit cluster capacity after reserve.
 3. Optional **placement**: restrict or pin which workers may run postgres/backends; `spread_replicas: true` spreads backend pods across nodes.
 4. Use worker **`name` values** from the per-worker list (short names like `node3` are accepted).
-5. **DB connection budget is enforced when explicit**: if you set `backend.env.PG_POOL_MAX` or `backend.env.DB_POOL_SIZE`, the framework estimates app-side DB client connections as `backend.replicas × pool_max`. If `pooler.enabled`, then `pooler.max_client_conn` (and `read_pooler.max_client_conn` if enabled) must be **≥** that estimate, or the spec will be rejected before deploy. Lower replicas, pool_max, or raise `max_client_conn`.
+5. **DB connection budget is enforced when explicit**: if you set `backend.env.DB_POOL_SIZE`, the framework estimates app-side DB client connections as `backend.replicas × pool_max`. If `pooler.enabled`, then `pooler.max_client_conn` (and `read_pooler.max_client_conn` if enabled) must be **≥** that estimate, or the spec will be rejected before deploy. Lower replicas, pool_max, or raise `max_client_conn`.
 
 ## Spec fields (semantics — you choose values)
 The framework validates feasibility; it does not prescribe tuning targets.
@@ -221,10 +221,15 @@ When `database.replicas > 1`, the framework renders a replication-aware Postgres
 - Prefer **one structural change per iteration** when exploring pooler + read pooler + asymmetric DB — easier to attribute goodput deltas.
 
 **`backend.env` allow-list** (optional; values are strings):
-- `PG_POOL_MAX`: max connections per worker process pool (psycopg2/raw SQL apps; preferred when code reads this env var).
-- `DB_POOL_SIZE`: same role for SQLAlchemy / alternate naming in generated code.
+These are **environment variables** you may set under `backend.env` in the YAML. They are **not new spec fields** and **not CLI flags**. The framework passes them into the container environment; some runtimes also translate them into startup parameters automatically.
+- `DB_POOL_SIZE`: max connections per worker process in the app's DB client pool (the app must read this env var).
 - `DB_POOL_OVERFLOW`: extra burst connections per pool (if the app supports it).
 - `SQLALCHEMY_POOL_RECYCLE`: pool recycle interval for SQLAlchemy-based apps.
+- `WEB_CONCURRENCY`: **per-pod web parallelism knob** (env var). Interpretation depends on environment (FYI only):
+  - Python/Flask: gunicorn **worker processes** (`--workers`).
+  - JavaScript/Express: PM2 cluster **worker processes** (`pm2 -i`).
+  - Rust/Actix: Actix **worker threads** (`HttpServer::workers`).
+- `GOMAXPROCS`: Go runtime **CPU parallelism** env var (Go `net/http`); the Go runtime honors it automatically if set.
 
 ## Rules
 1. Output **only** a YAML fragment for `backend`, optional `pooler`, optional `read_pooler`, optional `cache`, and `database` (no manifests, no namespace).
@@ -243,8 +248,10 @@ Return exactly one block:
 backend:
   replicas: <int>
   env:                               # optional allow-listed knobs only
-    PG_POOL_MAX: "<int>"              # or DB_POOL_SIZE for SQLAlchemy apps
+    DB_POOL_SIZE: "<int>"
     # DB_POOL_OVERFLOW: "<int>"
+    # WEB_CONCURRENCY: "<int>"        # OPTIONAL env var (not a spec field / not a CLI flag)
+    # GOMAXPROCS: "<int>"             # OPTIONAL env var (Go only; runtime reads it)
   resources:
     cpu_request: <quantity>
     cpu_limit: <quantity>

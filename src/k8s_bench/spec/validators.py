@@ -76,7 +76,7 @@ def _postgres_candidate_workers(
 
 
 def effective_pool_max(spec: K8sWorkloadSpec) -> int | None:
-    for key in ("DB_POOL_SIZE", "PG_POOL_MAX"):
+    for key in ("DB_POOL_SIZE",):
         raw = spec.backend.env.get(key)
         if raw is not None:
             try:
@@ -187,7 +187,7 @@ def validate_database_connections(
 
     if pool_max is None:
         warnings.append(
-            "backend.env.DB_POOL_SIZE / PG_POOL_MAX not set; skipping app→DB connection "
+            "backend.env.DB_POOL_SIZE not set; skipping app→DB connection "
             "budget checks."
         )
 
@@ -201,7 +201,7 @@ def validate_database_connections(
         warnings.extend(pooler_warnings)
         if client_connections is None:
             warnings.append(
-                "pooler.max_client_conn was not validated because DB_POOL_SIZE / PG_POOL_MAX "
+                "pooler.max_client_conn was not validated because DB_POOL_SIZE "
                 "was not set in the spec."
             )
     elif client_connections is not None and client_connections > max_conn:
@@ -229,8 +229,8 @@ def validate_database_connections(
             warnings.extend(w.replace("pooler.", "read_pooler.", 1) for w in rp_warnings)
             if client_connections is None:
                 warnings.append(
-                    "read_pooler.max_client_conn was not validated because DB_POOL_SIZE / "
-                    "PG_POOL_MAX was not set in the spec."
+                    "read_pooler.max_client_conn was not validated because DB_POOL_SIZE "
+                    "was not set in the spec."
                 )
 
     return errors, warnings

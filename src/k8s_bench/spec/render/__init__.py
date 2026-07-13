@@ -60,7 +60,7 @@ def _backend_container(spec: K8sWorkloadSpec, *, port: int, env_list: list[dict[
         container["command"] = [
             "sh",
             "-c",
-            "exec gunicorn --preload --workers=1 "
+            "exec gunicorn --preload --workers=${WEB_CONCURRENCY:-2} "
             "--worker-class=sync "
             "--bind 0.0.0.0:${PORT:-5001} app:app",
         ]
@@ -68,7 +68,7 @@ def _backend_container(spec: K8sWorkloadSpec, *, port: int, env_list: list[dict[
         container["command"] = [
             "sh",
             "-c",
-            "exec npx --no-install pm2-runtime start app.js -i 1",
+            "exec npx --no-install pm2-runtime start app.js -i ${WEB_CONCURRENCY:-max}",
         ]
     return container
 
