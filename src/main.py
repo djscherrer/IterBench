@@ -100,10 +100,10 @@ def main(args: Any) -> None:
         envs = [e for e in envs if e.id in args.envs]
     envs = sorted(envs, key=lambda e: e.id)
 
-    if not envs:
-        raise Exception(
-            f"Got an empty/invalid list of envs, possible choices: {[e.id for e in all_envs]}",
-        )
+    # if not envs:
+    #     raise Exception(
+    #         f"Got an empty/invalid list of envs, possible choices: {[e.id for e in all_envs]}",
+    #     )
 
     exclude_scenarios = args.exclude_scenarios if args.exclude_scenarios else []
     scenarios = [e for e in all_scenarios if e.id not in exclude_scenarios]

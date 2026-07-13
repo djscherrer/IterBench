@@ -5,6 +5,15 @@
 # Edit 03-spec/spec.yaml and/or 02-code/code/ there, run this script; results
 # land in that same folder (04-deploy/, 05-bench/, iteration.log).
 #
+# Thin wrapper around the SAME stages the full experiment runs. It calls
+# src/main.py --deploy-only, which dispatches to execute_deploy_only_iteration
+# (orchestration/deploy_only.py) and mirrors the experiment's tail:
+#   * 04-deploy  patches the registry image + port + labels onto 03-spec/spec.yaml
+#                in memory, applies manifests, writes 04-deploy/probe.json.
+#   * 05-bench   runs distributed Locust against the probe target.
+#   * 06-outcome writes iteration_feedback.json + the experiment_summary.md block.
+# No LLM stages run: 02-code/code/ and 03-spec/spec.yaml must already exist.
+#
 # Task coordinates (model, scenario, env, sample, temperature, …) are derived
 # from the results path — you only need --iter plus cluster/load knobs.
 #
@@ -21,13 +30,13 @@ set -euo pipefail
 
 # === EDIT THESE (overridable via --flags) ===========================
 CLUSTER="baxbench-emulab"
-LOAD_PROFILE="k8s-goodput-plateau"
+LOAD_PROFILE="k8s-explore-refine"
 TIMEOUT="600"
 WAIT_TIMEOUT="600"
 PORT="5001"
 # ====================================================================
 
-ITER=""
+ITER="results/openai-gpt-5.5-2026-04-23/Petstore/Go-net-http/temp0.2-openapi-high_performance/sample0/k8s-experiments/old_results/manual/iteration-002-code"
 KEEP_BENCH="false"
 
 while [ $# -gt 0 ]; do
@@ -36,7 +45,7 @@ while [ $# -gt 0 ]; do
     --cluster)      CLUSTER="$2"; shift 2;;
     --load-profile) LOAD_PROFILE="$2"; shift 2;;
     --keep-bench)   KEEP_BENCH="true"; shift;;
-    -h|--help)      sed -n '2,22p' "$0"; exit 0;;
+    -h|--help)      sed -n '2,28p' "$0"; exit 0;;
     *)              echo "Unknown arg: $1" >&2; exit 2;;
   esac
 done
@@ -80,12 +89,18 @@ fi
 ENV_ID="$(basename "$(dirname "$CONFIG_DIR")")"
 SCENARIO_ID="$(basename "$(dirname "$(dirname "$CONFIG_DIR")")")"
 MODEL_ESC="$(basename "$(dirname "$(dirname "$(dirname "$CONFIG_DIR")")")")"
+# Results paths sanitize env IDs to be filesystem-friendly. BaxBench env IDs are
+# `${language}-${framework}` where framework may contain `/` (e.g. `net/http`).
+# Reverse the known sanitization for those envs so --envs filtering works.
+if [[ "$ENV_ID" == "Go-net-http" ]]; then
+  ENV_ID="Go-net/http"
+fi
 # results/<provider>-<model>/... → provider/model for --models
 MODEL="${MODEL_ESC/-//}"
 RESULTS_DIR="$(dirname "$(dirname "$(dirname "$(dirname "$(dirname "$SAMPLE_DIR")")")")")"
 
 if [ "$KEEP_BENCH" != "true" ]; then
-  rm -f "$ITER/04-deploy/probe.json"
+  rm -rf "$ITER/04-deploy"
   rm -rf "$ITER/05-bench"
   rm -f "$ITER/iteration.log"
   echo "Cleared stale 04-deploy/05-bench artifacts under $ITER"
@@ -94,9 +109,20 @@ fi
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 export PYTHONPATH="${ROOT}/src${PYTHONPATH:+:${PYTHONPATH}}"
 
+# Prefer the project venv; system pipenv (e.g. 11.9.0 on Ubuntu) often breaks on Python 3.10+.
+baxbench_python() {
+  if [ -x "$ROOT/.venv/bin/python" ]; then
+    "$ROOT/.venv/bin/python" "$@"
+  elif command -v pipenv >/dev/null 2>&1 && pipenv --version >/dev/null 2>&1; then
+    pipenv run python "$@"
+  else
+    python3 "$@"
+  fi
+}
+
 _kc=""
 if [ -n "$CLUSTER" ]; then
-  _kc=$(cd "$ROOT" && pipenv run python -c "
+  _kc=$(cd "$ROOT" && baxbench_python -c "
 from k8s_bench.cluster import resolve_cluster_profile
 import os
 p = resolve_cluster_profile('$CLUSTER')
@@ -129,9 +155,6 @@ ARGS=(
 )
 
 EXTRA_ENV=()
-if [ -n "${KUBECONFIG:-}" ]; then
-  EXTRA_ENV+=("KUBECONFIG=$KUBECONFIG")
-fi
 
 cat <<EOF
 
@@ -145,7 +168,13 @@ cat <<EOF
 
 EOF
 
-(cd "$ROOT" && env "${EXTRA_ENV[@]}" pipenv run python src/main.py "${ARGS[@]}")
+(
+  cd "$ROOT"
+  if [ -n "${KUBECONFIG:-}" ]; then
+    export KUBECONFIG
+  fi
+  baxbench_python src/main.py "${ARGS[@]}"
+)
 
 echo
 echo "Done. Results under: $ITER"

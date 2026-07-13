@@ -33,10 +33,7 @@ def ensure_docker_image(
         and code_dir.resolve() != sample_code_dir.resolve()
     )
     if iteration_snapshot:
-        logger.info(
-            "Building image from iteration code snapshot (not sample baseline): %s",
-            code_dir,
-        )
+        logger.info("Building image from iteration code snapshot: %s", code_dir)
         return task._build_image_from_code_dir(code_dir, logger)
 
     if image_id:

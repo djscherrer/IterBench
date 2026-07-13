@@ -20,7 +20,7 @@ from typing import Any
 
 import tqdm
 
-from .code.docker_image import ensure_docker_image
+from .orchestration.deploy_only import execute_deploy_only_iteration
 from .orchestration.execute import execute_iteration
 from .orchestration.preflight import (
     build_run_config,
@@ -29,21 +29,13 @@ from .orchestration.preflight import (
     sample_postlude,
     sample_preflight,
 )
-from .stages.bench import run_bench_attempt
-from .stages.deploy import run_deploy_attempt
 from .workspace.skips import append_k8s_skip
 from .workspace import (
-    bench_dir_has_complete_run,
     ensure_iteration_core_layout,
     find_iteration_spec_path,
-    iteration_bench_dir,
-    iteration_bench_log_path,
     iterations_root,
     list_iteration_dirs,
     new_iteration_id,
-    nonempty_code_snapshot_dir,
-    parse_iteration_index,
-    prior_iteration_code_dir,
     resolve_bench_dir,
     resolve_iteration_dir,
 )
@@ -330,129 +322,9 @@ def _run_deploy_only_for_task(
             continue
 
         for iteration_path in iteration_paths:
-            iteration_id = iteration_path.name
-            bench_dir = iteration_bench_dir(iteration_path)
-            if not force and bench_dir_has_complete_run(bench_dir):
-                append_k8s_skip(
-                    ctx.task_run_dir,
-                    ctx.sample,
-                    f"skipped: k8s perf run already exists for "
-                    f"iteration={iteration_id!r} load_profile={load_profile!r}",
-                )
-                continue
-
-            ensure_iteration_core_layout(iteration_path)
-            run_dir = bench_dir
-            run_dir.mkdir(parents=True, exist_ok=True)
-            run_dirs.append(run_dir)
-            log_file = iteration_bench_log_path(iteration_path)
-
-            code_snap = nonempty_code_snapshot_dir(iteration_path)
-            if code_snap is not None:
-                source_code_dir = code_snap
-            else:
-                idx = parse_iteration_index(iteration_path.name)
-                source_code_dir = (
-                    prior_iteration_code_dir(
-                        ctx.sample_dir, idx, experiment_id=ctx.experiment_id
-                    )
-                    if idx is not None and idx > 0
-                    else None
-                )
-                if source_code_dir is None:
-                    append_k8s_skip(
-                        ctx.task_run_dir,
-                        ctx.sample,
-                        f"skipped: no code snapshot on {iteration_path.name} "
-                        "and none on the previous iteration",
-                    )
-                    continue
-
-            with task.create_logger(log_file) as logger:
-                from tasks import esc
-
-                image_id = ensure_docker_image(
-                    task,
-                    results_dir,
-                    sample,
-                    ctx.base_image_id,
-                    logger,
-                    code_dir=source_code_dir,
-                )
-                if image_id is None:
-                    append_k8s_skip(
-                        ctx.task_run_dir,
-                        ctx.sample,
-                        f"skipped: failed to build docker image for {iteration_id}",
-                    )
-                    continue
-
-                sample_slug = (
-                    f"{esc(task.model)}-{esc(task.env.id)}-"
-                    f"{esc(task.scenario.id)}-sample{sample}"
-                )
-                idx = parse_iteration_index(iteration_path.name)
-                deploy = run_deploy_attempt(
-                    iteration_path=iteration_path,
-                    iteration_id=iteration_id,
-                    image_id=image_id,
-                    sample_slug=sample_slug,
-                    app_port=task.env.port,
-                    needs_db=task.scenario.needs_db,
-                    k8s_cluster=cfg.k8s_cluster,
-                    wait_timeout_s=k8s_wait_timeout,
-                    labels={
-                        "baxbench.dev/model": esc(task.model),
-                        "baxbench.dev/scenario": esc(task.scenario.id),
-                        "baxbench.dev/env": esc(task.env.id),
-                        "baxbench.dev/spec-gen": "true",
-                        "baxbench.dev/phase": str(idx if idx is not None else 0),
-                    },
-                    logger=logger,
-                )
-                if not deploy.ok:
-                    append_k8s_skip(
-                        ctx.task_run_dir,
-                        ctx.sample,
-                        f"skipped: deploy failed for {iteration_id}: {deploy.error}",
-                    )
-                    continue
-
-                run_bench_attempt(
-                    task=task,
-                    results_dir=results_dir,
-                    sample=sample,
-                    iteration_path=iteration_path,
-                    run_dir=run_dir,
-                    bench_users=bench_users,
-                    bench_spawn_rate=bench_spawn_rate,
-                    bench_run_time=bench_run_time,
-                    iteration_index=parse_iteration_index(iteration_path.name),
-                    iteration_id=iteration_id,
-                    logger=logger,
-                    load_profile=cfg.load_profile,
-                    k8s_cluster=cfg.k8s_cluster,
-                    attempt_index=1,
-                    enable_attempts=False,
-                )
-                try:
-                    from .experiment_summary import append_perf_run_block
-
-                    append_perf_run_block(
-                        sample_dir=ctx.sample_dir,
-                        iteration_id=iteration_id,
-                        perf_run_dir=run_dir,
-                        load_profile=cfg.load_profile,
-                    )
-                except Exception as sum_exc:
-                    logger.warning(
-                        "Could not update experiment summary: %s", sum_exc
-                    )
-                logger.info(
-                    "finished deploy-only bench sample=%d iteration=%s",
-                    sample,
-                    iteration_id,
-                )
+            run_dir = execute_deploy_only_iteration(ctx, iteration_path, cfg)
+            if run_dir is not None:
+                run_dirs.append(run_dir)
 
         sample_postlude(ctx)
 
