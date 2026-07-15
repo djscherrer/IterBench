@@ -62,7 +62,7 @@ class IterationFeedback:
         return "\n".join(
             [
                 "### Adaptive ramp",
-                "Controller decision points only (per-second samples omitted).",
+                "Phase-by-phase controller narrative (per-second samples omitted).",
                 "",
                 self.load_run_summary.strip() or "(load run details unavailable)",
                 "",
@@ -371,12 +371,28 @@ def collect_iteration_feedback(
     )
     notes = _replica_usage_note(diagnostics.utilization, spec)
 
+    sustained_gp = None
+    sustained_users = None
+    try:
+        from .plots.ramp_data import sustained_goodput_from_bench
+
+        sustained = sustained_goodput_from_bench(perf_run_dir, log_text=bench_log)
+        if sustained is not None:
+            sustained_gp = float(sustained.goodput_rps)
+            sustained_users = sustained.users
+    except Exception:
+        pass
+
     return IterationFeedback(
         iteration_id=iteration_path.name,
         perf_run_dir=str(perf_run_dir),
         locust_summary=_locust_summary_from_run_dir(perf_run_dir, bench_log),
         error_excerpt=_extract_error_excerpt(bench_log),
-        load_run_summary=summarize_load_run(bench_log),
+        load_run_summary=summarize_load_run(
+            bench_log,
+            sustained_goodput_rps=sustained_gp,
+            sustained_users=sustained_users,
+        ),
         diagnostics_summary=diagnostics.to_prompt_block(),
         notes=notes,
     )

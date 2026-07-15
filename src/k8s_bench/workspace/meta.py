@@ -33,6 +33,42 @@ def write_iteration_meta(iteration_path: Path, meta: dict[str, Any]) -> Path:
     return path
 
 
+def iteration_is_failed(iteration_path: Path) -> bool:
+    """True when the folder is suffixed ``-failed`` or ``meta.json`` says failed."""
+    from .paths import iteration_folder_is_failed
+
+    if iteration_folder_is_failed(iteration_path.name):
+        return True
+    return read_iteration_meta(iteration_path).get("status") == "failed"
+
+
+def iteration_is_finished(iteration_path: Path) -> bool:
+    """
+    True when this iteration reached a terminal outcome and must not be re-run.
+
+    Covers:
+    - folder suffix ``-failed`` (any failing phase),
+    - ``meta.status == "failed"`` (legacy metas may omit ``finished_at``),
+    - ``meta.status == "success"`` with ``finished_at`` set,
+    - a complete ``05-bench/`` run (success path back-compat).
+    """
+    from .paths import bench_dir_has_complete_run, iteration_bench_dir, iteration_folder_is_failed
+
+    if not iteration_path.is_dir() and not iteration_meta_path(iteration_path).is_file():
+        return False
+    if iteration_folder_is_failed(iteration_path.name):
+        return True
+    meta = read_iteration_meta(iteration_path)
+    status = meta.get("status")
+    if status == "failed":
+        return True
+    if status == "success" and meta.get("finished_at"):
+        return True
+    if bench_dir_has_complete_run(iteration_bench_dir(iteration_path)):
+        return True
+    return False
+
+
 def init_iteration_meta(
     iteration_path: Path,
     *,
@@ -41,6 +77,10 @@ def init_iteration_meta(
     based_on_iteration: str | None = None,
 ) -> dict[str, Any]:
     iid = normalize_iteration_id(iteration_id)
+    existing = read_iteration_meta(iteration_path)
+    # Never wipe a terminal record (e.g. broad re-run resolving a ``*-failed`` folder).
+    if existing and iteration_is_finished(iteration_path):
+        return existing
     meta = {
         "iteration_index": iteration_index,
         "iteration_id": iid,
@@ -65,12 +105,3 @@ def update_iteration_meta(iteration_path: Path, **fields: Any) -> dict[str, Any]
     meta.update(fields)
     write_iteration_meta(iteration_path, meta)
     return meta
-
-
-def iteration_is_failed(iteration_path: Path) -> bool:
-    """True when the folder is suffixed ``-failed`` or ``meta.json`` says failed."""
-    from .paths import iteration_folder_is_failed
-
-    if iteration_folder_is_failed(iteration_path.name):
-        return True
-    return read_iteration_meta(iteration_path).get("status") == "failed"

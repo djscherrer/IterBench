@@ -259,7 +259,9 @@ def run_code_attempt(
             max_delay=max_delay,
             log_label=log_label,
         )
-        persist_session(prompter, sample_dir, logger=logger)
+        persist_session(
+            prompter, sample_dir, experiment_id=experiment_id, logger=logger
+        )
     except Exception as exc:
         error = f"LLM call failed: {exc}"
         llm_record = CodeFailureRecord(

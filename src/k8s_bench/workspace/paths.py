@@ -371,19 +371,43 @@ def prior_iteration_code_dir(
     experiment_id: str | None = None,
 ) -> Path | None:
     """
-    Return ``02-code/code/`` from the immediately preceding iteration (N−1).
+    Return ``02-code/code/`` from the newest earlier iteration that has one.
 
-    Deployment/spec refinements copy application code from N−1; code refinement
-    on N also starts from whatever code N−1 materialized on disk.
+    Deployment/spec refinements copy that snapshot into the current iteration.
+    Walking back past ``N-1`` is required when intermediate iterations fail
+    before the code stage (e.g. a decision LLM failure leaves
+    ``iteration-00N-failed`` with no ``02-code/code/``).
+
+    Among folders for the same index, non-failed ones are preferred (same
+    ordering as :func:`latest_spec_path`).
     """
     if iteration_index <= 0:
         return None
-    prev_path = resolve_iteration_dir(
-        sample_dir,
-        iteration_id_for_index(iteration_index - 1),
-        experiment_id=experiment_id,
-    )
-    return nonempty_code_snapshot_dir(prev_path)
+
+    root = iterations_root(sample_dir, experiment_id=experiment_id)
+    if not root.is_dir():
+        return None
+
+    by_index: dict[int, list[Path]] = {}
+    for child in root.iterdir():
+        if not child.is_dir():
+            continue
+        idx = parse_iteration_index(child.name)
+        if idx is None or idx >= iteration_index:
+            continue
+        by_index.setdefault(idx, []).append(child)
+
+    for idx in sorted(by_index.keys(), reverse=True):
+        candidates = by_index[idx]
+        non_failed = [c for c in candidates if not iteration_folder_is_failed(c.name)]
+        ordered = non_failed + [
+            c for c in candidates if iteration_folder_is_failed(c.name)
+        ]
+        for cand in ordered:
+            snap = nonempty_code_snapshot_dir(cand)
+            if snap is not None:
+                return snap
+    return None
 
 
 def resolve_bench_rebuild_code_dir(
@@ -416,8 +440,9 @@ def find_latest_code_snapshot_iteration(
     Newest iteration directory with a non-empty ``02-code/code/`` tree.
 
     Includes ``*-failed`` folders so LLM prompts can point at the most recent
-    codegen attempt (even when it broke). Used only for conversation-history
-    artifact pointers — not for lineage copy (see :func:`prior_iteration_code_dir`).
+    codegen attempt (even when it broke). Conversation-history artifact pointers
+    use this helper; deployment lineage copy uses
+    :func:`prior_iteration_code_dir` (newest earlier index with a snapshot).
     """
     root = iterations_root(sample_dir, experiment_id=experiment_id)
     if not root.is_dir():
@@ -743,7 +768,7 @@ def resolve_bench_dir(
     *,
     experiment_id: str | None = None,
 ) -> Path | None:
-    """Return ``iterations/<id>/bench`` when a finished run exists."""
+    """Return ``iterations/<id>/05-bench`` when a finished Locust run exists."""
     ip = resolve_iteration_dir(
         sample_dir, iteration_id, experiment_id=experiment_id
     )
@@ -751,6 +776,68 @@ def resolve_bench_dir(
     if _bench_run_complete(bench):
         return bench
     return None
+
+
+def iteration_candidate_dirs(
+    sample_dir: Path,
+    iteration_id: str,
+    *,
+    experiment_id: str | None = None,
+    include_failed: bool = True,
+) -> list[Path]:
+    """All on-disk folders for one logical iteration id (optionally incl. ``-failed``)."""
+    iid = normalize_iteration_id(iteration_id)
+    m = re.fullmatch(r"iteration-(\d+)", iid)
+    if not m:
+        path = iteration_dir(sample_dir, iteration_id, experiment_id=experiment_id)
+        return [path] if path.is_dir() else []
+
+    phase_slug = m.group(1).zfill(3)
+    prefix = f"{ITERATION_PREFIX}{phase_slug}"
+    root = iterations_root(sample_dir, experiment_id=experiment_id)
+    if not root.is_dir():
+        return []
+
+    candidates: list[Path] = []
+    exact = root / prefix
+    if exact.is_dir():
+        candidates.append(exact)
+    for child in root.iterdir():
+        if not child.is_dir():
+            continue
+        if child.name.startswith(f"{prefix}-") or child.name == prefix:
+            if child not in candidates:
+                candidates.append(child)
+
+    if not include_failed:
+        candidates = [c for c in candidates if not iteration_folder_is_failed(c.name)]
+    return candidates
+
+
+def find_finished_iteration_dir(
+    sample_dir: Path,
+    iteration_id: str,
+    *,
+    experiment_id: str | None = None,
+) -> Path | None:
+    """
+    Return an existing finished iteration folder for ``iteration_id``, if any.
+
+    Prefers non-failed (successful) folders when both exist; otherwise a
+    ``*-failed`` folder / meta-failed record still counts as finished so broad
+    re-runs do not overwrite terminal outcomes.
+    """
+    from .meta import iteration_is_finished
+
+    candidates = iteration_candidate_dirs(
+        sample_dir, iteration_id, experiment_id=experiment_id, include_failed=True
+    )
+    finished = [c for c in candidates if iteration_is_finished(c)]
+    if not finished:
+        return None
+    non_failed = [c for c in finished if not iteration_folder_is_failed(c.name)]
+    pool = non_failed or finished
+    return max(pool, key=lambda p: (p.stat().st_mtime, len(p.name)))
 
 
 def perf_run_dir_for_iteration(

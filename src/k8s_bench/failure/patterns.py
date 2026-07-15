@@ -38,7 +38,9 @@ CONTAINER_LOGS_MARKER = "container logs:"
 APP_STARTUP_CRASH_RE = re.compile(
     r"(Traceback \(most recent call last\)|"
     r"ModuleNotFoundError|ImportError:|SyntaxError:|IndentationError:|"
-    r"NameError:|panic!|thread 'main' panicked|FATAL ERROR)",
+    r"NameError:|panic!|thread 'main' panicked|FATAL ERROR|"
+    r"failed to init|unrecognized configuration parameter|"
+    r"\bpq:|sqlalchemy\.exc|\bFATAL:)",
     re.IGNORECASE,
 )
 

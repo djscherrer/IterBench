@@ -317,13 +317,21 @@ def _deploy_only_iteration_preflight(
     )
 
 
-def sample_postlude(ctx: SampleContext) -> None:
-    """Refresh LLM cost summary and clean up baxbench namespaces."""
+def sample_postlude(
+    ctx: SampleContext, *, cleanup_namespaces: bool = True
+) -> None:
+    """Refresh LLM cost summary; optionally clean up baxbench namespaces."""
     sample_logger = logging.getLogger(ctx.task.id)
     try:
         refresh_k8s_cost_summary(ctx.sample_dir, experiment_id=ctx.experiment_id)
     except Exception as exc:
         sample_logger.warning("Could not refresh LLM cost summary: %s", exc)
+
+    if not cleanup_namespaces:
+        sample_logger.info(
+            "Skipping post-sample namespace cleanup (no new bench runs this sample)"
+        )
+        return
 
     try:
         cleanup_baxbench_namespaces_after_bench(logger=sample_logger)

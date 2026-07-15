@@ -15,6 +15,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from bench_diagnostics.summary.adaptive_log import (
+    ADAPTIVE_PHASE_RE as _ADAPTIVE_PHASE_RE,
+    ADAPTIVE_V2_STOP_RE as _ADAPTIVE_V2_STOP_RE,
+    phase_fail_pct as _phase_fail_pct,
+    phase_p95_token as _phase_p95_token,
+)
+
 from .feedback import IterationFeedback
 from .workspace import (
     ITERATIONS_DIRNAME,
@@ -57,11 +64,6 @@ _NEXT_ITERATION_SECTION_RE = re.compile(r"^## iteration-", re.M)
 _LOG_TS_RE = re.compile(
     r"^\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2},\d{3})\]"
 )
-_ADAPTIVE_PHASE_RE = re.compile(
-    r"adaptive phase end t=(\d+)s: (?P<action>.*?) \| "
-    r"reqs=(?P<reqs>\d+) fail=(?P<fail>\d+) \((?P<fail_pct>[^)]+)\) "
-    r"p\d+=(?P<p95_logged>\S+)"
-)
 _USERS_FROM_ACTION_RE = re.compile(r"users=(\d+)")
 _SHAPE_UPDATE_RE = re.compile(r"Shape test updating to (\d+) users")
 _ADAPTIVE_START_USERS_RE = re.compile(
@@ -76,13 +78,6 @@ _P95_SAMPLE_RE = re.compile(
 )
 # Trailing Locust stats window for per-step goodput min/avg/max in the summary table.
 _SUMMARY_MEASURE_WINDOW_S = 3
-_ADAPTIVE_V2_STOP_RE = re.compile(
-    r"adaptive-v2 stop: reason=(?P<reason>\S+) "
-    r"final_users=(?P<final_users>\S+) "
-    r"low_ok=(?P<low_ok>\S+) "
-    r"high_bad=(?P<high_bad>\S+) "
-    r"goodput_history=\[(?P<history>[^\]]*)\]"
-)
 
 
 def _summary_section_id(iteration_path: Path) -> str:
@@ -227,9 +222,10 @@ def _ensure_header(
             f"- **Started**: {_utc_now_label()}",
             f"- **Load profile**: `{profile}`",
             "",
-            "Each iteration may include **refinement decision**, **code**, **spec**, "
-            "**stage failure**, and **Locust run** blocks. Load/diagnostics content is "
-            "inlined in collapsible sections (not as bare filesystem paths).",
+            "Each iteration may include **code**, **spec**, **stage failure**, and "
+            "**Locust run** blocks (folder suffix indicates the chosen path). "
+            "Load/diagnostics content is inlined in collapsible sections "
+            "(not as bare filesystem paths).",
             "",
             "- **LLM cost ledger**: [llm_cost_ledger.json](llm_cost_ledger.json) "
             "(estimated; pass --llm-max-cost to cap spend)",
@@ -267,9 +263,10 @@ def _refresh_experiment_summary_header(experiment_root: Path) -> None:
         f"- **Started**: {started}",
         f"- **Load profile**: `{profile}`",
         "",
-        "Each iteration may include **refinement decision**, **code**, **spec**, "
-        "**stage failure**, and **Locust run** blocks. Load/diagnostics content is "
-        "inlined in collapsible sections (not as bare filesystem paths).",
+        "Each iteration may include **code**, **spec**, **stage failure**, and "
+        "**Locust run** blocks (folder suffix indicates the chosen path). "
+        "Load/diagnostics content is inlined in collapsible sections "
+        "(not as bare filesystem paths).",
         "",
         "- **LLM cost ledger**: [llm_cost_ledger.json](llm_cost_ledger.json) "
         "(estimated; pass --llm-max-cost to cap spend)",
@@ -387,25 +384,119 @@ def _upsert_iteration_block(
     path.write_text(content[:sec_start] + new_section + content[sec_end:], encoding="utf-8")
 
 
+def _iteration_section_span(content: str, section_id: str) -> tuple[int, int, int] | None:
+    """
+    Return ``(heading_start, body_start, section_end)`` for ``## section_id``.
+
+    ``section_end`` is the start of the next ``## iteration-…`` heading, or EOF.
+    """
+    heading_re = re.compile(rf"^## {re.escape(section_id)}\s*$", re.M)
+    heading = heading_re.search(content)
+    if not heading:
+        return None
+    body_start = heading.end()
+    next_iter = _NEXT_ITERATION_SECTION_RE.search(content[body_start:])
+    section_end = body_start + next_iter.start() if next_iter else len(content)
+    return heading.start(), body_start, section_end
+
+
+def _delete_iteration_section(content: str, section_id: str) -> str:
+    """Remove an entire ``## section_id`` section (heading + body)."""
+    span = _iteration_section_span(content, section_id)
+    if span is None:
+        return content
+    heading_start, _body_start, section_end = span
+    before = content[:heading_start].rstrip("\n")
+    after = content[section_end:].lstrip("\n")
+    if before and after:
+        return before + "\n\n" + after
+    return before + ("\n" if before else "") + after
+
+
 def _delete_iteration_block(
     content: str,
     section_id: str,
     block_pattern: re.Pattern[str],
 ) -> str:
     """Remove the first matching block under one iteration section, if present."""
-    heading_re = re.compile(rf"^## {re.escape(section_id)}\s*$", re.M)
-    heading = heading_re.search(content)
-    if not heading:
+    span = _iteration_section_span(content, section_id)
+    if span is None:
         return content
-    sec_start = heading.end()
-    next_iter = _NEXT_ITERATION_SECTION_RE.search(content[sec_start:])
-    sec_end = sec_start + next_iter.start() if next_iter else len(content)
+    _heading_start, sec_start, sec_end = span
     section = content[sec_start:sec_end]
     block_match = block_pattern.search(section)
     if not block_match:
         return content
     new_section = section[: block_match.start()] + section[block_match.end() :]
     return content[:sec_start] + new_section + content[sec_end:]
+
+
+def _merge_iteration_sections(
+    content: str, *, source_id: str, target_id: str
+) -> str:
+    """
+    Move ``source_id`` body into ``target_id`` (prepended), then drop ``source_id``.
+
+    If ``target_id`` is absent, rename the source heading instead.
+    """
+    if source_id == target_id:
+        return content
+    source_span = _iteration_section_span(content, source_id)
+    if source_span is None:
+        return content
+    _src_h, src_body_start, src_end = source_span
+    source_body = content[src_body_start:src_end].strip("\n")
+
+    target_span = _iteration_section_span(content, target_id)
+    if target_span is None:
+        content = re.sub(
+            rf"^## {re.escape(source_id)}\s*$",
+            f"## {target_id}",
+            content,
+            count=1,
+            flags=re.M,
+        )
+        return content
+
+    # Drop source first so indices into target stay valid only when source is before target.
+    content_wo_source = _delete_iteration_section(content, source_id)
+    target_span = _iteration_section_span(content_wo_source, target_id)
+    if target_span is None or not source_body.strip():
+        return content_wo_source
+    _tgt_h, tgt_body_start, tgt_end = target_span
+    target_body = content_wo_source[tgt_body_start:tgt_end]
+    merged_body = source_body + "\n\n" + target_body.lstrip("\n")
+    return (
+        content_wo_source[:tgt_body_start]
+        + "\n\n"
+        + merged_body
+        + content_wo_source[tgt_end:]
+    )
+
+
+def rename_summary_iteration_section(
+    *,
+    iteration_path: Path,
+    old_section_id: str,
+    new_section_id: str,
+) -> Path | None:
+    """
+    After an iteration folder is renamed (e.g. ``iteration-001`` → ``iteration-001-code``),
+    rewrite the matching ``experiment_summary.md`` heading so decision + later blocks stay
+    under one section.
+    """
+    if old_section_id == new_section_id:
+        return None
+    path = experiment_summary_path_for_iteration(iteration_path)
+    if not path.is_file():
+        return None
+    content = path.read_text(encoding="utf-8")
+    new_content = _merge_iteration_sections(
+        content, source_id=old_section_id, target_id=new_section_id
+    )
+    if new_content != content:
+        path.write_text(new_content, encoding="utf-8")
+    return path
 
 
 def _relative_workspace_link(root: Path, target: Path, *, label: str | None = None) -> str:
@@ -899,10 +990,10 @@ def _parse_adaptive_phases(bench_log: str) -> list[dict[str, Any]]:
                 "t_s": t_s,
                 "next_users": int(users_m.group(1)) if users_m else None,
                 "p95_decision_ms": int(p95_decision.group(1)) if p95_decision else None,
-                "p95_logged": m.group("p95_logged"),
+                "p95_logged": _phase_p95_token(m),
                 "reqs": int(m.group("reqs")),
                 "fail": int(m.group("fail")),
-                "fail_pct": m.group("fail_pct"),
+                "fail_pct": _phase_fail_pct(m),
                 "action": m.group("action").strip(),
                 "step_goodput_rps": float(goodput_m.group(1)) if goodput_m else None,
                 "step_cv": float(cv_m.group(1)) if cv_m else None,
@@ -1105,19 +1196,45 @@ def _adaptive_table_markdown(
             f"(max of goodput-max column)."
         )
     try:
-        from .plots.ramp_data import peak_goodput_from_bench_log, sustained_goodput_from_bench
+        from .plots.ramp_data import (
+            gather_bench_log_text,
+            is_explore_refine_bench,
+            peak_goodput_from_bench_log,
+            sustained_goodput_from_bench,
+            sustained_goodput_skip_reason,
+        )
 
         if perf_run_dir is not None:
-            sustained = sustained_goodput_from_bench(perf_run_dir)
+            perf_log = gather_bench_log_text(perf_run_dir)
+            sustained = sustained_goodput_from_bench(perf_run_dir, log_text=perf_log)
             if sustained is not None and sustained.goodput_rps > 0:
+                phase_note = (
+                    " (refine phase only)"
+                    if is_explore_refine_bench(perf_run_dir)
+                    else ""
+                )
                 rows.append(
                     f"**Sustained max goodput ({sustained.window_s}s window)**: "
                     f"**{sustained.goodput_rps:.1f}** succ/s @ {sustained.users}u "
                     f"(t={sustained.t_s}s, fail={sustained.fail_pct:.1f}%, "
-                    f"drift={sustained.drift_pct:.1f}%) — primary experiment metric."
+                    f"drift={sustained.drift_pct:.1f}%){phase_note} — primary experiment metric."
                 )
+            elif is_explore_refine_bench(perf_run_dir):
+                from .plots.ramp_data import classify_bench_run_outcome
+
+                outcome = classify_bench_run_outcome(perf_run_dir, perf_log)
+                if outcome is not None:
+                    rows.append(f"**Run outcome**: {outcome.title} — {outcome.summary}")
+                else:
+                    skip = sustained_goodput_skip_reason(perf_run_dir, perf_log)
+                    rows.append(
+                        f"**Sustained max goodput**: not recorded "
+                        f"({skip or 'refine phase not scored'})."
+                    )
         run_peak, peak_users = peak_goodput_from_bench_log(log_text)
-        if run_peak > 0:
+        if run_peak > 0 and (
+            perf_run_dir is None or not is_explore_refine_bench(perf_run_dir)
+        ):
             user_note = f" @ {peak_users}u" if peak_users is not None else ""
             rows.append(
                 f"**Step peak goodput (controller metric)**: **{run_peak:.1f}** "
@@ -1684,37 +1801,55 @@ def _replace_spec_generation_block(
     return new_content, True
 
 
-def _iteration_folder_map(experiment_root: Path) -> dict[int, str]:
-    """Map iteration index → successful folder name (e.g. ``3`` → ``iteration-003-code``)."""
+def _iteration_folder_map(
+    experiment_root: Path, *, include_failed: bool = False
+) -> dict[int, str]:
+    """Map iteration index → on-disk folder name (prefer non-failed when both exist)."""
     from .workspace import iteration_folder_is_failed
 
-    mapping: dict[int, str] = {}
+    success: dict[int, str] = {}
+    failed: dict[int, str] = {}
     iterations_dir = experiment_root / ITERATIONS_DIRNAME
     if not iterations_dir.is_dir():
-        return mapping
+        return success
     for child in sorted(iterations_dir.iterdir()):
-        if not child.is_dir() or iteration_folder_is_failed(child.name):
+        if not child.is_dir():
             continue
         idx = parse_iteration_index(child.name)
-        if idx is not None:
-            mapping[idx] = child.name
+        if idx is None:
+            continue
+        if iteration_folder_is_failed(child.name):
+            failed[idx] = child.name
+        else:
+            success[idx] = child.name
+    if not include_failed:
+        return success
+    mapping = dict(failed)
+    mapping.update(success)
     return mapping
 
 
 def migrate_summary_section_headings(content: str, experiment_root: Path) -> str:
-    """Rewrite legacy ``## iteration-NNN`` headings to match on-disk folder slugs."""
-    for idx, folder_name in sorted(_iteration_folder_map(experiment_root).items()):
-        content = re.sub(
-            rf"^## iteration-{idx:03d}\s*$",
-            f"## {folder_name}",
-            content,
-            flags=re.M,
+    """
+    Fold legacy bare ``## iteration-NNN`` sections into on-disk folder slugs.
+
+    Decision is written before the folder gets a ``-code``/``-spec`` suffix; without
+    this merge the summary keeps an orphan decision section next to the real one.
+    """
+    for idx, folder_name in sorted(
+        _iteration_folder_map(experiment_root, include_failed=True).items()
+    ):
+        bare = f"iteration-{idx:03d}"
+        if bare == folder_name:
+            continue
+        content = _merge_iteration_sections(
+            content, source_id=bare, target_id=folder_name
         )
     return content
 
 
 def strip_irrelevant_summary_blocks(content: str, experiment_root: Path) -> str:
-    """Drop code-reuse blocks and spec-generation blocks where they do not apply."""
+    """Drop reused/spec/decision blocks that do not belong under an iteration heading."""
     content = _CODE_REUSE_BLOCK_RE.sub("", content)
     iterations_dir = experiment_root / ITERATIONS_DIRNAME
     if not iterations_dir.is_dir():
@@ -1723,8 +1858,27 @@ def strip_irrelevant_summary_blocks(content: str, experiment_root: Path) -> str:
         if not child.is_dir():
             continue
         section_id = child.name
-        if _iteration_folder_kind(child) == "code":
-            content = _delete_iteration_block(content, section_id, _SPEC_GENERATION_BLOCK_RE)
+        kind = _iteration_folder_kind(child)
+        # Once code/spec/baseline is chosen, the path is clear from the section
+        # name + stage block; the prior "refinement decision" narrative is noise.
+        if kind in {"code", "spec", "baseline"}:
+            while True:
+                updated = _delete_iteration_block(
+                    content, section_id, _REFINEMENT_DECISION_BLOCK_RE
+                )
+                if updated == content:
+                    break
+                content = updated
+        if kind == "code":
+            content = _delete_iteration_block(
+                content, section_id, _SPEC_GENERATION_BLOCK_RE
+            )
+    # Drop leftover bare ``## iteration-NNN`` sections (no on-disk bare folder).
+    for match in list(re.finditer(r"^## (iteration-\d{3})\s*$", content, re.M)):
+        bare_id = match.group(1)
+        if (iterations_dir / bare_id).is_dir():
+            continue
+        content = _delete_iteration_section(content, bare_id)
     return content
 
 
@@ -2165,29 +2319,12 @@ def append_refinement_decision_block(
     decision: Any,
     load_profile: str | None = None,
 ) -> Path:
-    """Append deployment-vs-code decision before a phase's spec generation."""
-    del sample_dir
-    path = experiment_summary_path_for_iteration(iteration_path)
-    experiment_root = experiment_root_from_iteration_path(iteration_path)
-    _ensure_header(
-        path,
-        sample_dir=experiment_root.parent.parent,
-        load_profile=load_profile,
-        experiment_id=experiment_root.name,
-    )
-    iid = _summary_section_id(iteration_path)
-    body = "\n".join(
-        [
-            f"### Refinement decision ({_utc_now_label()})",
-            "",
-            f"- **Action**: `{decision.action}`",
-            f"- **Rationale**: {decision.rationale.strip()}",
-            "",
-            "---",
-            "",
-        ]
-    )
-    _upsert_iteration_block(
-        path, iid, body, block_pattern=_REFINEMENT_DECISION_BLOCK_RE
-    )
-    return path
+    """
+    No-op for the markdown summary.
+
+    The code-vs-spec choice is already visible from the iteration folder suffix
+    (``iteration-NNN-code`` / ``-spec``) and the corresponding stage block.
+    Full rationale remains on disk under ``01-decision/decision.json``.
+    """
+    del sample_dir, iteration_id, decision, load_profile
+    return experiment_summary_path_for_iteration(iteration_path)

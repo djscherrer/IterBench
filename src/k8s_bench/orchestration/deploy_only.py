@@ -1,13 +1,14 @@
 """
 Deploy-only execution: deploy + Locust bench for an existing iteration folder.
 
-Mirrors the ``04-deploy → 05-bench → 06-outcome`` tail of
+Mirrors the ``04-deploy → 05-bench`` tail of
 :func:`k8s_bench.orchestration.execute.execute_iteration` — same stage engines,
 same per-stage loggers — but skips the ``01-decision``/``02-code``/``03-spec``
 LLM stages. Application code and ``03-spec/spec.yaml`` must already exist on disk
 (hand-edited or copied). The deploy stage patches the registry image, port, and
 labels onto the spec in memory and writes ``04-deploy/probe.json``; bench reads
-that probe. Used by ``--deploy-only`` runs and ``scripts/k8s_run_iteration.sh``.
+that probe and, on success, writes feedback + summary. Used by ``--deploy-only``
+runs and ``scripts/k8s_run_iteration.sh``.
 """
 
 from __future__ import annotations
@@ -17,14 +18,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from ..code.docker_image import ensure_docker_image
-from ..experiment_summary import append_perf_run_block
 from ..failure import fail_iteration_phase
 from ..failure.persist import (
     build_bench_iteration_failure,
     build_deploy_iteration_failure,
 )
-from ..feedback import collect_iteration_feedback
-from ..stages.bench import run_bench_attempt
+from ..stages.bench import persist_successful_bench_feedback, run_bench_attempt
 from ..stages.deploy import run_deploy_attempt
 from ..workspace import (
     bench_dir_has_complete_run,
@@ -38,8 +37,6 @@ from ..workspace import (
     nonempty_code_snapshot_dir,
     parse_iteration_index,
     prior_iteration_code_dir,
-    update_iteration_meta,
-    write_feedback,
 )
 from ..workspace.skips import append_k8s_skip
 from .config import IterationPlan, RunConfig, SampleContext
@@ -121,44 +118,12 @@ def _resolve_source_code_dir(
     return None
 
 
-def _record_outcome(
-    ctx: SampleContext,
-    plan: IterationPlan,
-    iteration_path: Path,
-    run_dir: Path,
-    cfg: RunConfig,
-    logger: logging.Logger,
-) -> None:
-    fb = collect_iteration_feedback(
-        perf_run_dir=run_dir,
-        iteration_path=iteration_path,
-        logger=logger,
-    )
-    write_feedback(run_dir, fb)
-    update_iteration_meta(
-        iteration_path,
-        status="success",
-        finished_at=datetime.now(timezone.utc).isoformat(),
-    )
-    try:
-        summary_path = append_perf_run_block(
-            sample_dir=ctx.sample_dir,
-            iteration_id=plan.iteration_id,
-            perf_run_dir=run_dir,
-            feedback=fb,
-            load_profile=cfg.load_profile,
-        )
-        logger.info("Updated experiment summary: %s", summary_path)
-    except Exception as exc:
-        logger.warning("Could not update experiment summary: %s", exc)
-
-
 def execute_deploy_only_iteration(
     ctx: SampleContext,
     iteration_path: Path,
     cfg: RunConfig,
 ) -> Path | None:
-    """Deploy, bench, and record outcome for one existing iteration folder."""
+    """Deploy + bench for one existing iteration folder (feedback on bench success)."""
     task = ctx.task
     iteration_id = iteration_path.name
     plan = _deploy_only_plan(iteration_path)
@@ -291,7 +256,9 @@ def execute_deploy_only_iteration(
             return None
 
         try:
-            _record_outcome(ctx, plan, iteration_path, run_dir, cfg, bench_logger)
+            persist_successful_bench_feedback(
+                ctx, plan, run_dir, cfg, bench_logger
+            )
         except Exception as exc:
             bench_logger.warning("Could not write iteration feedback: %s", exc)
 

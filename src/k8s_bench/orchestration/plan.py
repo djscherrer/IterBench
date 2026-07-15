@@ -31,8 +31,26 @@ def plan_iteration(
     iteration_id: str,
     cfg: RunConfig,
 ) -> IterationSetup | None:
-    """Resolve iteration folder, skip if already benched, load prior signals."""
+    """Resolve iteration folder, skip if already finished, load prior signals."""
+    from ..workspace import find_finished_iteration_dir
+
     is_baseline = is_baseline_iteration(iteration_index)
+
+    if not cfg.force:
+        finished = find_finished_iteration_dir(
+            ctx.sample_dir,
+            iteration_id,
+            experiment_id=ctx.experiment_id,
+        )
+        if finished is not None:
+            append_k8s_skip(
+                ctx.task_run_dir,
+                ctx.sample,
+                f"skipped iteration {iteration_id}: already finished "
+                f"({finished.name}, load_profile={cfg.load_profile!r})",
+            )
+            return None
+
     iteration_path = _resolve_iteration_path(ctx, iteration_id)
     ensure_iteration_core_layout(iteration_path)
 
@@ -50,20 +68,6 @@ def plan_iteration(
         based_on_iteration=based_on,
     )
     update_iteration_meta(iteration_path, refinement_mode=cfg.refinement_mode)
-
-    if not cfg.force and ctx.task.has_k8s_perf_run_for_iteration(
-        ctx.sample_dir,
-        iteration_id=iteration_id,
-        load_profile=cfg.load_profile,
-        experiment_id=ctx.experiment_id,
-    ):
-        append_k8s_skip(
-            ctx.task_run_dir,
-            ctx.sample,
-            f"skipped iteration {iteration_id}: perf run already exists "
-            f"(load_profile={cfg.load_profile!r})",
-        )
-        return None
 
     return IterationSetup(
         iteration_id=iteration_id,
@@ -93,15 +97,27 @@ def finalize_iteration_plan(
         if decision_result.refinement_action == "baseline"
         else ("code" if decision_result.refinement_action == "code" else "spec")
     )
+    old_section_id = setup.iteration_path.name
     iteration_path = apply_iteration_folder_suffix(setup.iteration_path, folder_kind)
     update_iteration_meta(iteration_path, folder=iteration_path.name)
+    if iteration_path.name != old_section_id:
+        try:
+            from ..experiment_summary import rename_summary_iteration_section
+
+            rename_summary_iteration_section(
+                iteration_path=iteration_path,
+                old_section_id=old_section_id,
+                new_section_id=iteration_path.name,
+            )
+        except Exception:
+            pass
 
     lineage = setup.lineage
     if decision_result.refinement_action == "deployment" and lineage.prior_code_dir is None:
         raise RuntimeError(
             f"No application code snapshot found for {setup.iteration_id} "
-            "(deployment/spec refinement requires `02-code/code/` from the "
-            "previous iteration)."
+            "(deployment/spec refinement requires a prior non-empty "
+            "`02-code/code/` under some earlier iteration)."
         )
 
     plan = IterationPlan(

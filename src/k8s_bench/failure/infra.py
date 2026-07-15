@@ -6,24 +6,45 @@ from pathlib import Path
 
 from .record import CodeFailureRecord
 from .patterns import (
-    APP_STARTUP_CRASH_RE,
     CONTAINER_LOGS_MARKER,
+    HARNESS_LINE_RE,
     INFRA_FAILURE_PATTERNS,
 )
 from .text import trim
 
 
-def startup_timeout_is_application_crash(test_log: str) -> bool:
-    """True when a start-timeout was caused by the app crashing, not the harness."""
+def container_logs_after_start_failure(test_log: str) -> str:
+    """Return app stdout/stderr under the first ``container logs:`` after a start failure."""
     idx = test_log.find("Server did not start in time")
     if idx < 0:
-        return False
+        return ""
     after = test_log[idx:]
     logs_idx = after.find(CONTAINER_LOGS_MARKER)
     if logs_idx < 0:
+        return ""
+    body = after[logs_idx + len(CONTAINER_LOGS_MARKER) :]
+    lines: list[str] = []
+    for line in body.splitlines():
+        if HARNESS_LINE_RE.match(line):
+            if lines:
+                break
+            continue
+        stripped = line.rstrip()
+        if stripped and stripped != "(empty)":
+            lines.append(stripped)
+    return "\n".join(lines)
+
+
+def startup_timeout_is_application_crash(test_log: str) -> bool:
+    """True when a start-timeout was caused by the app crashing, not the harness."""
+    if "container exited" in test_log and "Server did not start in time" in test_log:
+        return True
+    body = container_logs_after_start_failure(test_log)
+    if not body:
         return False
-    section = after[logs_idx : logs_idx + 4_000]
-    return bool(APP_STARTUP_CRASH_RE.search(section))
+    # Any non-empty container output after a start failure is treated as app-side
+    # evidence (Go/Node/etc. often exit with a one-line fatal, not a Python traceback).
+    return True
 
 
 def detect_infrastructure_failure(test_log: str) -> CodeFailureRecord.InfrastructureFailure | None:

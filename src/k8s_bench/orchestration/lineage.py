@@ -36,7 +36,8 @@ class IterationLineage:
     - ``prior_iteration_failure``: iteration N−1 ``failure.json`` envelope when
       N−1 failed (code, spec, deploy, or bench). Older failures are not carried
       forward — they remain in conversation history only.
-    - ``prior_code_dir``: ``02-code/code/`` from iteration N−1 (deployment copy).
+    - ``prior_code_dir``: newest earlier ``02-code/code/`` (walks back past
+      iterations that failed before materializing code, e.g. decision failures).
     - ``latest_spec``: newest ``spec.yaml`` on disk (incl. failed folders).
     """
 

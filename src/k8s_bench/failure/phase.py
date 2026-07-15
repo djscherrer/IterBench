@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timezone
 from pathlib import Path
 
 from ..workspace.meta import update_iteration_meta
@@ -89,6 +90,7 @@ def fail_iteration_phase(
         failure_reason=iteration_failure.terminal.summary,
         failure_kind=phase,
         refinement_action=phase if phase in {"code", "spec"} else None,
+        finished_at=datetime.now(timezone.utc).isoformat(),
     )
 
     try:

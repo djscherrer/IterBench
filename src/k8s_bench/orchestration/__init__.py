@@ -10,7 +10,7 @@ This package owns the *story* of one iterative k8s experiment
                       :func:`finalize_iteration_plan` builds :class:`IterationPlan`.
 - :mod:`execute`    – run all stages of one iteration in order.
 
-The per-iteration stage work (decision, code, spec, bench, outcome) lives in
+The per-iteration stage work (decision, code, spec, deploy, bench) lives in
 :mod:`k8s_bench.stages`.
 
 Only the dataclasses are re-exported at package level; stage callers (e.g.

@@ -8,9 +8,12 @@ from pathlib import Path
 
 from ..workspace.paths import iteration_functional_tests_dir
 from .record import CodeFailureRecord
-from .infra import detect_infrastructure_failure, startup_timeout_is_application_crash
+from .infra import (
+    container_logs_after_start_failure,
+    detect_infrastructure_failure,
+    startup_timeout_is_application_crash,
+)
 from .patterns import (
-    APP_STARTUP_CRASH_RE,
     COMPILE_DIAGNOSTIC_RE,
     CONTAINER_ERROR_HINT_RE,
     CONTAINER_LOGS_MARKER,
@@ -38,11 +41,14 @@ def _app_crash_excerpt_from_section(section_text: str) -> str:
         if HARNESS_LINE_RE.match(line) and lines:
             break
         stripped = line.rstrip()
-        if stripped:
+        if stripped and stripped != "(empty)":
             lines.append(stripped)
-    if not lines or not APP_STARTUP_CRASH_RE.search("\n".join(lines)):
+    if not lines:
         return ""
-    return trim("\n".join(lines[:_CONTAINER_ERROR_TAIL_LINES]), max_chars=_MAX_CONTAINER_ERROR_CHARS)
+    return trim(
+        "\n".join(lines[:_CONTAINER_ERROR_TAIL_LINES]),
+        max_chars=_MAX_CONTAINER_ERROR_CHARS,
+    )
 
 
 def _read_test_results(ft_dir: Path) -> tuple[int, int]:
@@ -128,10 +134,20 @@ def _container_error_excerpt_for_test(
         b for b in blocks if any(CONTAINER_ERROR_HINT_RE.search(l) for l in b)
     ]
     chosen = error_blocks[-1] if error_blocks else (blocks[-1] if blocks else [])
-    if startup_timeout_is_application_crash(section_text):
-        app_crash = _app_crash_excerpt_from_section(section_text)
+    # Prefer real application container output over harness RuntimeError/traceback.
+    app_crash = _app_crash_excerpt_from_section(section_text)
+    if not app_crash and "Server did not start in time" in section_text:
+        app_crash = container_logs_after_start_failure(section_text)
         if app_crash:
-            return app_crash
+            app_crash = trim(
+                "\n".join(app_crash.splitlines()[:_CONTAINER_ERROR_TAIL_LINES]),
+                max_chars=_MAX_CONTAINER_ERROR_CHARS,
+            )
+    if app_crash and (
+        startup_timeout_is_application_crash(section_text)
+        or "Server did not start in time" in section_text
+    ):
+        return app_crash
     head = chosen[:_CONTAINER_ERROR_TAIL_LINES] if chosen else []
     body = "\n".join(head)
     if infra_evidence:

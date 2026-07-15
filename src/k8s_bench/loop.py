@@ -236,16 +236,21 @@ def _run_iterative_experiment_for_task(
         if ctx is None:
             continue
 
+        sample_run_dirs: list[Path] = []
         for iteration_index, iteration_id in enumerate(cfg.iteration_ids):
             outcome = execute_iteration(ctx, iteration_index, iteration_id, cfg)
             if outcome.run_dir is not None:
+                sample_run_dirs.append(outcome.run_dir)
                 run_dirs.append(outcome.run_dir)
             if outcome.base_image_id is not None:
                 ctx = replace(ctx, base_image_id=outcome.base_image_id)
             if outcome.abort_sample:
                 break
 
-        sample_postlude(ctx)
+        # Only tear down cluster namespaces when this sample actually ran a bench.
+        # Full-skip re-runs (finished success/failed iterations) should not block on
+        # ``kubectl delete namespace --wait`` for leftover namespaces.
+        sample_postlude(ctx, cleanup_namespaces=bool(sample_run_dirs))
 
     return run_dirs
 
