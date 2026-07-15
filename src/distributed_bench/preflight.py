@@ -84,7 +84,7 @@ def _check_locust_ports(
         remote_exec.ssh(master_host, f"bash -lc {shlex.quote(server_cmd)}", logger).check_returncode()
 
         try:
-            master_ip = remote_exec.resolve_remote_preferred_ipv4(master_host, logger, preferred_prefixes=("10.233.",))
+            master_ip = remote_exec.resolve_remote_preferred_ipv4(master_host, logger)
         except Exception:
             master_ip = remote_exec.resolve_remote_primary_ipv4(master_host, logger)
         logger.info("Preflight: connectivity check master_ip=%s port=%d", master_ip, int(port))

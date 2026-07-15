@@ -98,17 +98,27 @@ K8S_CLUSTER_REGISTRY: dict[str, K8sClusterProfile] = {
         kube_context="kubernetes-admin@kubernetes",
         kubeconfig_path="/tmp/dscherre/.kube/config-baxbench-emulab",
         control_node="node0",
-        worker_nodes=("node3", "node4", "node5"),
+        worker_nodes=("node5", "node6", "node7", "node8"),
         load_master="node1",
         load_workers=(
             "node1", "node1", "node1", "node1", "node1", "node1", "node1", "node1",
             "node1", "node1", "node1", "node1", "node1", "node1", "node1", "node1",
-            "node1", "node1", "node1", "node1", "node1", "node1", "node1", "node1",
-            "node1", "node1", "node1", "node1", "node1", "node1",
+
             "node2", "node2", "node2", "node2", "node2", "node2", "node2", "node2",
             "node2", "node2", "node2", "node2", "node2", "node2", "node2", "node2",
             "node2", "node2", "node2", "node2", "node2", "node2", "node2", "node2",
             "node2", "node2", "node2", "node2", "node2", "node2", "node2", "node2",
+
+            "node3", "node3", "node3", "node3", "node3", "node3", "node3", "node3",
+            "node3", "node3", "node3", "node3", "node3", "node3", "node3", "node3",
+            "node3", "node3", "node3", "node3", "node3", "node3", "node3", "node3",
+            "node3", "node3", "node3", "node3", "node3", "node3", "node3", "node3",
+
+            "node4", "node4", "node4", "node4", "node4", "node4", "node4", "node4",
+            "node4", "node4", "node4", "node4", "node4", "node4", "node4", "node4",
+            "node4", "node4", "node4", "node4", "node4", "node4", "node4", "node4",
+            "node4", "node4", "node4", "node4", "node4", "node4", "node4", "node4",
+
         ),
         registry_enabled=True,
         registry_host="",  # auto-detect node0 lab IP at bench time

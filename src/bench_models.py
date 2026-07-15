@@ -269,9 +269,9 @@ class DistributedBenchContext:
         remote_tars: dict[str, str] = {h: f"{remote_app_dirs[h]}/{tar_path.name}" for h in plan.backend_hosts}
 
         def _resolve_net_ip(host: str) -> str:
-            # Prefer the 10.233.* namespace in this cluster setup.
+            # Prefer Emulab/CloudLab experiment LAN ( /etc/hosts → 10.x ), not control-net.
             try:
-                return remote_exec.resolve_remote_preferred_ipv4(host, logger, preferred_prefixes=("10.233.",))
+                return remote_exec.resolve_remote_preferred_ipv4(host, logger)
             except Exception:
                 logger.warning("Failed to resolve preferred net IP for %s; falling back to remote primary", host)
                 return remote_exec.resolve_remote_primary_ipv4(host, logger)

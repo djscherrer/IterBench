@@ -6,6 +6,8 @@ import json
 import logging
 import subprocess
 
+import remote_exec
+
 
 def resolve_nodeport_target(
     *,
@@ -16,10 +18,12 @@ def resolve_nodeport_target(
     logger: logging.Logger | None = None,
 ) -> str:
     """
-    Return ``http://<node_host>:<nodePort>`` for a Service exposed as NodePort.
+    Return ``http://<node_ip>:<nodePort>`` for a Service exposed as NodePort.
 
-    ``node_host`` should be a cluster node IP/hostname routable from Locust hosts
-    (typically the first profile ``worker_nodes`` entry).
+    ``node_host`` should be a cluster node short hostname or IP routable from Locust
+    hosts (typically the first profile ``worker_nodes`` entry). On Emulab/CloudLab the
+    hostname is resolved to the experiment LAN ``10.x`` address from ``/etc/hosts`` so
+    Locust does not hit the shared control network.
     """
     log = logger or logging.getLogger(__name__)
     proc = subprocess.run(
@@ -61,6 +65,15 @@ def resolve_nodeport_target(
         raise RuntimeError(
             f"Service {namespace}/{service} has no nodePort (add type NodePort in manifests)"
         )
-    target = f"http://{node_host}:{node_port}"
-    log.info("Load target for Locust (NodePort): %s", target)
+    reach_host = node_host
+    try:
+        reach_host = remote_exec.resolve_remote_preferred_ipv4(node_host, log)
+    except Exception as exc:
+        log.warning(
+            "Could not resolve experiment IP for NodePort host %s (%s); using hostname",
+            node_host,
+            exc,
+        )
+    target = f"http://{reach_host}:{node_port}"
+    log.info("Load target for Locust (NodePort): %s (from %s)", target, node_host)
     return target

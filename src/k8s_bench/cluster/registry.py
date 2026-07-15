@@ -7,6 +7,7 @@ every cluster node to pull from it (images cached with imagePullPolicy: IfNotPre
 
 from __future__ import annotations
 
+import base64
 import json
 import logging
 import os
@@ -42,22 +43,15 @@ class RegistryConfig:
 
 
 def _local_primary_ipv4() -> str:
-    proc = subprocess.run(
-        [
-            "bash",
-            "-lc",
-            "ip -4 route get 1.1.1.1 2>/dev/null | awk '{for (i=1;i<=NF;i++) if ($i==\"src\") {print $(i+1); exit}}' "
-            "|| hostname -I | awk '{print $1}'",
-        ],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    text = (proc.stdout or "") + (proc.stderr or "")
-    ips = re.findall(r"\b(?:\d{1,3}\.){3}\d{1,3}\b", text)
-    for ip in ips:
-        if not ip.startswith("127."):
-            return ip
+    """Prefer Emulab experiment LAN (``/etc/hosts`` → ``10.x``) over control-net."""
+    for cmd in (
+        "getent ahostsv4 node0 2>/dev/null | awk '{print $1; exit}'",
+        "ip -4 -o addr show scope global | awk '{print $4}' | cut -d/ -f1",
+    ):
+        proc = subprocess.run(["bash", "-lc", cmd], capture_output=True, text=True, check=False)
+        for ip in re.findall(r"\b(?:\d{1,3}\.){3}\d{1,3}\b", (proc.stdout or "") + (proc.stderr or "")):
+            if ip.startswith("10.") and not ip.startswith("127."):
+                return ip
     raise RuntimeError("Could not determine local primary IPv4 for registry host")
 
 
@@ -86,8 +80,11 @@ def resolve_registry_config(profile_name: str | None = None, *, logger: logging.
     return RegistryConfig(host=host, port=profile.registry_port)
 
 
+CONTAINERD_CERTS_D = "/etc/containerd/certs.d"
+
+
 def _containerd_certs_dir(endpoint: str) -> str:
-    return f"/etc/containerd/certs.d/{endpoint}"
+    return f"{CONTAINERD_CERTS_D}/{endpoint}"
 
 
 def _hosts_toml(registry: RegistryConfig) -> str:
@@ -145,23 +142,83 @@ def _start_registry_local(registry: RegistryConfig, logger: logging.Logger) -> N
     logger.info("Registry listening at %s (and http://127.0.0.1:%s)", registry.endpoint, registry.port)
 
 
+def _containerd_config_path_awk() -> str:
+    """Awk program that normalizes registry ``config_path`` in containerd config.toml.
+
+    containerd 2.x defaults to a colon-separated path list
+    (``/etc/containerd/certs.d:/etc/docker/certs.d``). The CRI transfer service
+    treats that as a single directory, so ``hosts.toml`` is ignored and HTTP
+    registries fail with "HTTP response to HTTPS client". We force a single-root
+    path in:
+
+    - ``[plugins.'io.containerd.cri.v1.images'.registry]`` (containerd 2.x CRI)
+    - ``[plugins."io.containerd.grpc.v1.cri".registry]`` (containerd 1.x CRI)
+    - ``[plugins.'io.containerd.transfer.v1.local']`` (containerd 2.x transfer)
+    """
+    certs = CONTAINERD_CERTS_D
+    return textwrap.dedent(
+        f"""\
+        BEGIN {{ cri2 = 0; cri1 = 0; xfer = 0 }}
+        /\\[plugins/ && /cri\\.v1\\.images/ && /\\.registry\\]/ {{
+          cri2 = 1; print; next
+        }}
+        /\\[plugins/ && /grpc\\.v1\\.cri/ && /\\.registry\\]/ {{
+          cri1 = 1; print; next
+        }}
+        /\\[plugins/ && /transfer\\.v1\\.local/ {{
+          xfer = 1; print; next
+        }}
+        cri2 && /^[[:space:]]*config_path/ {{
+          print "      config_path = '{certs}'"
+          cri2 = 0; next
+        }}
+        cri1 && /^[[:space:]]*config_path/ {{
+          print "  config_path = \\"{certs}\\""
+          cri1 = 0; next
+        }}
+        xfer && /^[[:space:]]*config_path/ {{
+          print "    config_path = '{certs}'"
+          xfer = 0; next
+        }}
+        /^\\[/ {{
+          if (cri2) {{
+            print "      config_path = '{certs}'"
+            cri2 = 0
+          }}
+          if (cri1) {{
+            print "  config_path = \\"{certs}\\""
+            cri1 = 0
+          }}
+          if (xfer) {{
+            print "    config_path = '{certs}'"
+            xfer = 0
+          }}
+        }}
+        {{ print }}
+        END {{
+          if (cri2) print "      config_path = '{certs}'"
+          if (cri1) print "  config_path = \\"{certs}\\""
+          if (xfer) print "    config_path = '{certs}'"
+        }}
+        """
+    )
+
+
 def _configure_containerd_script(registry: RegistryConfig) -> str:
     """
     Ship two things to a worker so kubelet pulls work from our HTTP registry:
 
     1. ``/etc/containerd/certs.d/<endpoint>/hosts.toml`` — per-registry config
        enabling plain HTTP + ``skip_verify``.
-    2. Patch ``/etc/containerd/config.toml`` to set
-       ``config_path = "/etc/containerd/certs.d"`` under the CRI registry
-       section, so containerd actually *reads* (1). Without this, kubelet
-       pulls bypass certs.d and try HTTPS against our HTTP registry.
+    2. Patch ``/etc/containerd/config.toml`` so CRI and the transfer service read
+       (1) via a single-root ``config_path`` (not the containerd 2.x default
+       colon-separated list, which breaks ``hosts.toml`` lookup).
 
-    Restart containerd after the patch is applied. Idempotent: a second
-    invocation only writes hosts.toml; the config.toml stanza is left alone
-    if ``config_path = "/etc/containerd/certs.d"`` is already present.
+    Restart containerd after the patch is applied. Idempotent.
     """
     ep = registry.endpoint
     certs_dir = _containerd_certs_dir(ep)
+    awk_b64 = base64.b64encode(_containerd_config_path_awk().strip().encode()).decode()
     return f"""set -euo pipefail
 if command -v sudo >/dev/null 2>&1; then SUDO='sudo -n'; else SUDO=''; fi
 $SUDO mkdir -p {shlex.quote(certs_dir)}
@@ -169,36 +226,23 @@ cat <<'HOSTS_EOF' | $SUDO tee {shlex.quote(certs_dir)}/hosts.toml >/dev/null
 {_hosts_toml(registry)}HOSTS_EOF
 
 CFG=/etc/containerd/config.toml
-need_restart=false
 if [ ! -f "$CFG" ]; then
   $SUDO mkdir -p /etc/containerd
   $SUDO bash -c "containerd config default > $CFG"
-  need_restart=true
 fi
 
-# Ensure CRI registry section points at /etc/containerd/certs.d.
-if ! $SUDO grep -Eq 'config_path *= *"/etc/containerd/certs\\.d"' "$CFG"; then
-  if $SUDO grep -q '\\[plugins."io.containerd.grpc.v1.cri".registry\\]' "$CFG"; then
-    # Replace existing config_path = "" line, or insert one after the header.
-    if $SUDO grep -Eq 'config_path *= *"[^"]*"' "$CFG"; then
-      $SUDO sed -i 's|config_path *= *"[^"]*"|config_path = "/etc/containerd/certs.d"|' "$CFG"
-    else
-      $SUDO sed -i '/\\[plugins."io.containerd.grpc.v1.cri".registry\\]/a \\  config_path = "/etc/containerd/certs.d"' "$CFG"
-    fi
-  else
-    echo '' | $SUDO tee -a "$CFG" >/dev/null
-    echo '[plugins."io.containerd.grpc.v1.cri".registry]' | $SUDO tee -a "$CFG" >/dev/null
-    echo '  config_path = "/etc/containerd/certs.d"' | $SUDO tee -a "$CFG" >/dev/null
-  fi
-  need_restart=true
+AWK_FILE="$(mktemp)"
+TMP_CFG="$(mktemp)"
+trap 'rm -f "$TMP_CFG" "$AWK_FILE"' EXIT
+printf '%s' {shlex.quote(awk_b64)} | base64 -d > "$AWK_FILE"
+$SUDO awk -f "$AWK_FILE" "$CFG" >"$TMP_CFG"
+
+if ! grep -q "cri.v1.images" "$TMP_CFG" && ! grep -q 'grpc.v1.cri' "$TMP_CFG"; then
+  printf '%s\\n' '' '[plugins."io.containerd.grpc.v1.cri".registry]' '  config_path = "{CONTAINERD_CERTS_D}"' >>"$TMP_CFG"
 fi
 
-if [ "$need_restart" = "true" ]; then
-  $SUDO systemctl restart containerd
-else
-  # hosts.toml may have changed even when config.toml didn't; force a reload.
-  $SUDO systemctl restart containerd
-fi
+$SUDO install -m 0644 "$TMP_CFG" "$CFG"
+$SUDO systemctl restart containerd
 echo 'containerd configured for {ep} (hosts.toml + config.toml certs.d)'
 """
 
