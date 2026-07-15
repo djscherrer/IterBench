@@ -292,22 +292,24 @@ class WritePetstoreUser(FastHttpUser):
 class ReadPetstoreUser(FastHttpUser):
     wait_time = baxbench_wait_time()
 
-
-class Shape(BaxbenchShape):
-    pass
-    @task
+    @task(10)
     def get_pet(self):
         get_pet(self)
 
-    @task
+    @task(5)
     def get_by_status(self):
         get_by_status(self)
 
-    @task
+    @task(1)
     def update_pet(self):
         update_pet(self)
 
-    @task
+    @task(10)
     def read_order(self):
         read_order(self)
+
+
+class Shape(BaxbenchShape):
+    pass
+
 
