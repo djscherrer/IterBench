@@ -12,11 +12,14 @@ from ..workspace import PLOTS_DIRNAME
 from .ramp_data import (
     AdaptiveDecision,
     AdaptivePlotParams,
+    AdaptiveRunOutcome,
     GoodputTimeline,
     LatencySample,
+    LoadPhaseSpan,
     PeakGoodputMarker,
     P95Timeline,
     anchor_users_at_decision,
+    classify_bench_run_outcome,
     format_decision_tuple,
     gather_bench_log_text,
     group_goodput_sample_segments,
@@ -26,8 +29,10 @@ from .ramp_data import (
     parse_adaptive_decisions,
     parse_controller_goodput_timeline,
     parse_controller_p95_timeline,
+    parse_explore_refine_phase_spans,
     plottable_decisions,
     resolve_run_goodput_marker,
+    is_explore_refine_bench,
 )
 
 ADAPTIVE_RAMP_PLOT_FILENAME = "adaptive_ramp.png"
@@ -42,11 +47,18 @@ _COLOR_REQ = "#ea580c"
 _COLOR_FAIL = "#dc2626"
 _COLOR_USERS = "#2563eb"
 _COLOR_P95 = "#9333ea"
-_COLOR_P95_OBSERVE = "#94a3b8"
 _COLOR_DECISION = "#64748b"
 _COLOR_PEAK = "#dc2626"
 _COLOR_TRIM_SHADE = "#f59e0b"  # darker amber/yellow
 _TRIM_SHADE_ALPHA = 0.20
+
+_PHASE_STYLES: dict[str, dict[str, str]] = {
+    "warmup": {"fill": "#e0e7ff", "edge": "#6366f1", "label": "Warmup"},
+    "explore": {"fill": "#dbeafe", "edge": "#2563eb", "label": "Explore"},
+    "recovery": {"fill": "#fef3c7", "edge": "#d97706", "label": "Recovery"},
+    "refine": {"fill": "#dcfce7", "edge": "#16a34a", "label": "Refine"},
+}
+_PHASE_FILL_ALPHA = 0.22
 
 _DECISION_BBOX = {
     "boxstyle": "round,pad=0.3",
@@ -93,6 +105,12 @@ def plot_adaptive_ramp(
         min_settle_samples=plot_params.min_settle_samples,
     )
     peak = resolve_run_goodput_marker(bench_dir, log_text, decisions)
+    explore_refine = is_explore_refine_bench(bench_dir)
+    run_outcome = classify_bench_run_outcome(bench_dir, log_text) if explore_refine else None
+    phase_spans = parse_explore_refine_phase_spans(
+        log_text,
+        t_end_s=float(df["t_s"].max()),
+    )
 
     df = df.copy()
     df["goodput_plot"] = df["goodput_rps"]
@@ -106,6 +124,9 @@ def plot_adaptive_ramp(
 
     fig, ax = plt.subplots(figsize=(14, 6.5))
     ax_p95 = ax.twinx()
+
+    if phase_spans:
+        _add_phase_regions(ax, phase_spans)
 
     ax.plot(
         df["t_s"],
@@ -162,11 +183,12 @@ def plot_adaptive_ramp(
             sla_ms=plot_params.sla_ms,
         )
         ax_p95.set_ylim(p95_ymin, p95_ymax)
-        _add_sla_latency_marker(
-            ax_p95,
-            t_end_s=float(df["t_s"].max()),
-            sla_ms=plot_params.sla_ms,
-        )
+        if plot_params.sla_ms > 0:
+            _add_sla_latency_marker(
+                ax_p95,
+                t_end_s=float(df["t_s"].max()),
+                sla_ms=plot_params.sla_ms,
+            )
 
     y_max = max(
         df["users_plot"].max(),
@@ -180,7 +202,15 @@ def plot_adaptive_ramp(
     _add_decision_boxes_above_plot(ax, panel_decisions)
     if p95_has_data:
         _add_p95_decision_anchors(ax, panel_decisions)
-    _add_peak_goodput_marker(ax, peak, df)
+    _add_peak_goodput_marker(
+        ax,
+        peak,
+        df,
+        refine_phase_only=explore_refine,
+        underestimate=bool(run_outcome.underestimate) if run_outcome else False,
+    )
+    if run_outcome is not None:
+        _add_run_outcome_notice(ax, run_outcome)
 
     ax.set_title(
         f"Adaptive load ramp — {bench_dir.parent.name}\n"
@@ -196,31 +226,131 @@ def plot_adaptive_ramp(
         labels += labels_p95
     handles.append(Patch(facecolor=_COLOR_TRIM_SHADE, edgecolor="none", alpha=_TRIM_SHADE_ALPHA))
     labels.append(f"Trim window ({plot_params.trim_s}s, ignored for decisions)")
-    peak_handle = Line2D(
-        [0],
-        [0],
-        marker="x",
-        color=_COLOR_PEAK,
-        linestyle="None",
-        markersize=8,
-        markeredgewidth=2,
-        label="Sustained max goodput",
-    )
+    if phase_spans:
+        for span in phase_spans:
+            style = _PHASE_STYLES[span.name]
+            handles.append(
+                Patch(
+                    facecolor=style["fill"],
+                    edgecolor=style["edge"],
+                    alpha=_PHASE_FILL_ALPHA,
+                    linewidth=1.0,
+                )
+            )
+            labels.append(
+                f"{style['label']} ({int(span.t_start)}–{int(span.t_end)}s)"
+            )
+    if peak is not None:
+        peak_label = (
+            "Sustained max goodput (refine phase)"
+            if explore_refine
+            else "Sustained max goodput"
+        )
+        if run_outcome is not None and run_outcome.underestimate:
+            peak_label += " — underestimate"
+        peak_handle = Line2D(
+            [0],
+            [0],
+            marker="x",
+            color=_COLOR_PEAK,
+            linestyle="None",
+            markersize=8,
+            markeredgewidth=2,
+            label=peak_label,
+        )
+        legend_handles = handles + [peak_handle]
+        legend_labels = labels + [peak_label]
+    elif run_outcome is not None and not run_outcome.refine_reached:
+        peak_handle = Line2D(
+            [0],
+            [0],
+            marker="",
+            color=_COLOR_PEAK,
+            linestyle="None",
+            label=run_outcome.title,
+        )
+        legend_handles = handles + [peak_handle]
+        legend_labels = labels + [run_outcome.title]
+    else:
+        legend_handles = handles
+        legend_labels = labels
     legend = ax.legend(
-        handles + [peak_handle],
-        labels + ["Sustained max goodput"],
+        legend_handles,
+        legend_labels,
         loc="upper left",
         fontsize=8,
     )
     _draw_decision_format_hint(fig, ax, legend)
 
-    fig.subplots_adjust(bottom=0.16)
+    fig.subplots_adjust(bottom=0.20 if phase_spans else 0.16)
     fig.tight_layout()
     fig.savefig(out_path, dpi=150, bbox_inches="tight")
     if show:
         plt.show()
     plt.close(fig)
     return out_path
+
+
+def _add_phase_regions(ax: plt.Axes, phases: tuple[LoadPhaseSpan, ...]) -> None:
+    """Shade explore-refine controller phases and mark boundaries."""
+    if not phases:
+        return
+
+    trans = blended_transform_factory(ax.transData, ax.transAxes)
+    drawn_edges: set[int] = set()
+
+    for span in phases:
+        style = _PHASE_STYLES.get(span.name)
+        if style is None:
+            continue
+        if span.t_end > span.t_start:
+            ax.axvspan(
+                span.t_start,
+                span.t_end,
+                facecolor=style["fill"],
+                edgecolor="none",
+                alpha=_PHASE_FILL_ALPHA,
+                zorder=0,
+            )
+        start_i = int(round(span.t_start))
+        if start_i not in drawn_edges:
+            drawn_edges.add(start_i)
+            ax.axvline(
+                span.t_start,
+                color=style["edge"],
+                linewidth=1.2,
+                linestyle="--",
+                alpha=0.75,
+                zorder=1,
+            )
+        mid_t = (span.t_start + span.t_end) / 2.0
+        if span.t_end > span.t_start:
+            ax.text(
+                mid_t,
+                -0.045,
+                style["label"],
+                transform=trans,
+                ha="center",
+                va="top",
+                fontsize=8,
+                color=style["edge"],
+                fontweight="bold",
+                alpha=0.9,
+                zorder=6,
+                clip_on=False,
+            )
+
+    last = phases[-1]
+    end_i = int(round(last.t_end))
+    if end_i not in drawn_edges and last.t_end > 0:
+        ax.axvline(
+            last.t_end,
+            color=_PHASE_STYLES[last.name]["edge"],
+            linewidth=1.2,
+            linestyle="--",
+            alpha=0.75,
+            zorder=1,
+        )
 
 
 def _add_trim_shading(
@@ -397,11 +527,9 @@ def _plot_latency_segments(
 
 
 def _p95_subtitle(params: AdaptivePlotParams) -> str:
-    window_s = params.min_settle_samples * params.sample_every_s
     return (
-        f"P95 = Locust trailing ~10s window, sampled every {params.sample_every_s}s "
-        f"after {params.trim_s}s level trim; purple = last "
-        f"~{window_s:.0f}s decision window"
+        f"P95 = controller samples from Locust trailing ~10s window "
+        f"(every {params.sample_every_s}s after level settle)"
     )
 
 
@@ -411,65 +539,27 @@ def _plot_p95_timeline(
     *,
     plot_params: AdaptivePlotParams,
 ) -> None:
-    all_samples = list(timeline.all_samples)
-    decision_samples = list(timeline.decision_samples)
-
-    if timeline.has_full_timeline:
-        observe_samples = [
-            s for s in all_samples if s not in set(decision_samples)
-        ]
-        if observe_samples:
-            _plot_latency_segments(
-                ax_p95,
-                observe_samples,
-                color=_COLOR_P95,
-                linewidth=1.2,
-                alpha=0.35,
-                zorder=1,
-            )
-            ax_p95.scatter(
-                [s.t_s for s in observe_samples],
-                [s.p95_ms for s in observe_samples],
-                color=_COLOR_P95,
-                s=12,
-                alpha=0.25,
-                zorder=2,
-                clip_on=False,
-            )
-            ax_p95.plot(
-                [],
-                [],
-                color=_COLOR_P95,
-                marker="o",
-                linestyle="-",
-                linewidth=1.2,
-                markersize=4,
-                label="P95 samples (observe only)",
-            )
+    """Plot every controller P95 sample with the same metric and style."""
+    samples = list(timeline.all_samples)
+    if not samples:
+        return
 
     _plot_latency_segments(
         ax_p95,
-        decision_samples,
+        samples,
         color=_COLOR_P95,
-        linewidth=1.8,
-        alpha=0.95,
-        zorder=3,
+        linewidth=1.2,
+        alpha=0.35,
+        zorder=1,
     )
     ax_p95.scatter(
-        [s.t_s for s in decision_samples],
-        [s.p95_ms for s in decision_samples],
+        [s.t_s for s in samples],
+        [s.p95_ms for s in samples],
         color=_COLOR_P95,
-        s=18,
-        alpha=0.9,
-        zorder=4,
+        s=12,
+        alpha=0.25,
+        zorder=2,
         clip_on=False,
-    )
-    n = plot_params.min_settle_samples
-    window_s = n * plot_params.sample_every_s
-    label = (
-        f"P95 samples (~{window_s:.0f}s rolling window)"
-        if timeline.has_full_timeline
-        else f"P95 samples (legacy log, ~{window_s:.0f}s window)"
     )
     ax_p95.plot(
         [],
@@ -477,9 +567,9 @@ def _plot_p95_timeline(
         color=_COLOR_P95,
         marker="o",
         linestyle="-",
-        linewidth=1.8,
-        markersize=5,
-        label=label,
+        linewidth=1.2,
+        markersize=4,
+        label="P95 samples (observe only)",
     )
 
 
@@ -633,6 +723,9 @@ def _add_peak_goodput_marker(
     ax: plt.Axes,
     peak: PeakGoodputMarker | None,
     df: pd.DataFrame,
+    *,
+    refine_phase_only: bool = False,
+    underestimate: bool = False,
 ) -> None:
     """
     Mark the sustained max goodput window on the smoothed goodput curve.
@@ -655,8 +748,14 @@ def _add_peak_goodput_marker(
         linewidths=2.5,
         zorder=6,
     )
+    if refine_phase_only:
+        label = f"sustained {peak.goodput_rps:.0f}/s (refine)"
+    else:
+        label = f"sustained {peak.goodput_rps:.0f}/s"
+    if underestimate:
+        label += " — underestimate"
     ax.annotate(
-        f"sustained {peak.goodput_rps:.0f}/s",
+        label,
         (peak.t_s, y_on_curve),
         textcoords="offset points",
         xytext=(6, 6),
@@ -665,6 +764,29 @@ def _add_peak_goodput_marker(
         fontweight="bold",
         ha="left",
         va="bottom",
+    )
+
+
+def _add_run_outcome_notice(ax: plt.Axes, outcome: AdaptiveRunOutcome) -> None:
+    """Show classified run outcome in the lower-right red box."""
+    ax.text(
+        0.99,
+        0.02,
+        outcome.plot_box_text(),
+        transform=ax.transAxes,
+        ha="right",
+        va="bottom",
+        fontsize=8,
+        color=_COLOR_PEAK,
+        fontstyle="italic",
+        bbox={
+            "boxstyle": "round,pad=0.35",
+            "facecolor": "white",
+            "edgecolor": _COLOR_PEAK,
+            "alpha": 0.92,
+            "linewidth": 0.8,
+        },
+        zorder=7,
     )
 
 

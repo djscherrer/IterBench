@@ -9,6 +9,7 @@ from pathlib import Path
 from .cache import CacheSummary, summarize_cache_metrics
 from .database import DatabaseSummary, summarize_database_metrics
 from .events import EventSummary, summarize_cluster_events
+from .adaptive_log import AdaptiveRunOutcome, classify_adaptive_run_outcome
 from .load_run import load_profile_from_config, summarize_load_run
 from .pod_errors import PodErrorSummary, summarize_pod_errors
 from .pod_health import PodHealthSummary, summarize_pod_health
@@ -132,8 +133,10 @@ def read_run_config(run_dir: Path) -> dict:
 
 
 __all__ = [
+    "AdaptiveRunOutcome",
     "DiagnosticsSummary",
     "benchmark_context_from_config",
+    "classify_adaptive_run_outcome",
     "load_profile_from_config",
     "read_run_config",
     "summarize_load_run",

@@ -150,15 +150,20 @@ def collect_iteration_goodput_points(experiment_root: Path) -> list[IterationGoo
             if stop and stop.get("history")
             else []
         )
-        from .ramp_data import sustained_goodput_from_bench
+        from .ramp_data import (
+            is_explore_refine_bench,
+            peak_goodput_from_bench_log,
+            sustained_goodput_from_bench,
+        )
 
-        sustained = sustained_goodput_from_bench(bench_dir)
+        sustained = sustained_goodput_from_bench(bench_dir, log_text=bench_text)
         if sustained is not None and sustained.goodput_rps > 0:
             goodput_rps = sustained.goodput_rps
             users_at_peak = sustained.users
+        elif is_explore_refine_bench(bench_dir):
+            goodput_rps = 0.0
+            users_at_peak = None
         else:
-            from .ramp_data import peak_goodput_from_bench_log
-
             goodput_rps, users_at_peak = peak_goodput_from_bench_log(
                 bench_text,
                 history,
