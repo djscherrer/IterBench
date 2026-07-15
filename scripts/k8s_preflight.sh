@@ -1,7 +1,17 @@
 #!/bin/bash
 # BaxBench - Kubernetes preflight
 #
+# Prerequisites checklist (run from node0 before the first preflight):
+#   [ ] Passwordless SSH to every host in profiles.py (control, workers, Locust)
+#   [ ] Host keys in ~/.ssh/known_hosts — preflight uses non-interactive SSH;
+#       on a fresh/wiped cluster run once (edit hostnames to match your profile):
+#         ssh-keyscan -H node0 node1 node2 node3 node4 node5 node6 node7 node8 >> ~/.ssh/known_hosts
+#   [ ] kubectl on node0 PATH (apt install; not a pip package)
+#   [ ] pipenv + Python 3.12; pipenv install in repo root
+#
+# Run order:
 #   1. THIS SCRIPT  — install/check packages (K8S_INSTALL_PREREQUISITES=true)
+#      First cluster bootstrap: K8S_SKIP_CLUSTER_CHECKS=true (no kubeconfig yet)
 #   2. ./scripts/k8s_setup_cluster.sh — kubeadm init + join workers + registry
 #   3. THIS SCRIPT  — K8S_SKIP_CLUSTER_CHECKS=false to verify the cluster (optional)
 #
@@ -12,7 +22,6 @@ set -euo pipefail
 
 # --- Cluster profile (single selector; hosts live in profiles.py) ---
 BAXBENCH_K8S_CLUSTER="baxbench-emulab"
-KUBECONFIG_PATH=""
 
 # --- Preflight behaviour ---
 K8S_INSTALL_PREREQUISITES="true"
@@ -49,19 +58,16 @@ fi
 EXTRA_ENV+=("BAXBENCH_LOG_COMMANDS=0")
 
 _resolve_kubeconfig() {
-    if [ -n "$KUBECONFIG_PATH" ]; then
-        echo "$KUBECONFIG_PATH"
+    if [ -z "$BAXBENCH_K8S_CLUSTER" ]; then
         return
     fi
-    if [ -n "$BAXBENCH_K8S_CLUSTER" ]; then
-        (cd "$ROOT" && pipenv run python -c "
+    (cd "$ROOT" && pipenv run python -c "
 from k8s_bench.cluster import resolve_cluster_profile
 import os
 p = resolve_cluster_profile('${BAXBENCH_K8S_CLUSTER}')
 path = p.kubeconfig_path
 print(os.path.expanduser(path) if path else '')
 " 2>/dev/null) || true
-    fi
 }
 
 _KUBECONFIG_RESOLVED=$(_resolve_kubeconfig | tail -n 1)
@@ -74,7 +80,7 @@ echo "=== BaxBench k8s-preflight ==="
 echo "Profile:   ${BAXBENCH_K8S_CLUSTER} (hosts in src/k8s_bench/cluster/profiles.py)"
 echo "Install:   ${K8S_INSTALL_PREREQUISITES}"
 echo "Next: ./scripts/k8s_setup_cluster.sh (after packages OK)"
-echo "kubectl:   skip_cluster_checks=${K8S_SKIP_CLUSTER_CHECKS} KUBECONFIG=${KUBECONFIG:-<default>}"
+echo "kubectl:   skip_cluster_checks=${K8S_SKIP_CLUSTER_CHECKS} KUBECONFIG=${KUBECONFIG:-(profile default)}"
 echo "Command: pipenv run python src/main.py ${ARGS[*]}"
 echo ""
 

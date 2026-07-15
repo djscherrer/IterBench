@@ -10,8 +10,8 @@
 # (orchestration/deploy_only.py) and mirrors the experiment's tail:
 #   * 04-deploy  patches the registry image + port + labels onto 03-spec/spec.yaml
 #                in memory, applies manifests, writes 04-deploy/probe.json.
-#   * 05-bench   runs distributed Locust against the probe target.
-#   * 06-outcome writes iteration_feedback.json + the experiment_summary.md block.
+#   * 05-bench   runs distributed Locust against the probe target, then writes
+#                iteration_feedback.json + the experiment_summary.md block.
 # No LLM stages run: 02-code/code/ and 03-spec/spec.yaml must already exist.
 #
 # Task coordinates (model, scenario, env, sample, temperature, …) are derived
@@ -36,7 +36,7 @@ WAIT_TIMEOUT="600"
 PORT="5001"
 # ====================================================================
 
-ITER="results/openai-gpt-5.5-2026-04-23/Petstore/Go-net-http/temp0.2-openapi-high_performance/sample0/k8s-experiments/old_results/manual/iteration-002-code"
+ITER="results/z-ai-glm-5.2/Petstore/Go-net-http/temp0.2-openapi-high_performance/sample0/k8s-experiments/results/iterations/iteration-008-code"
 KEEP_BENCH="false"
 
 while [ $# -gt 0 ]; do

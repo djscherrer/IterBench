@@ -24,13 +24,13 @@
 set -euo pipefail
 
 # --- Experiment scope (what BaxBench task / sample to run) ---
-MODELS="openai/gpt-5.5-2026-04-23" # deepseek/deepseek-v3.2  anthropic/claude-opus-4-6 openai/gpt-5.5-2026-04-23 anthropic/claude-opus-4-8 (temp deprecated) 
-PROVIDER=""           # openai | anthropic | together_ai | openrouter | swissai | vllm
+MODELS="z-ai/glm-5.2" # deepseek/deepseek-v3.2  anthropic/claude-opus-4-6 openai/gpt-5.5-2026-04-23 anthropic/claude-opus-4-8 (temp deprecated) 
+PROVIDER="openrouter"           # openai | anthropic | together_ai | openrouter | swissai | vllm
                                 # required when the model prefix is not auto-detected (e.g. deepseek/…)
 ONLY_SAMPLES="0"                # e.g. "0"; empty → N_SAMPLES
 N_SAMPLES=""
 ENVS="Python-Flask Go-net/http Rust-Actix"               # Go-net/http
-SCENARIOS="Petstore Recipes ClickCount TextWeaver_WordCountDatasets" # Recipes LexiTally_WordCountDatasets BranchWeave_InteractiveStoryGraph TextWeaver_WordCountDatasets BranchWeave_Petstore goes to 5k users
+SCENARIOS="Petstore Recipes ClickCount TextWeaver_WordCountDatasets BranchWeave_InteractiveStoryGraph" # Recipes LexiTally_WordCountDatasets BranchWeave_InteractiveStoryGraph TextWeaver_WordCountDatasets BranchWeave_Petstore goes to 5k users
 TEMPERATURE="0.2"
 SAFETY_PROMPT="high_performance"
 RESULTS_DIR=""                  # empty → default results path
@@ -53,8 +53,8 @@ BAXBENCH_LLM_MAX_COST="10"      # USD; stop when estimated experiment spend exce
 MAX_RETRIES="3"                 # per-call LLM retry/backoff during codegen, spec, decision
 
 # --- Bench configuration (Locust load + re-run behaviour) ---
-BAXBENCH_LOAD_PROFILE=("k8s-goodput-plateau")  # users, spawn rate, runtime from profile registry
-FORCE="false"                   # true = redo iterations even if a perf run already exists
+BAXBENCH_LOAD_PROFILE=("k8s-explore-refine")  # users, spawn rate, runtime from profile registry
+FORCE="false"                   # true = redo iterations even if already finished (success or failed)
 
 # --- Execution ---
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -96,7 +96,7 @@ print(os.path.expanduser(p.kubeconfig_path) if p.kubeconfig_path else '')
 fi
 
 echo "kubectl context: $(kubectl config current-context 2>/dev/null || echo '(not configured)')"
-echo "KUBECONFIG=${KUBECONFIG:-<default>}  experiment=${K8S_EXPERIMENT:-default}  iterations=${K8S_ITERATIONS:-1}"
+echo "KUBECONFIG=${KUBECONFIG:-(profile default)}  experiment=${K8S_EXPERIMENT:-default}  iterations=${K8S_ITERATIONS:-1}"
 
 BASE_ENV=()
 RUN_I=0
