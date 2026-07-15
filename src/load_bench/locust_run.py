@@ -33,6 +33,7 @@ from .load_profiles.manifest import LOAD_PROFILE_MANIFEST_FILENAME
 from .load_topology import LoadTopology
 
 _BAXBENCH_SHAPE = Path(__file__).resolve().parent / "load_profiles" / "_baxbench_shape.py"
+_BAXBENCH_SHAPES_DIR = Path(__file__).resolve().parent / "load_profiles" / "shapes"
 
 
 # --- Local run-dir helpers (k8s copies locustfile before remote staging) ---
@@ -46,6 +47,27 @@ def resolve_locust_user_class(locustfile: Path, requested: str = "default") -> s
     if match:
         return match.group(1)
     return requested
+
+
+def _stage_baxbench_shapes(staging: Path) -> None:
+    """Copy shape facade + ``shapes/`` package beside the locustfile."""
+    if _BAXBENCH_SHAPE.is_file():
+        shutil.copy2(_BAXBENCH_SHAPE, staging / "_baxbench_shape.py")
+    if not _BAXBENCH_SHAPES_DIR.is_dir():
+        return
+    dest = staging / "shapes"
+    if dest.exists():
+        shutil.rmtree(dest)
+    shutil.copytree(
+        _BAXBENCH_SHAPES_DIR,
+        dest,
+        ignore=shutil.ignore_patterns(
+            "__pycache__",
+            "*.pyc",
+            "_monolith*",
+            "*.py.py",
+        ),
+    )
 
 
 def prepare_locust_run_dir(
@@ -63,8 +85,7 @@ def prepare_locust_run_dir(
     dest_locust = staging / locustfile.name
     if locustfile.resolve() != dest_locust.resolve():
         shutil.copy2(locustfile, dest_locust)
-    if _BAXBENCH_SHAPE.is_file():
-        shutil.copy2(_BAXBENCH_SHAPE, staging / "_baxbench_shape.py")
+    _stage_baxbench_shapes(staging)
     if load_profile is not None and bench_run_time_s is not None:
         write_load_profile_manifest(
             staging / LOAD_PROFILE_MANIFEST_FILENAME,
@@ -116,11 +137,28 @@ class _LocustStaging:
             remote_exec.ssh(host, f"mkdir -p {shlex.quote(cfg.remote_load_dir)}", log).check_returncode()
             remote_locustfile = f"{cfg.remote_load_dir}/{cfg.locustfile.name}"
             remote_exec.scp_to_remote(cfg.locustfile, host, remote_locustfile, log)
-            if _BAXBENCH_SHAPE.is_file():
+            staged_shape = cfg.locustfile.parent / "_baxbench_shape.py"
+            staged_shapes = cfg.locustfile.parent / "shapes"
+            if staged_shape.is_file():
+                remote_exec.scp_to_remote(
+                    staged_shape,
+                    host,
+                    f"{cfg.remote_load_dir}/_baxbench_shape.py",
+                    log,
+                )
+            elif _BAXBENCH_SHAPE.is_file():
                 remote_exec.scp_to_remote(
                     _BAXBENCH_SHAPE,
                     host,
                     f"{cfg.remote_load_dir}/_baxbench_shape.py",
+                    log,
+                )
+            shapes_dir = staged_shapes if staged_shapes.is_dir() else _BAXBENCH_SHAPES_DIR
+            if shapes_dir.is_dir():
+                remote_exec.scp_tree_to_remote(
+                    shapes_dir,
+                    host,
+                    f"{cfg.remote_load_dir}/shapes",
                     log,
                 )
             manifest = cfg.locustfile.parent / LOAD_PROFILE_MANIFEST_FILENAME
@@ -223,7 +261,6 @@ class LocustMaster:
         master_ip = remote_exec.resolve_remote_preferred_ipv4(
             cfg.topology.master,
             cfg.logger or logging.getLogger(__name__),
-            preferred_prefixes=("10.233.",),
         )
         master_port = self._stable_port(15557, f"locust-master:{cfg.sample_slug}")
         return master_ip, master_port

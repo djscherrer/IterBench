@@ -8,8 +8,7 @@ the per-phase logger and calls ``run_*_stage(ctx, plan, cfg, logger, ...)``:
 - :mod:`code`    – baseline codegen, code refinement, or reused lineage.
 - :mod:`spec`    – produce ``spec.yaml`` (baseline / reuse / generate).
 - :mod:`deploy`  – cluster deploy + readiness probe (``04-deploy/``).
-- :mod:`bench`   – Locust load test against the deployed iteration.
-- :mod:`outcome` – collect feedback, write artifacts, append summary block.
+- :mod:`bench`   – Locust load test; on success, write feedback + summary.
 
 Import stage callables from their submodules (e.g. ``stages.decision``), not
 from this package, to avoid import cycles with ``orchestration.config``.

@@ -1,11 +1,11 @@
 """
-Run one iteration end-to-end: decision → code → spec → deploy → bench → outcome.
+Run one iteration end-to-end: decision → code → spec → deploy → bench.
 
 The orchestrator wires together the stages defined in :mod:`k8s_bench.stages`.
 Each stage receives a logger created here (``NN-<phase>/phase.log`` for decision
 through deploy; ``05-bench/bench.log`` for bench via :func:`iteration_bench_log_path`).
 ``iteration.log`` at the iteration root holds only the header + outcome
-(cheap, scannable index).
+(cheap, scannable index). Successful bench also persists feedback and summary.
 """
 
 from __future__ import annotations
@@ -17,7 +17,6 @@ from ..stages.bench import run_bench_stage
 from ..stages.code import run_code_stage, run_reuse_code_stage
 from ..stages.decision import run_decision_stage
 from ..stages.deploy import run_deploy_stage
-from ..stages.outcome import run_outcome_stage
 from ..stages.spec import run_reuse_spec_stage, run_spec_stage
 from ..workspace import (
     clear_bench_dir_if_present,
@@ -44,7 +43,7 @@ def execute_iteration(
     iteration_id: str,
     cfg: RunConfig,
 ) -> IterationOutcome:
-    """Plan → decision → code → spec → deploy → bench → record outcome."""
+    """Plan → decision → code → spec → deploy → bench (incl. feedback on success)."""
     setup = plan_iteration(ctx, iteration_index, iteration_id, cfg)
     if setup is None:
         return IterationOutcome(None, False)
@@ -151,12 +150,6 @@ def execute_iteration(
         if not bench_result.ok:
             _append_iteration_outcome(iteration_path, "bench-failed")
             return IterationOutcome(None, False)
-        # ---------
-        # 06-outcome
-        # ---------
-        run_outcome_stage(
-            ctx, plan, run_dir, spec_result.spec_file, cfg, bench_logger
-        )
 
     _append_iteration_outcome(iteration_path, "ok")
     return IterationOutcome(run_dir, False, image_id)

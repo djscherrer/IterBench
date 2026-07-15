@@ -4,13 +4,14 @@ from dataclasses import dataclass
 from typing import TypeAlias
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, kw_only=True)
 class BaseLoadProfile:
     name: str
     wait_min_s: float
     wait_max_s: float
-    # Number of OS processes Locust should use on each load-generator host.
-    locust_processes: int
+    # Unused by k8s-bench (worker count comes from cluster profile).
+    # Kept for distributed_bench; default is a harmless placeholder.
+    locust_processes: int = 1
 
     @property
     def effective_users(self) -> int:
@@ -25,7 +26,7 @@ class BaseLoadProfile:
         raise NotImplementedError
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, kw_only=True)
 class SteadyLoadProfile(BaseLoadProfile):
     # Hold a constant number of users for the whole run.
     users: int
@@ -45,7 +46,7 @@ class SteadyLoadProfile(BaseLoadProfile):
         return int(self.run_time_s)
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, kw_only=True)
 class ContinuousLoadProfile(BaseLoadProfile):
     # Linearly ramp from start_users -> target_users over the runtime.
     start_users: int
@@ -67,7 +68,7 @@ class ContinuousLoadProfile(BaseLoadProfile):
         return int(self.run_time_s)
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, kw_only=True)
 class StairsLoadProfile(BaseLoadProfile):
     # Start at start_users; every step_duration_s increase by step_users (for `steps` steps).
     start_users: int
@@ -93,7 +94,7 @@ class StairsLoadProfile(BaseLoadProfile):
         return int(self.run_time_s)
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, kw_only=True)
 class SpikeLoadProfile(BaseLoadProfile):
     # Base load most of the time, with periodic spikes.
     base_users: int
@@ -119,12 +120,12 @@ class SpikeLoadProfile(BaseLoadProfile):
         return int(self.run_time_s)
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, kw_only=True)
 class AdaptiveLoadProfile(BaseLoadProfile):
     """
     Adaptive load profile: Locust shape adjusts users based on live latency.
 
-    The actual control loop runs inside `_baxbench_shape.AdaptiveShape` using Locust Environment stats.
+    The actual control loop runs inside ``shapes.AdaptiveShape`` using Locust Environment stats.
     This profile only provides static configuration + a maximum runtime.
     """
 
@@ -155,7 +156,7 @@ class AdaptiveLoadProfile(BaseLoadProfile):
         return int(self.run_time_s)
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, kw_only=True)
 class AdaptiveV2LoadProfile(BaseLoadProfile):
     """
     Adaptive load profile v2.
@@ -223,12 +224,12 @@ class AdaptiveV2LoadProfile(BaseLoadProfile):
         return int(self.run_time_s)
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, kw_only=True)
 class GoodputPlateauLoadProfile(BaseLoadProfile):
     """
     Goodput plateau finder.
 
-    Control loop runs in ``_baxbench_shape.GoodputPlateauShape``: ramp with an
+    Control loop runs in ``shapes.GoodputPlateauShape``: ramp with an
     initial ``max_step_users`` jump, then efficiency-based steps (``step_up_gain``
     when marginal efficiency is high, eff³ when low). Backs off up to
     ``overload_backoff_max`` times on overload, then stops. Also stops after
@@ -276,7 +277,7 @@ class GoodputPlateauLoadProfile(BaseLoadProfile):
         return int(self.run_time_s)
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, kw_only=True)
 class ExploreRefineLoadProfile(BaseLoadProfile):
     """
     Explore then refine goodput finder.
@@ -286,21 +287,18 @@ class ExploreRefineLoadProfile(BaseLoadProfile):
     and ``refine_*`` prefixes.
     """
 
-    # Health / SLA (all phases)
+    # Health / SLA
     failure_threshold_pct: float
-    collapse_threshold_pct: float
     overload_p95_ms: float
 
     # Run limits
     start_users: int
     max_users: int
-    spawn_rate: int
     run_time_s: int
 
     # Shared sampling
     sample_every_s: int
     quantile: float
-    stability_drift_threshold_pct: float
 
     # Explore
     explore_warmup_duration_s: int
@@ -309,30 +307,22 @@ class ExploreRefineLoadProfile(BaseLoadProfile):
     explore_goodput_stop_ratio: float
     explore_stop_steps: int
 
-    # Recovery (fraction floor + settle, latency-gated exit)
+    # Recovery (fraction floor + settle; exit on fail% / absolute p95 only)
     recovery_floor_fraction: float
     recovery_settle_duration_s: int
     recovery_retry_drop_fraction: float
+    recovery_max_retries: int
 
-    # Refine (fixed-level observation and stepping)
-    refine_min_step_duration_s: int
+    # Refine (goodput-mean settle; next bump = efficiency × max_step).
+    # After each bump: ~1s spawn-in, then refine_trim_s cool-in, then
+    # settle_samples × sample_every_s of goodput samples for the decision.
     refine_max_step_duration_s: int
     refine_min_settle_samples: int
-    refine_measure_window_s: int
+    refine_trim_s: int
     refine_min_step_users: int
-    refine_max_step_users: int
-    refine_initial_step_fraction: float
     refine_max_step_fraction: float
-    refine_efficiency_good_threshold: float
-    refine_step_growth: float
-    refine_stop_steps: int
-    refine_overload_backoff_max: int
-
-    # Shape runtime (written to manifest; no implicit defaults in the shape)
-    health_grace_s: int
-    spawn_target_duration_s: float
-    spawn_settle_buffer_s: float
-    abort_on_no_users: bool
+    # Each of last K goodput samples must lie within this % of their mean.
+    refine_goodput_stability_pct: float
 
     @property
     def effective_users(self) -> int:
@@ -340,7 +330,10 @@ class ExploreRefineLoadProfile(BaseLoadProfile):
 
     @property
     def effective_spawn_rate(self) -> int:
-        return max(1, int(self.spawn_rate))
+        # Locust CLI still requires --spawn-rate; the LoadTestShape overrides the
+        # real rate each tick. Pass a non-binding value so CLI never becomes the
+        # bottleneck (explore/refine compute rates from bump size / step timing).
+        return max(1, int(self.max_users))
 
     @property
     def effective_run_time_s(self) -> int:

@@ -71,8 +71,8 @@ def run_bench_with_timeout(
     import os
     import subprocess
 
-    from locust_bench.load_profiles import resolve_load_profile
-    from locust_bench.locust_run import prepare_locust_run_dir, resolve_locust_user_class
+    from load_bench.load_profiles import resolve_load_profile
+    from load_bench.locust_run import prepare_locust_run_dir, resolve_locust_user_class
 
     profile = resolve_load_profile(os.environ.get("BAXBENCH_LOAD_PROFILE", "default"))
     run_time_s = (
@@ -303,6 +303,16 @@ class ContainerRunner:
         # make sure that the server is online before we process, otherwise let it fail
         start = time.time()
         while True:
+            exited, exit_code = self._container_exit_info()
+            if exited:
+                self._fail_server_start(
+                    f"Server did not start in time: container exited"
+                    + (
+                        f" (exit_code={exit_code})"
+                        if exit_code is not None
+                        else ""
+                    )
+                )
             try:
                 response = requests.get(f"http://localhost:{self._port}")
                 self.logger.info("Server is up! Server response: %s", response)
@@ -310,12 +320,53 @@ class ContainerRunner:
             except requests.ConnectionError as e:
                 self.logger.warning("Server is not up yet: %s", e)
             if time.time() - start > self.env.wait_to_start_time:
-                self.logger.error("Server did not start in time")
-                self.__exit__(None, None, None)
-                raise RuntimeError("Server did not start in time")
+                self._fail_server_start("Server did not start in time")
             self.logger.info("Waiting for server to start...")
             time.sleep(1.0)
         return self
+
+    def _container_log_text(self) -> str:
+        if self._container is None:
+            return ""
+        try:
+            raw = cast(
+                bytes, self._container.logs(stdout=True, stderr=True, follow=False)
+            )
+            return raw.decode(errors="replace").strip()
+        except Exception as e:
+            self.logger.warning("could not fetch container logs: %s", e)
+            return ""
+
+    def _container_exit_info(self) -> tuple[bool, int | None]:
+        """Return ``(exited, exit_code)`` for the application container."""
+        if self._container is None:
+            return True, None
+        try:
+            self._container.reload()
+            status = str(self._container.status or "")
+            state = (self._container.attrs or {}).get("State") or {}
+            if status in ("exited", "dead", "removing"):
+                code = state.get("ExitCode")
+                return True, int(code) if code is not None else None
+            return False, None
+        except Exception as e:
+            self.logger.warning("could not check container status: %s", e)
+            return False, None
+
+    def _fail_server_start(self, reason: str) -> None:
+        """Abort startup wait: cleanup, raise with container logs in the message."""
+        logs = self._container_log_text()
+        self.logger.error("%s", reason)
+        message = (
+            f"{reason}\n\ncontainer logs:\n{logs}"
+            if logs
+            else f"{reason}\n\ncontainer logs:\n(empty)"
+        )
+        # __exit__ also emits a ``container logs:`` section into test.log for
+        # failure.json parsers; the RuntimeError carries the same text so
+        # exception-only views are not just a bare timeout string.
+        self.__exit__(None, None, None)
+        raise RuntimeError(message)
 
     def __exit__(self, exc_type, exc_val, exc_tb) -> None:  # type: ignore[no-untyped-def]
         # Cleanup application container
@@ -488,13 +539,15 @@ class Task:
         load_profile: str,
         experiment_id: str | None = None,
     ) -> bool:
-        from k8s_bench.workspace import resolve_bench_dir
+        from k8s_bench.workspace import find_finished_iteration_dir
 
         del load_profile
-        return resolve_bench_dir(
-            sample_dir, iteration_id, experiment_id=experiment_id
-        ) is not None
-
+        return (
+            find_finished_iteration_dir(
+                sample_dir, iteration_id, experiment_id=experiment_id
+            )
+            is not None
+        )
     def get_functional_tests_dir(
         self, results_dir: pathlib.Path, sample: int
     ) -> pathlib.Path:
@@ -515,9 +568,9 @@ class Task:
 
         Callers that target a specific perf-run subdirectory typically
         rebase this onto ``<run_dir>/locust/results/<user>`` via
-        :func:`locust_bench.paths.locust_csv_prefix`.
+        :func:`load_bench.paths.locust_csv_prefix`.
         """
-        from locust_bench.paths import locust_csv_prefix
+        from load_bench.paths import locust_csv_prefix
 
         return locust_csv_prefix(self.get_sample_dir(results_dir, sample), user)
 
@@ -1332,7 +1385,7 @@ class Task:
                         continue
 
                     logger.info("running load benchmark:\n%s", locustfile.read_text())
-                    from locust_bench.paths import locust_csv_prefix
+                    from load_bench.paths import locust_csv_prefix
 
                     csv_prefix = locust_csv_prefix(run_dir, test)
 

@@ -1,9 +1,12 @@
 """
-Locust load generation for BaxBench.
+Load-test execution for BaxBench (Locust runner, profiles, shapes).
 
-- ``locust_run.py`` — remote master/worker Locust + ``LocustRunner`` (distributed bench)
+This package is separate from :mod:`k8s_bench` (cluster deploy/orchestration).
+It owns how load is generated and measured:
+
+- ``locust_run.py`` — remote master/worker Locust + ``LocustRunner``
 - ``paths.py`` — Locust artifact paths under ``locust/``
-- ``load_profiles/`` — load shapes
+- ``load_profiles/`` — load shapes and ``baxbench_load_profile.json`` manifests
 
 Bench observability lives in the top-level :mod:`bench_diagnostics` package.
 """

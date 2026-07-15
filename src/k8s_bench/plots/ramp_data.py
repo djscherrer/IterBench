@@ -8,19 +8,21 @@ from pathlib import Path
 
 import pandas as pd
 
-_WARMUP_END_RE = re.compile(
-    r"(?:adaptive-v2|explore-refine) warmup end t=(\d+)s at users=(\d+)"
+from bench_diagnostics.summary.adaptive_log import (
+    ADAPTIVE_PHASE_RE as _ADAPTIVE_PHASE_RE,
+    ADAPTIVE_V2_STOP_RE as _ADAPTIVE_V2_STOP_RE,
+    WARMUP_END_RE as _WARMUP_END_RE,
+    AdaptiveRunOutcome,
+    classify_adaptive_run_outcome,
+    phase_fail_pct,
+    phase_p95_token,
 )
+
 _EXPLORE_RAMP_RE = re.compile(
     r"explore ramp \+(?P<step>\d+) .* -> users=(?P<users>\d+)"
 )
 _RECOVERY_RAMP_RE = re.compile(
     r"recovery retry attempt=\d+ -(?P<step>\d+) .* -> users=(?P<users>\d+)"
-)
-_ADAPTIVE_PHASE_RE = re.compile(
-    r"adaptive phase end t=(\d+)s: (?P<action>.*?) \| "
-    r"reqs=(?P<reqs>\d+) fail=(?P<fail>\d+) \((?P<fail_pct>[^)]+)\) "
-    r"p\d+=(?P<p95_logged>\S+)"
 )
 _P95_IN_ACTION_RE = re.compile(r"p95=(\d+)ms")
 _FAIL_PCT_IN_ACTION_RE = re.compile(r"fail%=([\d.]+)")
@@ -37,17 +39,11 @@ _GOODPUT_SAMPLE_RE = re.compile(
     r"adaptive goodput sample t=(\d+)s users=(\d+) goodput=([\d.]+)/s"
 )
 _ADAPTIVE_SAMPLE_RE = re.compile(
-    r"adaptive sample t=(\d+)s users=(\d+) goodput=([\d.]+)/s "
+    r"(?:adaptive )?sample t=(\d+)s users=(\d+) goodput=([\d.]+)/s "
     r"fail_pct=([\d.]+)% p95=([\d.]+)ms"
 )
 _GOODPUT_HISTORY_ENTRY_RE = re.compile(r"(\d+)u:([\d.]+)/s")
-_ADAPTIVE_V2_STOP_RE = re.compile(
-    r"adaptive-v2 stop: reason=(?P<reason>\S+) "
-    r"final_users=(?P<final_users>\S+) "
-    r"low_ok=(?P<low_ok>\S+) "
-    r"high_bad=(?P<high_bad>\S+) "
-    r"goodput_history=\[(?P<history>[^\]]*)\]"
-)
+
 
 
 @dataclass(frozen=True)
@@ -122,14 +118,14 @@ def load_adaptive_plot_params(bench_dir: Path) -> AdaptivePlotParams:
         return defaults
 
     from bench_diagnostics.summary.load_run import load_profile_from_config
-    from locust_bench.load_profiles.manifest import resolved_profile_from_bench_config
-    from locust_bench.load_profiles.models import (
+    from load_bench.load_profiles.manifest import resolved_profile_from_bench_config
+    from load_bench.load_profiles.models import (
         AdaptiveLoadProfile,
         AdaptiveV2LoadProfile,
         ExploreRefineLoadProfile,
         GoodputPlateauLoadProfile,
     )
-    from locust_bench.load_profiles.registry import resolve_load_profile
+    from load_bench.load_profiles.registry import resolve_load_profile
 
     resolved = resolved_profile_from_bench_config(config)
     if resolved is not None:
@@ -140,14 +136,19 @@ def load_adaptive_plot_params(bench_dir: Path) -> AdaptivePlotParams:
                 resolved.get("min_settle_samples", resolved.get("settle_samples")),
             )
             trim_s = resolved.get(
-                "refine_measure_window_s",
+                "refine_trim_s",
                 resolved.get("trim_s", _DEFAULT_V2_TRIM_S),
             )
+            # Explore-refine has no plot SLA overlay (old default 300ms was misleading).
+            if mode == "explore_refine":
+                sla_ms = 0.0
+            else:
+                sla_ms = float(resolved.get("sla_ms", _DEFAULT_V2_SLA_MS))
             return AdaptivePlotParams(
                 trim_s=int(trim_s),
                 sample_every_s=int(resolved["sample_every_s"]),
                 min_settle_samples=int(settle),
-                sla_ms=float(resolved.get("sla_ms", _DEFAULT_V2_SLA_MS)),
+                sla_ms=sla_ms,
             )
 
     name = load_profile_from_config(config)
@@ -167,10 +168,10 @@ def load_adaptive_plot_params(bench_dir: Path) -> AdaptivePlotParams:
         )
     if isinstance(profile, ExploreRefineLoadProfile):
         return AdaptivePlotParams(
-            trim_s=int(profile.refine_measure_window_s),
+            trim_s=int(profile.refine_trim_s),
             sample_every_s=int(profile.sample_every_s),
             min_settle_samples=int(profile.refine_min_settle_samples),
-            sla_ms=_DEFAULT_V2_SLA_MS,
+            sla_ms=0.0,
         )
     if isinstance(profile, GoodputPlateauLoadProfile):
         return AdaptivePlotParams(
@@ -205,13 +206,13 @@ def load_sustained_goodput_params(bench_dir: Path) -> SustainedGoodputParams:
         return defaults
 
     from bench_diagnostics.summary.load_run import load_profile_from_config
-    from locust_bench.load_profiles.manifest import resolved_profile_from_bench_config
-    from locust_bench.load_profiles.models import (
+    from load_bench.load_profiles.manifest import resolved_profile_from_bench_config
+    from load_bench.load_profiles.models import (
         AdaptiveV2LoadProfile,
         ExploreRefineLoadProfile,
         GoodputPlateauLoadProfile,
     )
-    from locust_bench.load_profiles.registry import resolve_load_profile
+    from load_bench.load_profiles.registry import resolve_load_profile
 
     resolved = resolved_profile_from_bench_config(config)
     if resolved is not None and str(resolved.get("mode") or "") in (
@@ -219,10 +220,21 @@ def load_sustained_goodput_params(bench_dir: Path) -> SustainedGoodputParams:
         "explore_refine",
         "adaptive_v2",
     ):
+        if str(resolved.get("mode") or "") == "explore_refine":
+            drift = float(
+                resolved.get(
+                    "refine_goodput_stability_pct",
+                    resolved.get(
+                        "stability_drift_threshold_pct", _DEFAULT_STABILITY_DRIFT_PCT
+                    ),
+                )
+            )
+        else:
+            drift = float(resolved["stability_drift_threshold_pct"])
         return SustainedGoodputParams(
             window_s=_DEFAULT_SUSTAINED_WINDOW_S,
             failure_threshold_pct=float(resolved["failure_threshold_pct"]),
-            stability_drift_threshold_pct=float(resolved["stability_drift_threshold_pct"]),
+            stability_drift_threshold_pct=drift,
         )
 
     name = load_profile_from_config(config)
@@ -233,7 +245,13 @@ def load_sustained_goodput_params(bench_dir: Path) -> SustainedGoodputParams:
     except KeyError:
         return defaults
 
-    if isinstance(profile, (GoodputPlateauLoadProfile, ExploreRefineLoadProfile, AdaptiveV2LoadProfile)):
+    if isinstance(profile, ExploreRefineLoadProfile):
+        return SustainedGoodputParams(
+            window_s=_DEFAULT_SUSTAINED_WINDOW_S,
+            failure_threshold_pct=float(profile.failure_threshold_pct),
+            stability_drift_threshold_pct=float(profile.refine_goodput_stability_pct),
+        )
+    if isinstance(profile, (GoodputPlateauLoadProfile, AdaptiveV2LoadProfile)):
         return SustainedGoodputParams(
             window_s=_DEFAULT_SUSTAINED_WINDOW_S,
             failure_threshold_pct=float(profile.failure_threshold_pct),
@@ -248,6 +266,7 @@ def sustained_goodput_from_timeseries(
     window_s: int = _DEFAULT_SUSTAINED_WINDOW_S,
     failure_threshold_pct: float = _DEFAULT_FAILURE_THRESHOLD_PCT,
     stability_drift_threshold_pct: float = _DEFAULT_STABILITY_DRIFT_PCT,
+    t_min_s: float | None = None,
 ) -> SustainedGoodputResult | None:
     """
     Find the highest sustained goodput over a rolling window.
@@ -257,6 +276,9 @@ def sustained_goodput_from_timeseries(
     - window failure rate is at most ``failure_threshold_pct``
     - (max − min) goodput / mean goodput in the window is at most
       ``stability_drift_threshold_pct`` percent
+
+    When ``t_min_s`` is set, only windows ending at or after that time are
+    considered (used to restrict scoring to the refine phase).
     """
     if df.empty:
         return None
@@ -265,9 +287,14 @@ def sustained_goodput_from_timeseries(
     if len(df) < w:
         return None
 
+    t_min = float(t_min_s) if t_min_s is not None else None
+
     best: SustainedGoodputResult | None = None
     for end_idx in range(w - 1, len(df)):
         chunk = df.iloc[end_idx - w + 1 : end_idx + 1]
+        t_end = float(chunk["t_s"].iloc[-1])
+        if t_min is not None and t_end < t_min:
+            continue
         users = chunk["users"]
         if users.isna().any() or float(users.max()) != float(users.min()):
             continue
@@ -303,22 +330,214 @@ def sustained_goodput_from_timeseries(
     return best
 
 
+def is_explore_refine_bench(bench_dir: Path) -> bool:
+    """True when ``05-bench/config.json`` uses the explore-refine load profile."""
+    config_path = bench_dir / "config.json"
+    if not config_path.is_file():
+        return False
+    try:
+        config = json.loads(config_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return False
+
+    from bench_diagnostics.summary.load_run import load_profile_from_config
+    from load_bench.load_profiles.manifest import resolved_profile_from_bench_config
+    from load_bench.load_profiles.models import ExploreRefineLoadProfile
+    from load_bench.load_profiles.registry import resolve_load_profile
+
+    resolved = resolved_profile_from_bench_config(config)
+    if resolved is not None and str(resolved.get("mode") or "") == "explore_refine":
+        return True
+
+    name = load_profile_from_config(config)
+    if not name:
+        return False
+    try:
+        profile = resolve_load_profile(name)
+    except KeyError:
+        return False
+    return isinstance(profile, ExploreRefineLoadProfile)
+
+
+def refine_phase_start_s(log_text: str) -> int | None:
+    """Wall-clock second when explore-refine recovery hands off to refine, if any."""
+    for line in log_text.splitlines():
+        phase_m = _ADAPTIVE_PHASE_RE.search(line)
+        if not phase_m:
+            continue
+        action = phase_m.group("action")
+        if "recovery healthy" in action and "refine" in action:
+            return int(phase_m.group(1))
+    return None
+
+
+def classify_bench_run_outcome(
+    bench_dir: Path,
+    log_text: str | None = None,
+) -> AdaptiveRunOutcome | None:
+    """Classify explore-refine / adaptive outcome for feedback and plots."""
+    text = log_text if log_text is not None else gather_bench_log_text(bench_dir)
+    sustained = None
+    if is_explore_refine_bench(bench_dir) or "explore-refine" in text:
+        sustained = sustained_goodput_from_bench(bench_dir, log_text=text)
+    return classify_adaptive_run_outcome(
+        text,
+        sustained_goodput_rps=(
+            float(sustained.goodput_rps) if sustained is not None else None
+        ),
+        sustained_users=sustained.users if sustained is not None else None,
+    )
+
+
+def sustained_goodput_skip_reason(
+    bench_dir: Path,
+    log_text: str,
+) -> str | None:
+    """
+    Human-readable reason sustained goodput was not scored for explore-refine.
+
+    Returns ``None`` when the bench is not explore-refine shaped.
+    Prefer :func:`classify_bench_run_outcome` for the full narrative.
+    """
+    if not is_explore_refine_bench(bench_dir):
+        return None
+    outcome = classify_adaptive_run_outcome(log_text)
+    if outcome is not None and not outcome.refine_reached:
+        return outcome.title
+    if refine_phase_start_s(log_text) is None:
+        return "refine phase not reached"
+    return "no stable refine window"
+
+
+_REFINE_REPORT_PEAK_RE = re.compile(
+    r"report peak_goodput=(?P<gp>[\d.]+)/s(?:@(?P<users>\d+)u)?"
+)
+_REFINE_PEAK_ANY_RE = re.compile(
+    r"peak_goodput=(?P<gp>[\d.]+)/s(?:@(?P<users>\d+)u)?"
+)
+_PHASE_T_RE = re.compile(r"adaptive phase end t=(\d+)s:")
+_STEP_GOODPUT_INLINE_RE = re.compile(r"step_goodput=([\d.]+)/s")
+
+
+def refine_settled_peak_from_log(log_text: str) -> SustainedGoodputResult | None:
+    """
+    Best refine-level settle goodput from the controller log.
+
+    Matches the refine decision rule: each improving settled level records a
+    mean-of-last-K rolling samples (stability-gated). The reported capacity is
+    that recorded peak (usually ``report peak_goodput=…@…u`` on stall/stop),
+    not a separate post-hoc stats_history window scan.
+    """
+    if refine_phase_start_s(log_text) is None:
+        return None
+
+    gp: float | None = None
+    users: int | None = None
+    for line in reversed(log_text.splitlines()):
+        m = _REFINE_REPORT_PEAK_RE.search(line)
+        if m:
+            gp = float(m.group("gp"))
+            if m.group("users"):
+                users = int(m.group("users"))
+            break
+    if gp is None:
+        for line in reversed(log_text.splitlines()):
+            if "refine" not in line or "peak_goodput=" not in line:
+                continue
+            m = _REFINE_PEAK_ANY_RE.search(line)
+            if not m:
+                continue
+            gp = float(m.group("gp"))
+            if m.group("users"):
+                users = int(m.group("users"))
+            break
+    if gp is None:
+        # Fall back: max settle step_goodput on refine ramp decisions.
+        best_gp = 0.0
+        best_users: int | None = None
+        best_t = 0
+        for line in log_text.splitlines():
+            if "adaptive phase end" not in line or "refine ramp" not in line:
+                continue
+            t_m = _PHASE_T_RE.search(line)
+            gp_m = _STEP_GOODPUT_INLINE_RE.search(line)
+            if not t_m or not gp_m:
+                continue
+            step_gp = float(gp_m.group(1))
+            if step_gp <= best_gp:
+                continue
+            best_gp = step_gp
+            best_t = int(t_m.group(1))
+            # Settle was at previous users; action ends with ``-> +S users=U``.
+            move = re.search(r"\+(\d+)\s+users=(\d+)", line)
+            if move:
+                best_users = int(move.group(2)) - int(move.group(1))
+            else:
+                users_m = re.search(r"users=(\d+)", line)
+                best_users = int(users_m.group(1)) if users_m else None
+        if best_gp <= 0:
+            return None
+        return SustainedGoodputResult(
+            goodput_rps=best_gp,
+            users=best_users,
+            t_s=best_t,
+            window_s=0,
+            fail_pct=0.0,
+            drift_pct=0.0,
+        )
+
+    t_s = 0
+    for line in log_text.splitlines():
+        if "adaptive phase end" not in line or "refine" not in line:
+            continue
+        t_m = _PHASE_T_RE.search(line)
+        gp_m = _STEP_GOODPUT_INLINE_RE.search(line)
+        if not t_m or not gp_m:
+            continue
+        if abs(float(gp_m.group(1)) - float(gp)) > 0.05:
+            continue
+        t_s = int(t_m.group(1))
+        if users is None:
+            move = re.search(r"\+(\d+)\s+users=(\d+)", line)
+            if move:
+                users = int(move.group(2)) - int(move.group(1))
+    return SustainedGoodputResult(
+        goodput_rps=float(gp),
+        users=users,
+        t_s=int(t_s),
+        window_s=0,
+        fail_pct=0.0,
+        drift_pct=0.0,
+    )
+
+
 def sustained_goodput_from_bench(
     bench_dir: Path,
     *,
     params: SustainedGoodputParams | None = None,
+    log_text: str | None = None,
 ) -> SustainedGoodputResult | None:
-    """Sustained max goodput for one ``05-bench/`` directory."""
+    """Primary reported goodput for one ``05-bench/`` directory.
+
+    Explore-refine: best settled refine decision from the controller log.
+    Other adaptive profiles: max eligible flat-user window in ``stats_history``.
+    """
+    if is_explore_refine_bench(bench_dir):
+        text = log_text if log_text is not None else gather_bench_log_text(bench_dir)
+        return refine_settled_peak_from_log(text)
+
     scoring = params or load_sustained_goodput_params(bench_dir)
     try:
         df = load_stats_timeseries(bench_dir)
     except (FileNotFoundError, ValueError):
         return None
+
     return sustained_goodput_from_timeseries(
         df,
         window_s=scoring.window_s,
         failure_threshold_pct=scoring.failure_threshold_pct,
         stability_drift_threshold_pct=scoring.stability_drift_threshold_pct,
+        t_min_s=None,
     )
 
 
@@ -335,6 +554,87 @@ class AdaptiveDecision:
     step_goodput_rps: float | None = None
     step_reqs: int | None = None
     step_samples: tuple[float, ...] = ()
+
+
+@dataclass(frozen=True)
+class LoadPhaseSpan:
+    """One explore-refine controller phase on the adaptive ramp timeline."""
+
+    name: str
+    t_start: float
+    t_end: float
+
+
+_EXPLORE_REFINE_WARMUP_RE = re.compile(
+    r"explore-refine warmup end t=(\d+)s"
+)
+
+
+def parse_explore_refine_phase_spans(
+    log_text: str,
+    *,
+    t_end_s: float,
+) -> tuple[LoadPhaseSpan, ...]:
+    """
+    Parse explore → recovery → refine boundaries from bench logs.
+
+    Returns an empty tuple when the run is not explore-refine shaped.
+    Warmup-only / recovery-aborted runs still return the phases that ran.
+    """
+    if "explore-refine warmup end" not in log_text:
+        return ()
+
+    warmup_end: int | None = None
+    explore_end: int | None = None
+    refine_start: int | None = None
+    run_end = max(0.0, float(t_end_s))
+
+    for line in log_text.splitlines():
+        warmup_m = _EXPLORE_REFINE_WARMUP_RE.search(line)
+        if warmup_m:
+            warmup_end = int(warmup_m.group(1))
+            continue
+
+        phase_m = _ADAPTIVE_PHASE_RE.search(line)
+        if not phase_m:
+            continue
+        action = phase_m.group("action")
+        t_s = int(phase_m.group(1))
+        if "explore end" in action:
+            explore_end = t_s
+        elif "recovery healthy" in action and "refine" in action:
+            refine_start = t_s
+
+    if warmup_end is None:
+        return ()
+
+    end_s = max(run_end, float(warmup_end))
+    if explore_end is not None:
+        end_s = max(end_s, float(explore_end))
+    if refine_start is not None:
+        end_s = max(end_s, float(refine_start))
+
+    spans: list[LoadPhaseSpan] = [
+        LoadPhaseSpan("warmup", 0.0, float(warmup_end)),
+    ]
+    if explore_end is None:
+        # Warmup abort, or explore still running until the log ends.
+        if "warmup unhealthy" in log_text or "warmup-unhealthy" in log_text:
+            return tuple(spans)
+        spans.append(LoadPhaseSpan("explore", float(warmup_end), end_s))
+        return tuple(spans)
+
+    spans.append(LoadPhaseSpan("explore", float(warmup_end), float(explore_end)))
+    spans.append(
+        LoadPhaseSpan(
+            "recovery",
+            float(explore_end),
+            float(refine_start) if refine_start is not None else end_s,
+        )
+    )
+    if refine_start is not None:
+        spans.append(LoadPhaseSpan("refine", float(refine_start), end_s))
+    return tuple(spans)
 
 
 @dataclass(frozen=True)
@@ -446,7 +746,7 @@ def _parse_p95_ms(action: str, p95_logged: str, line: str) -> float | None:
 
 
 def _parse_step_fail_pct(line: str, action: str) -> float | None:
-    m = _FAIL_PCT_IN_ACTION_RE.search(action)
+    m = _FAIL_PCT_IN_ACTION_RE.search(action) or _FAIL_PCT_IN_ACTION_RE.search(line)
     if m:
         return float(m.group(1))
     step_reqs_m = _STEP_REQS_RE.search(line)
@@ -646,16 +946,22 @@ def resolve_run_goodput_marker(
     """
     Primary run goodput marker for plots and experiment summaries.
 
-    Uses sustained max goodput from ``stats_history`` when available; falls back
-    to the legacy per-step peak metric otherwise.
+    Explore-refine: best settled refine decision from the controller log.
+    When refine never starts, returns ``None``.
+
+    Other adaptive profiles use sustained max goodput from ``stats_history`` when
+    available, with a legacy per-step peak fallback.
     """
-    sustained = sustained_goodput_from_bench(bench_dir)
+    explore_refine = is_explore_refine_bench(bench_dir)
+    sustained = sustained_goodput_from_bench(bench_dir, log_text=log_text)
     if sustained is not None and sustained.goodput_rps > 0:
         return PeakGoodputMarker(
             t_s=sustained.t_s,
             goodput_rps=sustained.goodput_rps,
             users=sustained.users,
         )
+    if explore_refine:
+        return None
     return resolve_peak_goodput_marker(log_text, decisions)
 
 
@@ -746,8 +1052,16 @@ def parse_adaptive_decisions(log_text: str) -> list[AdaptiveDecision]:
         seen_t.add(t_s)
 
         action = phase_m.group("action").strip()
-        p95_ms = _parse_p95_ms(action, phase_m.group("p95_logged"), line)
+        p95_logged = phase_p95_token(phase_m) or "n/a"
+        p95_ms = _parse_p95_ms(action, p95_logged, line)
         fail_pct = _parse_step_fail_pct(line, action)
+        if fail_pct is None:
+            parsed = phase_fail_pct(phase_m)
+            if parsed is not None:
+                try:
+                    fail_pct = float(str(parsed).rstrip("%"))
+                except ValueError:
+                    fail_pct = None
 
         users_after_m = _NEXT_USERS_RE.search(action)
         users_after = int(users_after_m.group(1)) if users_after_m else None

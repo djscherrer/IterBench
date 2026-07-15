@@ -378,6 +378,30 @@ def scp_to_remote(local_path: pathlib.Path, host: str, remote_path: str, logger:
     run_subprocess(scp_cmd, logger).check_returncode()
 
 
+def scp_tree_to_remote(
+    local_dir: pathlib.Path,
+    host: str,
+    remote_dir: str,
+    logger: logging.Logger,
+) -> None:
+    """Recursively copy a local directory to ``host:remote_dir`` (replaces remote)."""
+    if not local_dir.is_dir():
+        raise FileNotFoundError(f"scp_tree_to_remote: not a directory: {local_dir}")
+    remote_parent = str(pathlib.PurePosixPath(remote_dir).parent)
+    remote_name = pathlib.PurePosixPath(remote_dir).name
+    if local_dir.name != remote_name:
+        raise ValueError(
+            f"scp_tree_to_remote expects local basename {remote_name!r}, got {local_dir.name!r}"
+        )
+    ssh(
+        host,
+        f"rm -rf {shlex.quote(remote_dir)} && mkdir -p {shlex.quote(remote_parent)}",
+        logger,
+    ).check_returncode()
+    scp_cmd = scp_base_cmd(host) + ["-r", str(local_dir), f"{host}:{remote_parent}/"]
+    run_subprocess(scp_cmd, logger).check_returncode()
+
+
 def scp_from_remote(host: str, remote_path: str, local_path: pathlib.Path, logger: logging.Logger) -> None:
     local_path.parent.mkdir(parents=True, exist_ok=True)
     scp_cmd = scp_base_cmd(host) + [f"{host}:{remote_path}", str(local_path)]
@@ -582,40 +606,37 @@ def resolve_remote_primary_ipv4(host: str, logger: logging.Logger) -> str:
     return ip
 
 
-def _is_preferred_ipv4(ip: str, preferred_prefixes: tuple[str, ...]) -> bool:
-    return any(ip.startswith(pfx) for pfx in preferred_prefixes)
-
-
-def resolve_remote_preferred_ipv4(
-    host: str,
-    logger: logging.Logger,
-    *,
-    preferred_prefixes: tuple[str, ...] = ("10.233.",),
-) -> str:
+def resolve_remote_preferred_ipv4(host: str, logger: logging.Logger) -> str:
     """
-    Resolve an IPv4 address *on the remote host*.
+    Resolve an IPv4 for inter-node lab traffic.
 
-    Policy:
-    - Query all global IPv4 addresses on the remote host.
-    - Prefer the first address matching any prefix in preferred_prefixes (default: 10.233.*).
-    - Otherwise fall back to the first non-loopback global IPv4.
-    - Otherwise fall back to the primary route source IP.
+    On CloudLab/Emulab, short names in ``/etc/hosts`` map to the experiment LAN
+    (``10.x``). FQDNs and the default route use the shared control network.
     """
+    short = (host or "").strip().split("@")[-1].split(".")[0]
+    if short:
+        cmd = (
+            "set -euo pipefail; "
+            f"getent ahostsv4 {shlex.quote(short)} 2>/dev/null | awk '{{print $1; exit}}' || true"
+        )
+        out = ssh(host, f"bash -lc {shlex.quote(cmd)}", logger)
+        if out.returncode == 0:
+            text = (out.stdout or b"").decode(errors="ignore")
+            for ip in re.findall(r"\b(?:\d{1,3}\.){3}\d{1,3}\b", text):
+                if ip.startswith("10.") and not ip.startswith("127."):
+                    return ip
+
     cmd = (
         "set -euo pipefail; "
-        # List all non-loopback global IPv4 addresses (no CIDR), one per line.
         "ip -4 -o addr show scope global | awk '{print $4}' | cut -d/ -f1 || true"
     )
     out = ssh(host, f"bash -lc {shlex.quote(cmd)}", logger)
     out.check_returncode()
     text = (out.stdout or b"").decode(errors="ignore")
-    ips = re.findall(r"\b(?:\d{1,3}\.){3}\d{1,3}\b", text)
-    ips = [ip for ip in ips if ip and not ip.startswith("127.")]
-    preferred = [ip for ip in ips if _is_preferred_ipv4(ip, preferred_prefixes)]
-    if preferred:
-        return preferred[0]
-    if ips:
-        return ips[0]
+    for ip in re.findall(r"\b(?:\d{1,3}\.){3}\d{1,3}\b", text):
+        if ip.startswith("10.") and not ip.startswith("127."):
+            return ip
+
     return resolve_remote_primary_ipv4(host, logger)
 
 

@@ -2,6 +2,8 @@
 Locust bench stage (``05-bench/``).
 
 Runs Locust load tests against an iteration that already passed ``04-deploy``.
+On success, also writes iteration feedback, marks ``meta.json`` successful, and
+appends the perf-run block to ``experiment_summary.md``.
 Does not render manifests, ``kubectl apply``, build images, or push to the registry.
 """
 
@@ -12,27 +14,29 @@ import logging
 import re
 import shutil
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from bench_diagnostics import diagnostics_session_for_k8s
-from locust_bench.load_profiles import resolve_load_profile
-from locust_bench.load_profiles.manifest import build_load_profile_manifest
-from locust_bench.load_topology import LoadTopology
-from locust_bench.locust_run import (
+from load_bench.load_profiles import resolve_load_profile
+from load_bench.load_profiles.manifest import build_load_profile_manifest
+from load_bench.load_topology import LoadTopology
+from load_bench.locust_run import (
     DistributedLocustConfig,
     DistributedLocustSession,
     prepare_locust_run_dir,
 )
-from locust_bench.paths import locust_csv_prefix
+from load_bench.paths import locust_csv_prefix
 
 from ..cluster.deploy import DeployResult
 from ..cluster.profiles import selected_cluster_profile
+from ..experiment_summary import append_perf_run_block
 from ..failure import BenchFailureRecord, fail_iteration_phase
 from ..failure.bench_diagnostics import collect_bench_failure_diagnostics
 from ..failure.classify import classify_bench_failure_kind
 from ..failure.persist import build_bench_iteration_failure
-from ..feedback import read_failed_iteration_error_excerpt
+from ..feedback import collect_iteration_feedback, read_failed_iteration_error_excerpt
 from ..orchestration.config import IterationPlan, RunConfig, SampleContext
 from ..spec.models import (
     K8sWorkloadSpec,
@@ -47,6 +51,8 @@ from ..workspace import (
     iteration_bench_dir,
     iteration_bench_log_path,
     resolve_iteration_dir,
+    update_iteration_meta,
+    write_feedback,
 )
 from ..workspace.skips import append_k8s_skip
 
@@ -475,7 +481,7 @@ def _performance_test_names(task: Any) -> list[str]:
 
 
 def _resolve_locustfile(task: Any, run_dir: Path) -> Path | None:
-    from locust_bench.paths import locust_dir
+    from load_bench.paths import locust_dir
     from scenario_files import SCENARIO_FILE_PATH
 
     shared = SCENARIO_FILE_PATH.joinpath(f"locustfiles/{task.scenario.id.lower()}.py")
@@ -491,6 +497,47 @@ def _resolve_locustfile(task: Any, run_dir: Path) -> Path | None:
 # ---------------------------------------------------------------------------
 # Stage-level orchestration
 # ---------------------------------------------------------------------------
+
+def persist_successful_bench_feedback(
+    ctx: SampleContext,
+    plan: IterationPlan,
+    run_dir: Path,
+    cfg: RunConfig,
+    logger: logging.Logger,
+) -> None:
+    """
+    After a successful Locust run: write feedback artifacts, mark meta success,
+    and append the experiment-summary Locust block.
+    """
+    iteration_path = resolve_iteration_dir(
+        ctx.sample_dir, plan.iteration_id, experiment_id=ctx.experiment_id
+    )
+    try:
+        fb = collect_iteration_feedback(
+            perf_run_dir=run_dir,
+            iteration_path=iteration_path,
+            logger=logger,
+        )
+        write_feedback(run_dir, fb)
+        update_iteration_meta(
+            iteration_path,
+            status="success",
+            finished_at=datetime.now(timezone.utc).isoformat(),
+        )
+        try:
+            summary_path = append_perf_run_block(
+                sample_dir=ctx.sample_dir,
+                iteration_id=plan.iteration_id,
+                perf_run_dir=run_dir,
+                feedback=fb,
+                load_profile=cfg.load_profile,
+            )
+            logger.info("Updated experiment summary: %s", summary_path)
+        except Exception as exc:
+            logger.warning("Could not update experiment summary: %s", exc)
+    except Exception as exc:
+        logger.warning("Could not write iteration feedback: %s", exc)
+
 
 def run_bench_stage(
     ctx: SampleContext,
@@ -521,6 +568,7 @@ def run_bench_stage(
         enable_attempts=False,
     )
     if result.ok:
+        persist_successful_bench_feedback(ctx, plan, run_dir, cfg, logger)
         return BenchStageResult(ok=True)
 
     iteration_failure = build_bench_iteration_failure(
@@ -548,6 +596,7 @@ __all__ = [
     "BenchStageResult",
     "build_bench_failure_record",
     "load_probe_deploy_result",
+    "persist_successful_bench_feedback",
     "rotate_top_level_into_attempt",
     "run_bench_attempt",
     "run_bench_stage",

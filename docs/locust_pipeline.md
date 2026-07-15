@@ -1,7 +1,9 @@
-## BaxBench Locust pipeline
+## BaxBench load-test pipeline
 
-All Locust code is under **`src/locust_bench/`**. Bench observability is in
-the top-level **`src/bench_diagnostics/`** package (not under Locust).
+Load generation and profiling live in **`src/load_bench/`** (Locust runner, shapes,
+manifests). That is separate from **`src/k8s_bench/`**, which handles Kubernetes
+deploy and experiment orchestration. Bench observability is in the top-level
+**`src/bench_diagnostics/`** package.
 
 | Module | When it runs |
 |--------|--------------|
@@ -28,9 +30,11 @@ modes):
 ├── bench.log
 ├── config.json
 ├── iteration_feedback.{json,txt}
-├── locust/                              # locust_bench.paths
+├── locust/                              # load_bench.paths
 │   ├── locustfile-<scenario>.py
-│   ├── _baxbench_shape.py
+│   ├── _baxbench_shape.py               # facade (import BaxbenchShape)
+│   ├── shapes/                          # shape implementations + helpers
+│   ├── baxbench_load_profile.json
 │   ├── results/<test>_*.csv
 │   └── logs/master-*.log, worker-*.log
 └── diagnostics/                         # bench_diagnostics.paths
@@ -50,7 +54,7 @@ Only the subtree for the active mode is created. Pass
 :func:`bench_diagnostics.diagnostics_session` (or the convenience wrappers
 ``diagnostics_session_for_k8s`` / ``diagnostics_session_for_distributed``).
 
-Locust paths: ``locust_bench.paths.locust_csv_prefix(run_dir, test)``.
+Locust paths: ``load_bench.paths.locust_csv_prefix(run_dir, test)``.
 
 ### Diagnostics collectors (`bench_diagnostics/`)
 
@@ -67,8 +71,8 @@ Pod-log streaming + ``pg_stat_*`` on k8s can be disabled with
 
 ### Load profiles and manifest
 
-Profiles are defined in `locust_bench/load_profiles/registry.py` (e.g. `quick-check`, `k8s-goodput-plateau`).
+Profiles are defined in `load_bench/load_profiles/registry.py` (e.g. `quick-check`, `k8s-goodput-plateau`).
 
-At staging time, `prepare_locust_run_dir()` writes `baxbench_load_profile.json` next to the locustfile. The manifest is a JSON snapshot of the resolved profile dataclass (mode, `run_time_s`, wait times, and all shape parameters). `_baxbench_shape.py` reads this file at runtime — no per-parameter environment variables.
+At staging time, `prepare_locust_run_dir()` writes `baxbench_load_profile.json` next to the locustfile and copies `_baxbench_shape.py` plus the `shapes/` package. The manifest is a JSON snapshot of the resolved profile dataclass (mode, `run_time_s`, wait times, and all shape parameters). The shape package reads this file at runtime — no per-parameter environment variables.
 
 The same manifest is embedded in `05-bench/config.json` under `resolved_load_profile` for post-run inspection and plotting.

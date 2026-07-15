@@ -1,4 +1,4 @@
-"""Serialize load profiles to a JSON manifest consumed by ``_baxbench_shape.py``."""
+"""Serialize load profiles to a JSON manifest consumed by Locust shapes."""
 
 from __future__ import annotations
 
@@ -43,7 +43,7 @@ def load_profile_mode(load_profile: LoadProfile) -> str:
 
 def _adaptive_trim_s(load_profile: LoadProfile) -> int:
     if isinstance(load_profile, ExploreRefineLoadProfile):
-        return max(0, int(load_profile.refine_measure_window_s))
+        return max(0, int(load_profile.refine_trim_s))
     if isinstance(
         load_profile,
         (AdaptiveLoadProfile, AdaptiveV2LoadProfile, GoodputPlateauLoadProfile),

@@ -148,8 +148,7 @@ Orchestration lives in `src/k8s_bench/orchestration/execute.py`, which calls one
 | `02-code/` | `stages/code.py` | `run_code_stage`, `run_reuse_code_stage` — LLM codegen + functional tests |
 | `03-spec/` | `stages/spec.py` | `run_spec_stage`, `run_reuse_spec_stage` — produce / reuse `spec.yaml` |
 | `04-deploy/` | `stages/deploy.py` | `run_deploy_stage`, `update_iteration_spec`, `check_service_endpoints_ready` |
-| `05-bench/` | `stages/bench.py` | `run_bench_stage`, `run_distributed_locust`, `load_probe_deploy_result` |
-| (outcome) | `stages/outcome.py` | `run_outcome_stage` — feedback + experiment summary |
+| `05-bench/` | `stages/bench.py` | `run_bench_stage`, `run_distributed_locust`, `persist_successful_bench_feedback` — Locust + feedback/summary on success |
 
 Top-level entry: `k8s_bench/loop.py` → `run_k8s_bench`. Deploy-only mode uses `resolve_iterations_to_run` in the same file.
 
