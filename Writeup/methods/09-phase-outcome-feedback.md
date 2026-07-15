@@ -1,6 +1,7 @@
-# Phase: Outcome & Feedback Aggregation
+# Phase: Feedback Aggregation (end of bench)
 
-Corresponds to `06-outcome/` (and bench-side artifacts consumed by the next iteration).
+After a successful Locust run under `05-bench/`, the bench stage closes the
+iteration by writing feedback artifacts consumed by the next iteration.
 
 ---
 

@@ -30,7 +30,7 @@ Summary for this section:
 - **Goodput** — successful RPS only; primary cross-iteration metric (sustained goodput from rolling window).
 - Profile manifest staged as `baxbench_load_profile.json`; resolved values also in `05-bench/config.json`.
 
-Reference: `locust_bench/load_profiles/registry.py`, `docs/locust_pipeline.md`.
+Reference: `load_bench/load_profiles/registry.py`, `docs/locust_pipeline.md`.
 
 ---
 

@@ -357,3 +357,19 @@ throughput*.csv
 prompts/*
 
 results_distributed_bench/*
+
+# LaTeX build artifacts
+*.aux
+*.bbl
+*.blg
+*.fdb_latexmk
+*.fls
+*.lof
+*.lot
+*.out
+*.toc
+*.synctex.gz
+*.synctex(busy)
+missfont.log
+MT_Systems_Cover/main.log
+MT_Systems_Cover/main.pdf

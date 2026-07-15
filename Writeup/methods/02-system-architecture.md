@@ -1,96 +1,53 @@
 # System Architecture
 
-Draft content for Methods §2 (or §3.1 depending on your outline).
+Methods should describe **roles**, not lab hostnames/CPU counts.
+Hardware topology (Emulab, which `node*`, cores/GiB) belongs in **Experimental setup**.
 
 ---
 
 ## Purpose
 
-Describe the **physical and logical components** and who is responsible for what.
-This section answers: *Where does the experiment run, and which machines do which jobs?*
+Answer: *Which components run the experiment, and who is responsible for what?*
 
 ---
 
-## Components
+## Motivation (Docker → multi-node K8s)
 
-### 1. Kubernetes cluster
-
-| Role | Typical name in thesis | Responsibility |
-|------|------------------------|----------------|
-| Control-plane node | *control-plane* (avoid bare “master”) | API server, scheduler; may also host BaxBench + container registry |
-| Worker nodes | *workers* | Run application and database pods |
-| Private registry (optional) | *local registry* | Store built app images (`host:5000`); workers pull with `IfNotPresent` |
-
-**Cluster profile** (`K8sClusterProfile` in code): encodes kubeconfig path, control node hostname, worker hostnames, registry settings, and Locust hostnames for a given lab setup.
-
-Example (Emulab `baxbench-emulab`):
-
-- `node0` — control plane + BaxBench orchestration + registry
-- `node3`, `node4`, `node5` — Kubernetes workers
-- Database and backend pods are scheduled onto workers according to the agent’s `spec.yaml`.
-
-**What to write:**
-
-- How the cluster was provisioned (e.g. kubeadm, reference setup script).
-- Fixed cluster capacity exposed to the agent (total CPU/memory requests, number of workers).
-- That workloads are isolated in per-iteration namespaces (`baxbench-*`), cleaned up after each bench.
+Keep: multi-replica CPU/memory competition, scheduler placement, DB topology /
+connection pressure.
+Drop from this block: Locust↔Service network-path effects (setup detail, not a
+studied lever); caches (agent strategy, not a reason to use Kubernetes).
+Prefer “this work” over “our extension” in chapter voice.
 
 ---
 
-### 2. Load generation (Locust)
+## Components (conceptual)
 
-Separate from Kubernetes scheduling:
+| Component | Responsibility |
+|-----------|----------------|
+| **K8s control plane** | API server, scheduler; orchestrator talks via `kubectl` |
+| **K8s worker nodes** | Run experiment pods (app + DB/pooler/cache); scheduler places from manifests. Agent knobs → § spec |
+| **Private container registry** | Host iteration images for worker pulls; tags recorded at deploy |
+| **BaxBench orchestrator** | LLM calls, FT, build/push, validate/render/apply, Locust, diagnostics, conversation |
+| **Locust master** | Coordinate distributed load test, aggregate stats |
+| **Locust workers** | Emit HTTP load (hosts separate from app workers) |
+| **External LLM API** | Persistent conversation per experiment |
 
-| Role | Responsibility |
-|------|----------------|
-| Locust master | Coordinates test, aggregates RPS/latency stats |
-| Locust workers | Generate HTTP load against the backend Service |
+**Load path:** Locust → backend Service reachable from outside the cluster (we use **NodePort**).
 
-Load generators may run on dedicated hosts (e.g. `node1` master, `node2` worker) so that benchmark traffic does not saturate the same CPUs as application pods.
+**Isolation:** per-iteration `baxbench-*` namespaces, cleaned after bench.
 
-**What to write:**
+Defer hardware with one sentence; do **not** put `spec.yaml` replica/resource
+lists under workers (that is the agent interface → deployment-spec phase).
 
-- Distributed Locust over SSH.
-- Traffic targets the Kubernetes Service endpoint (ClusterIP or equivalent), not individual pods directly.
-- Adaptive load profile (e.g. `k8s-goodput-plateau`): ramp until SLA break, measure sustainable throughput.
-
----
-
-### 3. BaxBench orchestrator
-
-Runs on the machine with Docker, LLM API access, and `kubectl` (often the control-plane host):
-
-- Invokes the LLM for code, spec, and refinement decisions.
-- Builds container images from generated code.
-- Renders Kubernetes manifests from validated `spec.yaml`.
-- Deploys via `kubectl`, runs readiness probes.
-- Triggers Locust bench, collects diagnostics, writes `iteration_feedback.json`.
+Do **not** add an “Image and Deployment Flow” subsection under Architecture —
+build/push/pull/readiness live in the code and deploy phases.
 
 ---
 
-## Responsibility split (preview of §11)
+## Responsibility split
 
 | Layer | Controls |
 |-------|----------|
-| **LLM agent** | Application source code; high-level deployment parameters (`replicas`, CPU/memory requests/limits, placement hints, DB replica count, …) |
-| **Framework (BaxBench k8s extension)** | OpenAPI scenario, functional tests, YAML/manifest generation, deploy orchestration, validation rules, benchmarking, telemetry, iteration state |
-
-This split keeps the search space bounded and experiments reproducible.
-
----
-
-## Suggested narrative flow
-
-1. One paragraph: *why a real cluster* (placement, resource limits, multi-replica behaviour).
-2. Diagram: boxes for orchestrator, K8s control plane, K8s workers, Locust, external LLM API.
-3. Table: node names / roles for your actual lab setup.
-4. Short paragraph on image flow: codegen → Docker build → push to registry → pull on workers.
-
----
-
-## Bullet points to expand
-
-- [ ] Cluster size (number of workers, CPU/RAM per node) — use **your** measured values.
-- [ ] Network assumptions (lab LAN, no ingress controller vs. NodePort/LoadBalancer if used).
-- [ ] Postgres deployment model (single pod vs. primary + read replicas when `database.replicas > 1`).
-- [ ] Environment variable / CLI entry point: `./scripts/bench_k8s.sh`, `--k8s-cluster baxbench-emulab`.
+| **LLM agent** | App code; high-level knobs in `spec.yaml` |
+| **Framework** | Scenarios/FT, YAML rendering, validation, probes, Locust, telemetry |

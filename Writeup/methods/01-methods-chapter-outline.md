@@ -97,7 +97,7 @@ If your faculty puts metrics in **Evaluation** instead, cross-reference here.
 ## 8. Implementation summary *(short)*
 
 - BaxBench extension: `--mode k8s-bench`, `scripts/bench_k8s.sh`.
-- Key packages: `k8s_bench/`, `locust_bench/`, `bench_diagnostics/`.
+- Key packages: `k8s_bench/`, `load_bench/`, `bench_diagnostics/`.
 - Cluster profiles: `k8s_bench/cluster/profiles.py` (e.g. Emulab topology).
 
 *Keep brief — full implementation belongs in appendix or repository README.*
