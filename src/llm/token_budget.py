@@ -20,7 +20,7 @@ def completion_token_budget(
     *,
     context_lengths: dict[str, int],
     default_cap: int = 8192,
-    hard_cap: int = 16384,
+    hard_cap: int = 65536,
     slack: int = 1024,
 ) -> int:
     """
@@ -28,6 +28,11 @@ def completion_token_budget(
 
     Subtracts the actual measured prompt size so a large refinement prompt
     no longer triggers ``input + max_tokens > context_window`` errors.
+
+    When ``prompter.model`` is absent from ``context_lengths``, returns
+    ``default_cap`` (historically 8192) — models must be listed with their
+    advertised context window so large codegen completions are not
+    truncated early.
     """
     context = context_lengths.get(prompter.model)
     if context is None:
