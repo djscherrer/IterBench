@@ -7,6 +7,7 @@ when already done.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import re
@@ -70,20 +71,31 @@ def _shell(host: str, script: str, logger: logging.Logger) -> str:
     return out
 
 
-def _control_plane_ip(host: str, logger: logging.Logger) -> str:
+def _lab_ipv4(host: str, logger: logging.Logger) -> str:
+    """
+    Prefer Emulab/CloudLab experiment LAN (``10.x`` from ``/etc/hosts``) over the
+    control-network address that the default route uses.
+    """
     if _is_local_host(host):
-        cmd = (
-            "ip -4 route get 1.1.1.1 2>/dev/null | awk '{for (i=1;i<=NF;i++) if ($i==\"src\") {print $(i+1); exit}}' "
-            "|| hostname -I | awk '{print $1}'"
-        )
-        proc = subprocess.run(["bash", "-lc", cmd], capture_output=True, text=True, check=False)
-        text = (proc.stdout or "") + (proc.stderr or "")
-        ips = re.findall(r"\b(?:\d{1,3}\.){3}\d{1,3}\b", text)
-        for ip in ips:
-            if not ip.startswith("127."):
-                return ip
-        raise RuntimeError(f"Could not determine control-plane IP on local host {host}")
-    return remote_exec.resolve_remote_primary_ipv4(host, logger)
+        short = (host or "").strip().split("@")[-1].split(".")[0] or "node0"
+        for cmd in (
+            f"getent ahostsv4 {shlex.quote(short)} 2>/dev/null | awk '{{print $1; exit}}'",
+            "ip -4 -o addr show scope global | awk '{print $4}' | cut -d/ -f1",
+        ):
+            proc = subprocess.run(
+                ["bash", "-lc", cmd], capture_output=True, text=True, check=False
+            )
+            text = (proc.stdout or "") + (proc.stderr or "")
+            for ip in re.findall(r"\b(?:\d{1,3}\.){3}\d{1,3}\b", text):
+                if ip.startswith("10.") and not ip.startswith("127."):
+                    return ip
+        raise RuntimeError(f"Could not determine experiment LAN IPv4 on local host {host}")
+    return remote_exec.resolve_remote_preferred_ipv4(host, logger)
+
+
+def _control_plane_ip(host: str, logger: logging.Logger) -> str:
+    """API advertise / registry host IP (experiment LAN when present)."""
+    return _lab_ipv4(host, logger)
 
 
 def _is_cluster_initialized(control_plane: str, logger: logging.Logger) -> bool:
@@ -93,20 +105,38 @@ def _is_cluster_initialized(control_plane: str, logger: logging.Logger) -> bool:
 
 def _kubeadm_init(control_plane: str, pod_cidr: str, advertise_ip: str, logger: logging.Logger) -> None:
     logger.info(
-        "Initializing cluster on %s (apiserver-advertise-address=%s, pod-network-cidr=%s)",
+        "Initializing cluster on %s (apiserver-advertise-address=%s, node-ip=%s, pod-network-cidr=%s)",
         control_plane,
+        advertise_ip,
         advertise_ip,
         pod_cidr,
     )
+    # Use a small kubeadm config so both the API advertise address and the
+    # control-plane kubelet InternalIP use the experiment LAN (not control-net).
     script = f"""set -euo pipefail
 if [ -f /etc/kubernetes/admin.conf ]; then
   echo 'SKIP: cluster already initialized (/etc/kubernetes/admin.conf exists)'
   exit 0
 fi
 if command -v sudo >/dev/null 2>&1; then SUDO='sudo -n'; else SUDO=''; fi
-$SUDO kubeadm init \\
-  --pod-network-cidr={shlex.quote(pod_cidr)} \\
-  --apiserver-advertise-address={shlex.quote(advertise_ip)}
+CFG="$(mktemp)"
+trap 'rm -f "$CFG"' EXIT
+cat >"$CFG" <<EOF
+apiVersion: kubeadm.k8s.io/v1beta3
+kind: InitConfiguration
+localAPIEndpoint:
+  advertiseAddress: "{advertise_ip}"
+  bindPort: 6443
+nodeRegistration:
+  kubeletExtraArgs:
+    node-ip: "{advertise_ip}"
+---
+apiVersion: kubeadm.k8s.io/v1beta3
+kind: ClusterConfiguration
+networking:
+  podSubnet: "{pod_cidr}"
+EOF
+$SUDO kubeadm init --config="$CFG"
 echo 'kubeadm init done'
 """
     out = _shell(control_plane, script, logger)
@@ -136,7 +166,100 @@ def _install_kubeconfig(control_plane: str, dest: Path, logger: logging.Logger) 
     dest.chmod(0o600)
 
 
-def _install_cni(cni: str, kubeconfig: Path, logger: logging.Logger) -> None:
+def _ensure_flannel_experiment_iface(
+    kubeconfig: Path, reach_ip: str, logger: logging.Logger
+) -> None:
+    """
+    Pin flannel VXLAN to the experiment LAN.
+
+    By default flannel picks the default-route NIC (CloudLab control net ``eno1`` /
+    ``155.98.*``). Pod↔pod and NodePort→remote-pod traffic then floods the control
+    network.
+
+    Emulab experiment NICs are not uniformly named (``enp4s0f1`` vs ``enp6s0f1``),
+    so we pass both ``--iface`` values. Do **not** use ``--iface-can-reach=<local
+    advertise IP>``: on the control-plane that IP is local and flannel binds ``lo``.
+    ``reach_ip`` is kept for logging / future use.
+    """
+    _ = reach_ip
+    env = {**os.environ, "KUBECONFIG": str(kubeconfig)}
+    desired = ("--iface=enp4s0f1", "--iface=enp6s0f1")
+    get = subprocess.run(
+        [
+            "kubectl",
+            "get",
+            "daemonset",
+            "-n",
+            "kube-flannel",
+            "kube-flannel-ds",
+            "-o",
+            "jsonpath={.spec.template.spec.containers[0].args}",
+        ],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if get.returncode != 0:
+        raise RuntimeError(
+            f"Cannot read kube-flannel-ds args:\n{(get.stderr or get.stdout).strip()}"
+        )
+    current = get.stdout or ""
+    if all(flag in current for flag in desired) and "--iface-can-reach=" not in current:
+        logger.info("Flannel already pinned to experiment LAN ifaces (%s)", current.strip())
+        return
+    # Rebuild args: keep non-iface flags, drop iface-can-reach / old iface, append ours.
+    try:
+        args = json.loads(current) if current.strip().startswith("[") else []
+    except json.JSONDecodeError:
+        args = []
+    if not isinstance(args, list):
+        args = []
+    cleaned = [
+        a
+        for a in args
+        if not str(a).startswith("--iface=") and not str(a).startswith("--iface-can-reach=")
+    ]
+    new_args = cleaned + list(desired)
+    logger.info("Pinning flannel VXLAN to experiment LAN ifaces: %s", new_args)
+    patch = subprocess.run(
+        [
+            "kubectl",
+            "patch",
+            "daemonset",
+            "-n",
+            "kube-flannel",
+            "kube-flannel-ds",
+            "--type=json",
+            "-p",
+            json.dumps(
+                [
+                    {
+                        "op": "replace",
+                        "path": "/spec/template/spec/containers/0/args",
+                        "value": new_args,
+                    }
+                ]
+            ),
+        ],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if patch.returncode != 0:
+        raise RuntimeError(
+            f"Failed to patch flannel iface:\n{(patch.stderr or patch.stdout).strip()}"
+        )
+
+
+def _install_cni(
+    cni: str,
+    kubeconfig: Path,
+    logger: logging.Logger,
+    *,
+    flannel_reach_ip: str | None = None,
+) -> None:
     if cni != "flannel":
         raise ValueError(f"Unsupported CNI {cni!r}; only 'flannel' is implemented")
     env = {**os.environ, "KUBECONFIG": str(kubeconfig)}
@@ -148,18 +271,20 @@ def _install_cni(cni: str, kubeconfig: Path, logger: logging.Logger) -> None:
     )
     if check.returncode == 0:
         logger.info("CNI already installed (kube-flannel-ds present)")
-        return
-    logger.info("Installing Flannel CNI (%s)", _FLANNEL_MANIFEST)
-    apply = subprocess.run(
-        ["kubectl", "apply", "-f", _FLANNEL_MANIFEST],
-        env=env,
-        capture_output=True,
-        text=True,
-    )
-    if apply.returncode != 0:
-        raise RuntimeError(
-            f"kubectl apply flannel failed:\n{(apply.stderr or apply.stdout).strip()}"
+    else:
+        logger.info("Installing Flannel CNI (%s)", _FLANNEL_MANIFEST)
+        apply = subprocess.run(
+            ["kubectl", "apply", "-f", _FLANNEL_MANIFEST],
+            env=env,
+            capture_output=True,
+            text=True,
         )
+        if apply.returncode != 0:
+            raise RuntimeError(
+                f"kubectl apply flannel failed:\n{(apply.stderr or apply.stdout).strip()}"
+            )
+    if flannel_reach_ip:
+        _ensure_flannel_experiment_iface(kubeconfig, flannel_reach_ip, logger)
 
 
 def _join_command(control_plane: str, logger: logging.Logger) -> str:
@@ -190,17 +315,61 @@ def _kubeadm_join(worker: str, join_cmd: str, logger: logging.Logger) -> None:
         logger.info("[%s] already joined — skip", worker)
         return
     # join_cmd is like: kubeadm join 10.x.x.x:6443 --token ... --discovery-token-ca-cert-hash ...
-    inner = join_cmd
-    if inner.startswith("kubeadm "):
-        inner = inner[len("kubeadm ") :]
-    logger.info("[%s] joining cluster", worker)
+    parts = join_cmd.split()
+    if parts and parts[0] == "kubeadm":
+        parts = parts[1:]
+    if not parts or parts[0] != "join" or len(parts) < 2:
+        raise RuntimeError(f"Unexpected kubeadm join command: {join_cmd!r}")
+    api_endpoint = parts[1]
+    token = ""
+    ca_hash = ""
+    i = 2
+    while i < len(parts):
+        if parts[i] == "--token" and i + 1 < len(parts):
+            token = parts[i + 1]
+            i += 2
+            continue
+        if parts[i].startswith("--token="):
+            token = parts[i].split("=", 1)[1]
+            i += 1
+            continue
+        if parts[i] == "--discovery-token-ca-cert-hash" and i + 1 < len(parts):
+            ca_hash = parts[i + 1]
+            i += 2
+            continue
+        if parts[i].startswith("--discovery-token-ca-cert-hash="):
+            ca_hash = parts[i].split("=", 1)[1]
+            i += 1
+            continue
+        i += 1
+    if not token or not ca_hash:
+        raise RuntimeError(f"Could not parse token/ca-hash from join command: {join_cmd!r}")
+
+    node_ip = _lab_ipv4(worker, logger)
+    logger.info("[%s] joining cluster (node-ip=%s, api=%s)", worker, node_ip, api_endpoint)
+    # kubeadm 1.29 has no --node-ip join flag; set it via JoinConfiguration.
     script = f"""set -euo pipefail
 if [ -f /etc/kubernetes/kubelet.conf ]; then
   echo 'SKIP: already joined'
   exit 0
 fi
 if command -v sudo >/dev/null 2>&1; then SUDO='sudo -n'; else SUDO=''; fi
-$SUDO kubeadm {inner}
+CFG="$(mktemp)"
+trap 'rm -f "$CFG"' EXIT
+cat >"$CFG" <<EOF
+apiVersion: kubeadm.k8s.io/v1beta3
+kind: JoinConfiguration
+discovery:
+  bootstrapToken:
+    apiServerEndpoint: "{api_endpoint}"
+    token: "{token}"
+    caCertHashes:
+      - "{ca_hash}"
+nodeRegistration:
+  kubeletExtraArgs:
+    node-ip: "{node_ip}"
+EOF
+$SUDO kubeadm join --config="$CFG"
 echo 'join done'
 """
     out = _shell(worker, script, logger)
@@ -268,7 +437,7 @@ def run_k8s_setup_cluster(
     os.environ["KUBECONFIG"] = str(kubeconfig)
 
     if not skip_cni:
-        _install_cni(cni, kubeconfig, logger)
+        _install_cni(cni, kubeconfig, logger, flannel_reach_ip=advertise_ip)
 
     if workers:
         join_cmd = _join_command(cp, logger)

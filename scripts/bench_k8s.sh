@@ -24,8 +24,8 @@
 set -euo pipefail
 
 # --- Experiment scope (what BaxBench task / sample to run) ---
-MODELS="z-ai/glm-5.2" # deepseek/deepseek-v3.2  anthropic/claude-opus-4-6 openai/gpt-5.5-2026-04-23 anthropic/claude-opus-4-8 (temp deprecated) 
-PROVIDER="openrouter"           # openai | anthropic | together_ai | openrouter | swissai | vllm
+MODELS="openai/gpt-5.5-2026-04-23" # deepseek/deepseek-v3.2  anthropic/claude-opus-4-6 openai/gpt-5.5-2026-04-23 anthropic/claude-opus-4-8 (temp deprecated) 
+PROVIDER=""           # openai | anthropic | together_ai | openrouter | swissai | vllm
                                 # required when the model prefix is not auto-detected (e.g. deepseek/…)
 ONLY_SAMPLES="0"                # e.g. "0"; empty → N_SAMPLES
 N_SAMPLES=""
@@ -49,7 +49,7 @@ BASELINE_SPEC_MAX_ATTEMPTS="10"
 
 # --- LLM limits ---
 # Ledger: sampleN/k8s-experiments/<slug>/llm_cost_ledger.json
-BAXBENCH_LLM_MAX_COST="10"      # USD; stop when estimated experiment spend exceeds this
+BAXBENCH_LLM_MAX_COST="20"      # USD; stop when estimated experiment spend exceeds this
 MAX_RETRIES="3"                 # per-call LLM retry/backoff during codegen, spec, decision
 
 # --- Bench configuration (Locust load + re-run behaviour) ---
