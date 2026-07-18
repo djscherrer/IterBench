@@ -336,6 +336,7 @@ results-old/
 results-05-12/
 results/
 results_custom/
+results_aggregate/
 
 # Ignore all build artifacts in the snapshots
 results_snapshots/**/target/
@@ -358,6 +359,8 @@ prompts/*
 
 results_distributed_bench/*
 
+baxbench-results-*.tar.gz
+
 # LaTeX build artifacts
 *.aux
 *.bbl
@@ -371,5 +374,5 @@ results_distributed_bench/*
 *.synctex.gz
 *.synctex(busy)
 missfont.log
-MT_Systems_Cover/main.log
-MT_Systems_Cover/main.pdf
+Writeup/main.log
+Writeup/main.pdf
