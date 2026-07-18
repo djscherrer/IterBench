@@ -259,6 +259,37 @@ def apply_manifests(
     )
 
 
+def check_service_endpoints_ready(
+    *,
+    namespace: str,
+    service: str,
+    logger: logging.Logger | None = None,
+) -> tuple[bool, str]:
+    log = logger or logging.getLogger(__name__)
+    proc = _kubectl(
+        ["get", "endpoints", service, "-n", namespace, "-o", "json"],
+        timeout_s=30,
+    )
+    if proc.returncode != 0:
+        msg = (proc.stderr or proc.stdout or "unknown error").strip()
+        log.warning("endpoints check failed for %s/%s: %s", namespace, service, msg)
+        return False, f"endpoints/{service} unavailable: {msg}"
+
+    try:
+        data = json.loads(proc.stdout)
+    except json.JSONDecodeError as exc:
+        return False, f"endpoints/{service} response not JSON: {exc}"
+
+    ready_count = 0
+    for subset in data.get("subsets") or []:
+        for addr in subset.get("addresses") or []:
+            if addr.get("ip"):
+                ready_count += 1
+    if ready_count < 1:
+        return False, f"endpoints/{service} has no ready addresses"
+    return True, f"{ready_count} ready endpoint(s)"
+
+
 def write_deploy_record(iteration_path: Path, result: DeployResult) -> Path:
     """Persist deploy outcome to ``04-deploy/probe.json``."""
     path = deploy_probe_record_path(iteration_path)

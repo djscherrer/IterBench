@@ -1,8 +1,5 @@
 """
-Remote Locust execution on SSH load hosts (master + workers).
-
-Used by k8s-bench and ``distributed_bench``. Local docker ``bench`` uses
-``tasks.run_bench_with_timeout`` on localhost instead.
+Remote Locust execution on SSH load hosts (master + workers), used by k8s-bench.
 """
 
 from __future__ import annotations
@@ -20,12 +17,7 @@ from pathlib import Path
 from fabric import Connection
 
 import remote_exec
-from bench_models import DistributedBenchContext, host_slug
-
-from distributed_bench.config import RuntimeToggles
-from distributed_bench.system_configs import SystemTopology
-
-from bench_diagnostics import diagnostics_session_for_distributed
+from bench_models import host_slug
 
 from .paths import locust_dir, locust_logs_dir
 from .load_profiles import LoadProfile
@@ -409,66 +401,3 @@ class DistributedLocustSession:
         locust_master.fetch_csvs()
         for w in workers:
             w.stop()
-
-
-class LocustRunner:
-    """
-    ``distributed_bench`` entry: utilization logging + ``DistributedLocustSession``.
-    """
-
-    def __init__(
-        self,
-        *,
-        ctx: DistributedBenchContext,
-        toggles: RuntimeToggles,
-        load_profile: LoadProfile,
-        system_topology: SystemTopology,
-    ):
-        self.ctx = ctx
-        self.toggles = toggles
-        self.load_profile = load_profile
-        self.system_topology = system_topology
-        self.plan = ctx.plan
-        self.logger = ctx.logger
-
-    def run(self, *, target: str) -> None:
-        topology = LoadTopology.from_profile_fields(
-            load_master=self.plan.load_master,
-            load_workers=self.plan.load_workers,
-        )
-        run_dir = self.ctx.sample_dir
-
-        diagnostics = diagnostics_session_for_distributed(
-            run_dir,
-            load_hosts=topology.all_hosts,
-            backend_hosts=self.plan.backend_hosts,
-            app_port=int(self.plan.app_port),
-            needs_db=self.plan.needs_db,
-            db_host=self.plan.db_hosts[0] if self.plan.needs_db else None,
-            lb_host=self.plan.lb_host,
-            backend_container_names=self.ctx.backend_container_names,
-            db_container_name=self.ctx.db_container_name,
-            lb_container_name=self.ctx.lb_container_name,
-            logger=self.logger,
-        )
-
-        config = DistributedLocustConfig(
-            topology=topology,
-            locustfile=self.ctx.locustfile,
-            csv_prefix=self.ctx.csv_prefix,
-            remote_load_dir=self.ctx.remote_load_dir,
-            remote_env_dir=self.ctx.remote_env_dir,
-            app_port=int(self.plan.app_port),
-            bench_users=int(self.plan.bench_users),
-            bench_spawn_rate=int(self.plan.bench_spawn_rate),
-            bench_run_time_s=int(self.plan.bench_run_time_s),
-            locust_run_time=self.plan.locust_run_time,
-            load_profile=self.load_profile,
-            load_taskset_cpus=self.system_topology.load_resources.taskset_cpus,
-            sample_dir=run_dir,
-            sample_slug=self.ctx.sample_slug,
-            logger=self.logger,
-        )
-
-        with diagnostics:
-            DistributedLocustSession(config).run(target=target)

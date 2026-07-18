@@ -9,8 +9,7 @@ class BaseLoadProfile:
     name: str
     wait_min_s: float
     wait_max_s: float
-    # Unused by k8s-bench (worker count comes from cluster profile).
-    # Kept for distributed_bench; default is a harmless placeholder.
+    # Unused by k8s-bench (worker count comes from cluster profile); harmless placeholder.
     locust_processes: int = 1
 
     @property

@@ -1,9 +1,5 @@
 """
 Build a :class:`DiagnosticsSession` for a bench run.
-
-Pass :class:`DiagnosticsMode` to select which backend subtree is written.
-Only collectors (and directories) for the active mode are started — a
-kubernetes run never creates ``diagnostics/distributed/``.
 """
 
 from __future__ import annotations
@@ -14,12 +10,7 @@ from pathlib import Path
 from typing import Sequence
 
 from .base import DiagnosticsCollector, DiagnosticsSession
-from .config import (
-    DiagnosticsMode,
-    DistributedDiagnosticsConfig,
-    KubernetesDiagnosticsConfig,
-)
-from .distributed.hosts import WorkloadHostMetricsCollector, WorkloadHostSpec
+from .config import DiagnosticsMode, KubernetesDiagnosticsConfig
 from .hosts import LoadHostMetricsCollector
 from .kubernetes.cluster import ClusterDiagnostics
 from .kubernetes.cache import RedisMetricsCollector
@@ -38,44 +29,6 @@ def _resolve_k8s_pod_db_flag(default: bool) -> bool:
     return default
 
 
-def _workload_specs(cfg: DistributedDiagnosticsConfig) -> list[WorkloadHostSpec]:
-    backend_set = {h for h in cfg.backend_hosts if h}
-    db_host = (cfg.db_host or "").strip() or None
-    lb_host = (cfg.lb_host or "").strip() or None
-    containers = dict(cfg.backend_container_names)
-
-    ordered: list[str] = []
-    seen: set[str] = set()
-    for h in list(cfg.backend_hosts) + ([db_host] if cfg.needs_db and db_host else []) + (
-        [lb_host] if lb_host else []
-    ):
-        if h and h not in seen:
-            seen.add(h)
-            ordered.append(h)
-
-    specs: list[WorkloadHostSpec] = []
-    for h in ordered:
-        if h in backend_set:
-            container = containers.get(h)
-        elif cfg.needs_db and h == db_host:
-            container = cfg.db_container_name
-        elif h == lb_host:
-            container = cfg.lb_container_name
-        else:
-            container = None
-
-        ports: list[int] = []
-        if h in backend_set or h == lb_host:
-            ports.append(int(cfg.app_port))
-        if cfg.needs_db and h == db_host:
-            ports.append(5432)
-
-        specs.append(
-            WorkloadHostSpec(host=h, docker_container=container, socket_ports=tuple(ports))
-        )
-    return specs
-
-
 def diagnostics_session(
     run_dir: Path,
     *,
@@ -85,7 +38,6 @@ def diagnostics_session(
     db_interval_s: int = 1,
     logger: logging.Logger | None = None,
     kubernetes: KubernetesDiagnosticsConfig | None = None,
-    distributed: DistributedDiagnosticsConfig | None = None,
 ) -> DiagnosticsSession:
     """
     Start diagnostics collectors for one bench run.
@@ -93,9 +45,9 @@ def diagnostics_session(
     Parameters
     ----------
     mode:
-        ``DiagnosticsMode.KUBERNETES`` or ``DiagnosticsMode.DISTRIBUTED``.
+        ``DiagnosticsMode.KUBERNETES``.
     load_hosts:
-        SSH hostnames for the Locust master + workers (both modes).
+        SSH hostnames for the Locust master + workers.
     interval_s:
         Sampling cadence for host/cluster metrics (``kubectl top`` is itself
         rate-limited by metrics-server, so finer than ~2s adds little).
@@ -104,8 +56,6 @@ def diagnostics_session(
         connection-pool saturation is bursty and easily missed at coarser rates.
     kubernetes:
         Required when ``mode`` is ``KUBERNETES``.
-    distributed:
-        Required when ``mode`` is ``DISTRIBUTED``.
     """
     collectors: list[DiagnosticsCollector] = [
         LoadHostMetricsCollector(
@@ -233,19 +183,6 @@ def diagnostics_session(
                     )
                 )
 
-    elif mode == DiagnosticsMode.DISTRIBUTED:
-        if distributed is None:
-            raise ValueError("distributed config is required for DiagnosticsMode.DISTRIBUTED")
-        specs = _workload_specs(distributed)
-        if specs:
-            collectors.append(
-                WorkloadHostMetricsCollector(
-                    run_dir,
-                    specs,
-                    interval_s=interval_s,
-                    logger=logger,
-                )
-            )
     else:
         raise ValueError(f"unsupported diagnostics mode: {mode!r}")
 
@@ -295,40 +232,5 @@ def diagnostics_session_for_k8s(
             cache_enabled=cache_enabled,
             pooler_port=pooler_port,
             read_pooler_port=read_pooler_port,
-        ),
-    )
-
-
-def diagnostics_session_for_distributed(
-    run_dir: Path,
-    *,
-    load_hosts: Sequence[str],
-    backend_hosts: Sequence[str],
-    app_port: int,
-    needs_db: bool,
-    db_host: str | None = None,
-    lb_host: str | None = None,
-    backend_container_names: dict[str, str] | None = None,
-    db_container_name: str | None = None,
-    lb_container_name: str | None = None,
-    interval_s: int = 2,
-    logger: logging.Logger | None = None,
-) -> DiagnosticsSession:
-    """Convenience wrapper for distributed_bench."""
-    return diagnostics_session(
-        run_dir,
-        mode=DiagnosticsMode.DISTRIBUTED,
-        load_hosts=load_hosts,
-        interval_s=interval_s,
-        logger=logger,
-        distributed=DistributedDiagnosticsConfig(
-            backend_hosts=backend_hosts,
-            app_port=app_port,
-            needs_db=needs_db,
-            db_host=db_host,
-            lb_host=lb_host,
-            backend_container_names=backend_container_names or {},
-            db_container_name=db_container_name,
-            lb_container_name=lb_container_name,
         ),
     )

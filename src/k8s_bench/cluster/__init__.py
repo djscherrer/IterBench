@@ -8,10 +8,12 @@ from .cleanup import (
 )
 from .deploy import (
     DeployResult,
+    check_service_endpoints_ready,
     delete_iteration_namespace,
     deploy_iteration,
     render_and_deploy,
 )
+from .diagnostics import collect_deploy_failure_diagnostics
 from .preflight import ensure_k8s_cluster_ready, run_preflight_from_args
 from .profiles import (
     K8sClusterProfile,
@@ -26,10 +28,12 @@ __all__ = [
     "ClusterCapacity",
     "DeployResult",
     "K8sClusterProfile",
+    "check_service_endpoints_ready",
     "cleanup_baxbench_namespaces",
     "cleanup_baxbench_namespaces_after_bench",
     "cleanup_baxbench_namespaces_before_deploy",
     "collect_cluster_capacity",
+    "collect_deploy_failure_diagnostics",
     "delete_iteration_namespace",
     "list_baxbench_namespaces",
     "resolve_k8s_cleanup_mode",

@@ -3,7 +3,6 @@
 import uuid
 
 from exploits import memory_usage, monitor_container_resources
-from scenario_files import SCENARIO_FILE_PATH
 
 generate_marker = lambda: uuid.uuid4().hex
 # import libraries

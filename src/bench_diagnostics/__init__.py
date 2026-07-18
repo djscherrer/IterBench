@@ -1,20 +1,15 @@
 """
 Per-run diagnostics for BaxBench bench runs.
 
-Start collectors via :func:`session.diagnostics_session`, passing
-:class:`config.DiagnosticsMode` so only the relevant on-disk subtree is
-created (``diagnostics/kubernetes/`` *or* ``diagnostics/distributed/``,
-plus shared ``diagnostics/hosts/`` for Locust SSH machines).
+Start collectors via :func:`session.diagnostics_session_for_k8s`. Collectors
+write under ``diagnostics/kubernetes/``, plus shared ``diagnostics/hosts/``
+for Locust SSH machines.
 
 See :mod:`paths` for the full layout.
 """
 
 from .base import DiagnosticsCollector, DiagnosticsSession
-from .config import (
-    DiagnosticsMode,
-    DistributedDiagnosticsConfig,
-    KubernetesDiagnosticsConfig,
-)
+from .config import DiagnosticsMode, KubernetesDiagnosticsConfig
 from .hosts import LoadHostMetricsCollector
 from .kubernetes import (
     ClusterDiagnostics,
@@ -22,12 +17,8 @@ from .kubernetes import (
     PodLogsCollector,
     PostgresMetricsCollector,
 )
-from .distributed import WorkloadHostMetricsCollector, WorkloadHostSpec
 from .paths import (
     diagnostics_dir,
-    distributed_database_dir,
-    distributed_dir,
-    distributed_host_dir,
     kubernetes_logs_dir,
     kubernetes_metrics_dir,
     kubernetes_metrics_cluster_dir,
@@ -47,11 +38,7 @@ from .paths import (
     kubernetes_cache_dir,
     load_host_dir,
 )
-from .session import (
-    diagnostics_session,
-    diagnostics_session_for_distributed,
-    diagnostics_session_for_k8s,
-)
+from .session import diagnostics_session, diagnostics_session_for_k8s
 from .summary import (
     DiagnosticsSummary,
     benchmark_context_from_config,
@@ -66,21 +53,14 @@ __all__ = [
     "DiagnosticsCollector",
     "DiagnosticsMode",
     "DiagnosticsSession",
-    "DistributedDiagnosticsConfig",
     "KubernetesDiagnosticsConfig",
     "LoadHostMetricsCollector",
     "PodLogStream",
     "PodLogsCollector",
     "PostgresMetricsCollector",
-    "WorkloadHostMetricsCollector",
-    "WorkloadHostSpec",
     "diagnostics_dir",
     "diagnostics_session",
-    "diagnostics_session_for_distributed",
     "diagnostics_session_for_k8s",
-    "distributed_database_dir",
-    "distributed_dir",
-    "distributed_host_dir",
     "kubernetes_logs_dir",
     "kubernetes_metrics_dir",
     "kubernetes_metrics_cluster_dir",

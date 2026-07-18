@@ -1,5 +1,5 @@
 """
-Kubernetes-backed benchmark path (parallel to ``distributed_bench``).
+Kubernetes-backed benchmark path.
 
 Top level: ``loop`` (bench entry), ``stages`` (deploy/bench/decision/code/spec), ``workspace``, and CLI.
 Supporting packages: ``spec/`` (workload YAML), ``cluster/`` (kubectl, registry, lab).

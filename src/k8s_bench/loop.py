@@ -120,8 +120,7 @@ def run_k8s_bench(
                 with pbar.get_lock():  # type: ignore[no-untyped-call]
                     pbar.set_description(
                         f"k8s/{mode_label} {task.model} - {task.scenario.id} - "
-                        f"{task.env.id} - openhands={task.use_openhands} - "
-                        f"sample {si + 1}/{len(samples)}"
+                        f"{task.env.id} - sample {si + 1}/{len(samples)}"
                     )
                 if deploy_only:
                     run_dirs.extend(

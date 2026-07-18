@@ -7,11 +7,8 @@ deploy and experiment orchestration. Bench observability is in the top-level
 
 | Module | When it runs |
 |--------|--------------|
-| **`locust_run.py`** — `DistributedLocustSession`, `LocustRunner` | **SSH load hosts** (k8s-bench + `distributed_bench`) |
-| **`tasks.py`** — `run_bench_with_timeout` | **Local docker** `bench` mode only (Locust on this machine → `localhost`) |
+| **`locust_run.py`** — `DistributedLocustSession` | **SSH load hosts** (k8s-bench) |
 | **`bench_diagnostics/`** | Per-run host / pod / cluster / database diagnostics |
-
-Deploy/orchestration: **`distributed_bench/`** (SSH + Docker) or **`k8s_bench/`** (Kubernetes).
 
 ### K8s bench: probe → Locust
 
@@ -22,8 +19,7 @@ For k8s-bench, the **04-deploy** stage writes `probe.json` (namespace, image, po
 ### Per-run on-disk layout
 
 Each bench run produces a single self-contained directory (the iteration
-``05-bench/`` folder for k8s-bench, or ``<sample>/perf-…/`` for the other
-modes):
+``05-bench/`` folder for k8s-bench):
 
 ```
 <run_dir>/
@@ -38,33 +34,26 @@ modes):
 │   ├── results/<test>_*.csv
 │   └── logs/master-*.log, worker-*.log
 └── diagnostics/                         # bench_diagnostics.paths
-    ├── hosts/                           # shared: Locust SSH load generators
+    ├── hosts/                           # Locust SSH load generators
     │   └── <host_slug>/host_performance.csv
-    ├── kubernetes/                      # k8s-bench only (never created in distributed mode)
-    │   ├── cluster/kubectl_top_*.csv, pod_status.csv, events.jsonl, restart_logs/
-    │   ├── pods/backend.log, postgres.log
-    │   └── database/pg_stat_*.csv
-    └── distributed/                     # distributed_bench only (never created in k8s mode)
-        ├── hosts/<host_slug>/host_performance.csv, socket_queue.csv, …
-        └── database/db_performance.csv  # local docker bench
+    └── kubernetes/
+        ├── cluster/kubectl_top_*.csv, pod_status.csv, events.jsonl, restart_logs/
+        ├── pods/backend.log, postgres.log
+        └── database/pg_stat_*.csv
 ```
 
-Only the subtree for the active mode is created. Pass
-:class:`bench_diagnostics.DiagnosticsMode` to
-:func:`bench_diagnostics.diagnostics_session` (or the convenience wrappers
-``diagnostics_session_for_k8s`` / ``diagnostics_session_for_distributed``).
+Start collectors via :func:`bench_diagnostics.diagnostics_session_for_k8s`.
 
 Locust paths: ``load_bench.paths.locust_csv_prefix(run_dir, test)``.
 
 ### Diagnostics collectors (`bench_diagnostics/`)
 
-| Collector | Mode | Output |
-|-----------|------|--------|
-| ``LoadHostMetricsCollector`` | both | ``diagnostics/hosts/<host>/host_performance.csv`` |
-| ``ClusterDiagnostics`` | kubernetes | ``diagnostics/kubernetes/cluster/…`` |
-| ``PodLogsCollector`` | kubernetes | ``diagnostics/kubernetes/pods/…`` |
-| ``PostgresMetricsCollector`` | kubernetes | ``diagnostics/kubernetes/database/…`` |
-| ``WorkloadHostMetricsCollector`` | distributed | ``diagnostics/distributed/hosts/<host>/…`` |
+| Collector | Output |
+|-----------|--------|
+| ``LoadHostMetricsCollector`` | ``diagnostics/hosts/<host>/host_performance.csv`` |
+| ``ClusterDiagnostics`` | ``diagnostics/kubernetes/cluster/…`` |
+| ``PodLogsCollector`` | ``diagnostics/kubernetes/pods/…`` |
+| ``PostgresMetricsCollector`` | ``diagnostics/kubernetes/database/…`` |
 
 Pod-log streaming + ``pg_stat_*`` on k8s can be disabled with
 ``BAXBENCH_K8S_DIAGNOSTICS=0``.

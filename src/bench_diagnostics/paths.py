@@ -1,37 +1,33 @@
 """
-On-disk layout for bench diagnostics (mode-specific subtrees).
+On-disk layout for bench diagnostics.
 
-Only the subtree for the active :class:`DiagnosticsMode` is created — a
-kubernetes run never materialises ``diagnostics/distributed/``, and vice
-versa. Load-generator host metrics always live under ``diagnostics/hosts/``
-(both modes use remote Locust on SSH machines).
+Load-generator host metrics always live under ``diagnostics/hosts/`` (remote
+Locust on SSH machines); cluster/pod/database diagnostics live under
+``diagnostics/kubernetes/``.
 
 Layout::
 
     <run_dir>/diagnostics/
-    ├── hosts/                           # shared: Locust load-generator SSH hosts
+    ├── hosts/                           # Locust load-generator SSH hosts
     │   └── <host_slug>/host_performance.csv
-    ├── kubernetes/                      # DiagnosticsMode.KUBERNETES only
-    │   ├── logs/
-    │   │   ├── backend.log
-    │   │   ├── postgres.log
-    │   │   ├── postgres-replica.log
-    │   │   ├── pgbouncer.log
-    │   │   ├── pgbouncer-read.log
-    │   │   ├── redis.log
-    │   │   └── restarts/
-    │   └── metrics/
-    │       ├── cluster/
-    │       │   ├── kubectl_top_pods.csv
-    │       │   ├── kubectl_top_nodes.csv
-    │       │   ├── pod_status.csv
-    │       │   └── events.jsonl
-    │       ├── database/
-    │       ├── pooler/
-    │       └── cache/
-    └── distributed/                     # DiagnosticsMode.DISTRIBUTED only
-        ├── hosts/
-        └── database/
+    └── kubernetes/
+        ├── logs/
+        │   ├── backend.log
+        │   ├── postgres.log
+        │   ├── postgres-replica.log
+        │   ├── pgbouncer.log
+        │   ├── pgbouncer-read.log
+        │   ├── redis.log
+        │   └── restarts/
+        └── metrics/
+            ├── cluster/
+            │   ├── kubectl_top_pods.csv
+            │   ├── kubectl_top_nodes.csv
+            │   ├── pod_status.csv
+            │   └── events.jsonl
+            ├── database/
+            ├── pooler/
+            └── cache/
 """
 
 from __future__ import annotations
@@ -205,27 +201,3 @@ def kubernetes_pooler_dir(run_dir: Path) -> Path:
 def kubernetes_cache_dir(run_dir: Path) -> Path:
     """Write/read cache metrics (``metrics/cache/``)."""
     return kubernetes_metrics_cache_dir(run_dir)
-
-
-# --- Distributed mode only --------------------------------------------------
-
-
-def distributed_dir(run_dir: Path) -> Path:
-    """``<run_dir>/diagnostics/distributed/``."""
-    d = diagnostics_dir(run_dir) / "distributed"
-    d.mkdir(parents=True, exist_ok=True)
-    return d
-
-
-def distributed_host_dir(run_dir: Path, host_slug: str) -> Path:
-    """``<run_dir>/diagnostics/distributed/hosts/<host_slug>/`` for workload hosts."""
-    d = distributed_dir(run_dir) / "hosts" / host_slug
-    d.mkdir(parents=True, exist_ok=True)
-    return d
-
-
-def distributed_database_dir(run_dir: Path) -> Path:
-    """``<run_dir>/diagnostics/distributed/database/`` (e.g. local docker postgres)."""
-    d = distributed_dir(run_dir) / "database"
-    d.mkdir(parents=True, exist_ok=True)
-    return d

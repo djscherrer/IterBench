@@ -11,18 +11,22 @@ from __future__ import annotations
 import json
 import logging
 import shutil
-import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from ..cluster.deploy import DeployResult, deploy_iteration, write_deploy_record
+from ..cluster.deploy import (
+    DeployResult,
+    check_service_endpoints_ready,
+    deploy_iteration,
+    write_deploy_record,
+)
+from ..cluster.diagnostics import collect_deploy_failure_diagnostics
 from ..cluster.images import prepare_image_for_k8s
 from ..cluster.load_target import resolve_nodeport_target
 from ..cluster.profiles import selected_cluster_profile
 from ..failure import DeployFailureRecord, fail_iteration_phase
 from ..failure.classify import classify_deploy_failure_kind
-from ..failure.deploy_diagnostics import collect_deploy_failure_diagnostics
 from ..failure.persist import build_deploy_iteration_failure
 from ..orchestration.config import IterationPlan, RunConfig, SampleContext
 from ..spec.models import (
@@ -201,49 +205,6 @@ def rotate_top_level_into_attempt(
             if dest.exists():
                 shutil.rmtree(dest)
             shutil.move(str(src), str(dest))
-
-
-def _kubectl(
-    args: list[str], *, timeout_s: int | None = None
-) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        ["kubectl", *args],
-        check=False,
-        capture_output=True,
-        text=True,
-        timeout=timeout_s,
-    )
-
-
-def check_service_endpoints_ready(
-    *,
-    namespace: str,
-    service: str,
-    logger: logging.Logger | None = None,
-) -> tuple[bool, str]:
-    log = logger or logging.getLogger(__name__)
-    proc = _kubectl(
-        ["get", "endpoints", service, "-n", namespace, "-o", "json"],
-        timeout_s=30,
-    )
-    if proc.returncode != 0:
-        msg = (proc.stderr or proc.stdout or "unknown error").strip()
-        log.warning("endpoints check failed for %s/%s: %s", namespace, service, msg)
-        return False, f"endpoints/{service} unavailable: {msg}"
-
-    try:
-        data = json.loads(proc.stdout)
-    except json.JSONDecodeError as exc:
-        return False, f"endpoints/{service} response not JSON: {exc}"
-
-    ready_count = 0
-    for subset in data.get("subsets") or []:
-        for addr in subset.get("addresses") or []:
-            if addr.get("ip"):
-                ready_count += 1
-    if ready_count < 1:
-        return False, f"endpoints/{service} has no ready addresses"
-    return True, f"{ready_count} ready endpoint(s)"
 
 
 def probe_record_passed(iteration_path: Path) -> bool:

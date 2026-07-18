@@ -26,19 +26,10 @@ from .usage import (
     usage_from_openai_style,
 )
 
-def __getattr__(name: str):
-    if name == "OpenHandsPrompter":
-        from .openhands import OpenHandsPrompter
-
-        return OpenHandsPrompter
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-
-
 __all__ = [
     "KeyLocs",
     "LlmUsageRecord",
     "ModelPricing",
-    "OpenHandsPrompter",
     "Parser",
     "Prompter",
     "TokenUsage",

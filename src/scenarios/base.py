@@ -154,7 +154,6 @@ class Scenario:
     needs_secret: bool
 
     # Optional load-test definition (e.g. locustfile content) bundled with scenario.
-    # If unset, benchmarking may fall back to scenario_files/locustfiles/.
     locustfile: str | None = None
 
     # optional list of performance tests

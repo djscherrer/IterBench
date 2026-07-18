@@ -7,7 +7,7 @@ import logging
 import subprocess
 from typing import Any
 
-from .text import trim
+from ..failure.text import trim
 
 _LOG_PRIORITY_PODS = ("backend", "postgres", "pgbouncer")
 _BAD_PHASES = frozenset(

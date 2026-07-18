@@ -4,7 +4,7 @@ Load-test execution for BaxBench (Locust runner, profiles, shapes).
 This package is separate from :mod:`k8s_bench` (cluster deploy/orchestration).
 It owns how load is generated and measured:
 
-- ``locust_run.py`` — remote master/worker Locust + ``LocustRunner``
+- ``locust_run.py`` — remote master/worker Locust for k8s-bench
 - ``paths.py`` — Locust artifact paths under ``locust/``
 - ``load_profiles/`` — load shapes and ``baxbench_load_profile.json`` manifests
 
@@ -26,7 +26,6 @@ from .load_topology import LoadTopology
 from .locust_run import (
     DistributedLocustConfig,
     DistributedLocustSession,
-    LocustRunner,
     prepare_locust_run_dir,
     resolve_locust_user_class,
 )
@@ -41,7 +40,6 @@ __all__ = [
     "DistributedLocustSession",
     "LoadProfile",
     "LoadTopology",
-    "LocustRunner",
     "SpikeLoadProfile",
     "StairsLoadProfile",
     "SteadyLoadProfile",

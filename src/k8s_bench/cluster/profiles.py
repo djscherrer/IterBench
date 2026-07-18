@@ -1,6 +1,5 @@
 """
-Named Kubernetes *cluster* profiles (where to deploy), parallel to
-``distributed_bench.system_configs`` (which SSH hosts run what).
+Named Kubernetes *cluster* profiles (where to deploy).
 
 Workload layout (replicas, CPU, DB) still lives in per-sample
 ``iterations/iteration-NNN/spec/spec.yaml``. Cluster profiles select kubeconfig,

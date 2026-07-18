@@ -75,12 +75,6 @@ def run_code_stage(
             _code_dir, image_id = reused
             return CodeStageResult(image_id)
 
-    if mode == "refinement" and (ctx.task.use_openhands or ctx.task.use_claude_agent):
-        logger.warning(
-            "Code refinement uses single-prompt Prompter; agent modes are not "
-            "supported for k8s code refinement yet"
-        )
-
     phase_dir = prepare_codegen_workspace(
         mode=mode,
         iteration_path=iteration_path,
