@@ -1,0 +1,92 @@
+\label{ch:appendix-config}
+
+This appendix lists exact parameter values referenced from
+Chapter~\ref{ch:methods} but left out of the prose there to keep that
+chapter focused on mechanism rather than numbers.
+Table~\ref{tab:appendix-loop-params} gives the iteration-loop parameters
+used for every experiment reported in this thesis
+(Section~\ref{sec:setup-procedure}); Table~\ref{tab:appendix-load-profile}
+gives the full \texttt{k8s-explore-refine} load-profile parameters
+introduced in Section~\ref{sec:methods-load-profile}.
+
+\begin{table}[htbp]
+  \centering
+  \caption{Iteration-loop parameters used for every experiment reported in
+    this thesis.}
+  \label{tab:appendix-loop-params}
+  \small
+  \begin{tabular}{@{}p{0.25\linewidth}p{0.22\linewidth}p{0.41\linewidth}@{}}
+    \toprule
+    \textbf{Parameter} & \textbf{Value} & \textbf{Meaning} \\
+    \midrule
+    Refinement iterations $N$ &
+      10 &
+      \texttt{iteration-000} (baseline) through \texttt{iteration-010} \\
+    Baseline code attempts &
+      10 &
+      Max LLM codegen attempts before aborting the sample
+      (Section~\ref{sec:methods-code}) \\
+    Baseline spec attempts &
+      10 &
+      Max outer spec-generation attempts before aborting the sample
+      (Section~\ref{sec:methods-spec}) \\
+    Spec internal retries, baseline &
+      3 &
+      Internal LLM re-prompts per outer spec attempt, to fix a parse or
+      validation error \\
+    Spec internal retries, refinement &
+      1 &
+      No internal retry; fail-fast \\
+    LLM call retries &
+      3 &
+      Exponential backoff with jitter, applied to every LLM call (decision,
+      code, spec) \\
+    Cluster wait timeout &
+      1200\,s &
+      \texttt{kubectl wait} budget in the Deploy stage \\
+    LLM spend cap &
+      \$20 &
+      Per-experiment ceiling; the run aborts once estimated spend exceeds
+      it \\
+    Load profile &
+      \texttt{k8s-\allowbreak explore-\allowbreak refine} &
+      Table~\ref{tab:appendix-load-profile} \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\begin{table}[htbp]
+  \centering
+  \caption{\texttt{k8s-explore-refine} load-profile parameters
+    (Section~\ref{sec:methods-load-profile}).}
+  \label{tab:appendix-load-profile}
+  \small
+  \begin{tabular}{@{}p{0.52\linewidth}p{0.36\linewidth}@{}}
+    \toprule
+    \textbf{Parameter} & \textbf{Value} \\
+    \midrule
+    Start users & 100 \\
+    User ceiling & 100{,}000 \\
+    Max run time & 1800\,s \\
+    Failure-rate threshold & 2.0\% \\
+    Overload p95 latency & 1000\,ms \\
+    \addlinespace
+    Explore warm-up duration & 30\,s \\
+    Explore ramp fraction (per step) & 4\% of current level \\
+    Explore minimum step & 20 users \\
+    Explore collapse ratio & 95\% of best goodput seen so far \\
+    Explore collapse checks & 3 consecutive \\
+    \addlinespace
+    Recovery floor & 75\% of explore-phase peak \\
+    Recovery settle duration & 45\,s \\
+    Recovery retry drop & 15\% \\
+    Recovery max retries & 3 \\
+    \addlinespace
+    Refine max step & 5\% of recovery-entry users \\
+    Refine min step & 10 users \\
+    Refine settle window & 10 consecutive 1\,s samples \\
+    Refine stability band & within 5\% of the window mean \\
+    Refine max step duration & 60\,s \\
+    \bottomrule
+  \end{tabular}
+\end{table}
