@@ -154,7 +154,7 @@ Top-level entry: `k8s_bench/loop.py` → `run_k8s_bench`. Deploy-only mode uses 
 
 Cluster mechanics: `k8s_bench/cluster/deploy.py` (`deploy_iteration`, `DeployResult`, `write_deploy_record`).
 
-Paths / workspace: `k8s_bench/workspace/paths.py` (`make_k8s_perf_run_dir`, `deploy_probe_record_path`, …).
+Paths / workspace: `workspace/paths.py` (`make_k8s_perf_run_dir`, `deploy_probe_record_path`, …).
 
 **Removed:** `k8s_bench/iteration.py` (former grab-bag). Bench engine, deploy overlay, and iteration resolution now live in the stage modules above.
 

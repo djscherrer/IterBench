@@ -12,6 +12,8 @@ results_copy
 secret.sh
 .DS_Store
 .env_templates/
+
+artifacts_snapshot/
 # Created by https://www.toptal.com/developers/gitignore/api/python,pycharm+all,visualstudiocode
 # Edit at https://www.toptal.com/developers/gitignore?templates=python,pycharm+all,visualstudiocode
 
@@ -337,6 +339,9 @@ results-05-12/
 results/
 results_custom/
 results_aggregate/
+
+# scenario_builder's own artifacts/results (gen_scenarios/artifacts, gen_scenarios/results)
+gen_scenarios/
 
 # Ignore all build artifacts in the snapshots
 results_snapshots/**/target/

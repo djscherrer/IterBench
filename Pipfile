@@ -22,9 +22,17 @@ psycopg2-binary = "*"
 locust = "*"
 faker = "*"
 pydantic = "*"
+beautifulsoup4 = "*"
+natsort = "*"
+openapi-spec-validator = "*"
+psutil = "*"
+seaborn = "*"
+pyperclip = "*"
 
 [dev-packages]
 mypy = "*"
+black = "*"
+isort = "*"
 
 
 [requires]
