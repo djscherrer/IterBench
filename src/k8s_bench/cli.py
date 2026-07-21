@@ -6,7 +6,7 @@ import sys
 from pathlib import Path
 
 from .cluster.deploy import delete_iteration_namespace, deploy_iteration, render_and_deploy
-from .workspace import (
+from workspace import (
     default_k8s_namespace,
     find_iteration_spec_path,
     iteration_dir,

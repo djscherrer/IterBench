@@ -8,8 +8,8 @@ from matplotlib.lines import Line2D
 from matplotlib.patches import Patch
 from matplotlib.transforms import blended_transform_factory
 
-from ..workspace import PLOTS_DIRNAME
-from .ramp_data import (
+from workspace import PLOTS_DIRNAME
+from .data import (
     AdaptiveDecision,
     AdaptivePlotParams,
     AdaptiveRunOutcome,

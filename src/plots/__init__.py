@@ -1,6 +1,6 @@
 """Plots for k8s iterative benchmarks (experiment-level and per-bench)."""
 
-from .adaptive_ramp import plot_adaptive_ramp, regenerate_bench_plots
+from .ramp.plot import plot_adaptive_ramp, regenerate_bench_plots
 from .goodput_trajectory import (
     plot_goodput_per_iteration,
     regenerate_experiment_plots,

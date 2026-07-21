@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-from .adaptive_ramp import regenerate_bench_plots
+from .ramp.plot import regenerate_bench_plots
 from .goodput_trajectory import regenerate_experiment_plots
 
 

@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Sequence
 
-from ..workspace.paths import (
+from workspace.paths import (
     deploy_probe_record_path,
     iteration_manifests_dir,
     require_iteration_spec_path,

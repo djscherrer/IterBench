@@ -32,7 +32,7 @@ from typing import Any
 
 from llm import Prompter
 
-from .workspace import k8s_workspace_root, resolve_k8s_experiment_id
+from workspace import k8s_workspace_root, resolve_k8s_experiment_id
 
 CONVERSATION_FILENAME = "conversation.json"
 VLLM_PORT = 8000

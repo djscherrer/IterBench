@@ -6,7 +6,7 @@ import json
 import logging
 from pathlib import Path
 
-from ..workspace.paths import iteration_functional_tests_dir
+from workspace.paths import iteration_functional_tests_dir
 from .record import CodeFailureRecord
 from .infra import (
     container_logs_after_start_failure,

@@ -25,7 +25,7 @@ from ..code.baseline_meta import (
 from ..failure import build_code_iteration_failure, fail_iteration_phase
 from ..orchestration.config import IterationPlan, RunConfig, SampleContext
 from ..orchestration.lineage import prior_code_failure_record
-from ..workspace import (
+from workspace import (
     iteration_code_attempts_dir,
     iteration_code_phase_dir,
     iteration_id_for_index,

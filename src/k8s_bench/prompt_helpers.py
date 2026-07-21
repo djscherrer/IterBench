@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Literal
 
 from .failure import CodeFailureRecord, load_terminal_failure_record
-from .workspace import (
+from workspace import (
     find_last_code_refinement_iteration,
     find_last_spec_refinement_iteration,
     iteration_folder_is_failed,

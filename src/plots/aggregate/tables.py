@@ -23,7 +23,7 @@ from typing import Any
 import pandas as pd
 import yaml
 
-from ..workspace.paths import (
+from workspace.paths import (
     ITERATIONS_DIRNAME,
     PHASE_SPEC_DIRNAME,
     find_iteration_spec_path,
@@ -32,7 +32,7 @@ from ..workspace.paths import (
     parse_iteration_folder_name,
     parse_iteration_index,
 )
-from .data import IterationGoodputPoint, collect_iteration_goodput_points
+from ..data import IterationGoodputPoint, collect_iteration_goodput_points
 
 _SAMPLE_RE = re.compile(r"^sample(\d+)$")
 

@@ -25,7 +25,7 @@ from ..failure.persist import (
 )
 from ..stages.bench import persist_successful_bench_feedback, run_bench_attempt
 from ..stages.deploy import run_deploy_attempt
-from ..workspace import (
+from workspace import (
     bench_dir_has_complete_run,
     clear_bench_dir_if_present,
     ensure_iteration_core_layout,
@@ -38,7 +38,7 @@ from ..workspace import (
     parse_iteration_index,
     prior_iteration_code_dir,
 )
-from ..workspace.skips import append_k8s_skip
+from workspace.skips import append_k8s_skip
 from .config import IterationPlan, RunConfig, SampleContext
 from .lineage import IterationLineage
 

@@ -29,8 +29,8 @@ from .orchestration.preflight import (
     sample_postlude,
     sample_preflight,
 )
-from .workspace.skips import append_k8s_skip
-from .workspace import (
+from workspace.skips import append_k8s_skip
+from workspace import (
     ensure_iteration_core_layout,
     find_iteration_spec_path,
     iterations_root,

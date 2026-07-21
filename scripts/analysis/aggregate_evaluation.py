@@ -10,7 +10,7 @@ for every cell that has an ``iterations/`` tree, and produces:
 - ``iterations.csv``  one row per successful iteration (goodput, refinement
                       kind, delta vs. previous iteration, spec knobs).
 - ``failures.csv``   one row per recorded ``failure.json`` (phase, kind).
-- ``figures/*.png`` + ``*.pdf``  the plots in ``k8s_bench.plots.aggregate_figures``.
+- ``figures/*.png`` + ``*.pdf``  the plots in ``plots.aggregate.figures``.
 
 Usage:
     pipenv run python scripts/analysis/aggregate_evaluation.py \\
@@ -27,8 +27,8 @@ _SRC = _REPO_ROOT / "src"
 if str(_SRC) not in sys.path:
     sys.path.insert(0, str(_SRC))
 
-from k8s_bench.plots.aggregate import collect_all  # noqa: E402
-from k8s_bench.plots.aggregate_figures import generate_all_figures  # noqa: E402
+from plots.aggregate.tables import collect_all  # noqa: E402
+from plots.aggregate.figures import generate_all_figures  # noqa: E402
 
 
 def main() -> int:

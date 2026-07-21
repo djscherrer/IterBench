@@ -7,7 +7,7 @@ import logging
 import re
 from pathlib import Path
 
-from ..workspace.paths import (
+from workspace.paths import (
     attempt_subdir,
     iteration_code_attempts_dir,
     iteration_code_phase_dir,
@@ -36,7 +36,7 @@ def phase_dir_for(iteration_path: Path, phase: Phase) -> Path:
     if phase == "spec":
         return iteration_spec_dir(iteration_path)
     if phase == "bench":
-        from ..workspace.paths import iteration_bench_dir
+        from workspace.paths import iteration_bench_dir
 
         return iteration_bench_dir(iteration_path)
     return iteration_code_phase_dir(iteration_path)
@@ -84,7 +84,7 @@ def load_spec_attempt_failure(attempt_dir: Path) -> SpecFailureRecord | None:
 
 
 def spec_attempt_dir(iteration_path: Path, attempt_index: int) -> Path:
-    from ..workspace.paths import iteration_spec_attempts_dir
+    from workspace.paths import iteration_spec_attempts_dir
 
     return attempt_subdir(iteration_spec_attempts_dir(iteration_path), attempt_index)
 
@@ -103,7 +103,7 @@ def collect_spec_attempt_failures(
     *,
     logger: logging.Logger | None = None,
 ) -> dict[int, SpecFailureRecord]:
-    from ..workspace.paths import iteration_spec_attempts_dir
+    from workspace.paths import iteration_spec_attempts_dir
 
     log = logger or logging.getLogger(__name__)
     attempts_dir = iteration_spec_attempts_dir(iteration_path)
@@ -176,7 +176,7 @@ def load_terminal_failure_record(
     if phase is not None:
         phases = (phase,)
     else:
-        from ..workspace.meta import read_iteration_meta
+        from workspace.meta import read_iteration_meta
 
         meta = read_iteration_meta(iteration_path) or {}
         raw_kind = str(meta.get("failure_kind") or "code")
@@ -202,7 +202,7 @@ def load_prior_iteration_failure(
     if iteration_index <= 0:
         return None
 
-    from ..workspace import (
+    from workspace import (
         iteration_id_for_index,
         iteration_is_failed,
         read_iteration_meta,
@@ -335,13 +335,13 @@ def build_spec_iteration_failure(
 
 
 def deploy_attempt_dir(iteration_path: Path, attempt_index: int) -> Path:
-    from ..workspace.paths import iteration_deploy_attempts_dir
+    from workspace.paths import iteration_deploy_attempts_dir
 
     return attempt_subdir(iteration_deploy_attempts_dir(iteration_path), attempt_index)
 
 
 def bench_attempt_dir(iteration_path: Path, attempt_index: int) -> Path:
-    from ..workspace.paths import iteration_bench_attempts_dir
+    from workspace.paths import iteration_bench_attempts_dir
 
     return attempt_subdir(iteration_bench_attempts_dir(iteration_path), attempt_index)
 
@@ -427,7 +427,7 @@ def collect_deploy_attempt_failures(
     *,
     logger: logging.Logger | None = None,
 ) -> dict[int, DeployFailureRecord]:
-    from ..workspace.paths import iteration_deploy_attempts_dir
+    from workspace.paths import iteration_deploy_attempts_dir
 
     log = logger or logging.getLogger(__name__)
     attempts_dir = iteration_deploy_attempts_dir(iteration_path)
@@ -459,7 +459,7 @@ def collect_bench_attempt_failures(
     *,
     logger: logging.Logger | None = None,
 ) -> dict[int, BenchFailureRecord]:
-    from ..workspace.paths import iteration_bench_attempts_dir
+    from workspace.paths import iteration_bench_attempts_dir
 
     log = logger or logging.getLogger(__name__)
     attempts_dir = iteration_bench_attempts_dir(iteration_path)

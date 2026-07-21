@@ -24,7 +24,7 @@ from ..failure import (
     write_attempt_failure,
 )
 from ..session import persist_session
-from ..workspace import (
+from workspace import (
     PROMPT_LOG_FILENAME,
     RESPONSE_LOG_FILENAME,
     attempt_subdir,

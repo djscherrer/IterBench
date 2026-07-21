@@ -6,7 +6,7 @@ from pathlib import Path
 
 import matplotlib.pyplot as plt
 
-from ..workspace import PLOTS_DIRNAME
+from workspace import PLOTS_DIRNAME
 from .data import (
     IterationGoodputPoint,
     collect_iteration_goodput_points,
@@ -167,14 +167,14 @@ def regenerate_experiment_plots(
     include_bench_plots: bool = True,
 ) -> list[Path]:
     """Regenerate experiment-level plots and optionally all per-bench plots."""
-    from ..workspace import (
+    from workspace import (
         ITERATIONS_DIRNAME,
         bench_dir_has_complete_run,
         iteration_bench_dir,
         iteration_folder_is_failed,
         parse_iteration_index,
     )
-    from .adaptive_ramp import regenerate_bench_plots
+    from .ramp.plot import regenerate_bench_plots
 
     root = resolve_experiment_root(experiment_root)
     created: list[Path] = []

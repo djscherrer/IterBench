@@ -18,7 +18,7 @@ from ..stages.code import run_code_stage, run_reuse_code_stage
 from ..stages.decision import run_decision_stage
 from ..stages.deploy import run_deploy_stage
 from ..stages.spec import run_reuse_spec_stage, run_spec_stage
-from ..workspace import (
+from workspace import (
     clear_bench_dir_if_present,
     iteration_bench_dir,
     iteration_bench_log_path,

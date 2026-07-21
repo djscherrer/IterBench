@@ -12,7 +12,7 @@ from ..failure import (
     SpecFailureRecord,
     load_prior_iteration_failure,
 )
-from ..workspace import (
+from workspace import (
     iteration_id_for_index,
     latest_spec_path,
     parse_iteration_index,
@@ -92,7 +92,7 @@ def load_iteration_lineage(
             experiment_id=experiment_id,
         )
 
-    from ..workspace import prior_iteration_code_dir
+    from workspace import prior_iteration_code_dir
 
     prior_code_dir = prior_iteration_code_dir(
         sample_dir, iteration_index, experiment_id=experiment_id

@@ -23,7 +23,7 @@ from ..cluster.capacity import ClusterCapacity
 from ..prompt_helpers import ArtifactPointers
 from ..failure import SpecFailureRecord
 from ..failure.persist import spec_attempt_dir
-from ..workspace import (
+from workspace import (
     PROMPT_LOG_FILENAME,
     RESPONSE_LOG_FILENAME,
     attempt_subdir,

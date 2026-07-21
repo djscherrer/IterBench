@@ -18,7 +18,7 @@ from bench_diagnostics.summary import (
 )
 
 from .spec.models import K8sWorkloadSpec
-from .workspace import (
+from workspace import (
     deploy_probe_record_path,
     find_iteration_spec_path,
     iteration_bench_dir,
@@ -374,7 +374,7 @@ def collect_iteration_feedback(
     sustained_gp = None
     sustained_users = None
     try:
-        from .plots.ramp_data import sustained_goodput_from_bench
+        from plots.ramp.data import sustained_goodput_from_bench
 
         sustained = sustained_goodput_from_bench(perf_run_dir, log_text=bench_log)
         if sustained is not None:
@@ -480,7 +480,7 @@ def load_prior_feedback_for_iteration(
     if iteration_index <= 0:
         return None
 
-    from .workspace import (
+    from workspace import (
         iteration_id_for_index,
         iteration_is_failed,
         load_feedback,

@@ -11,9 +11,9 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from ..workspace.skips import append_k8s_skip
+from workspace.skips import append_k8s_skip
 from ..stages.decision import DecisionStageResult
-from ..workspace import (
+from workspace import (
     apply_iteration_folder_suffix,
     ensure_iteration_core_layout,
     init_iteration_meta,
@@ -32,7 +32,7 @@ def plan_iteration(
     cfg: RunConfig,
 ) -> IterationSetup | None:
     """Resolve iteration folder, skip if already finished, load prior signals."""
-    from ..workspace import find_finished_iteration_dir
+    from workspace import find_finished_iteration_dir
 
     is_baseline = is_baseline_iteration(iteration_index)
 

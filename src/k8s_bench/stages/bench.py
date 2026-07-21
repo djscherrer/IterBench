@@ -44,7 +44,7 @@ from ..spec.models import (
     POSTGRES_PASSWORD,
     POSTGRES_USER,
 )
-from ..workspace import (
+from workspace import (
     deploy_probe_record_path,
     experiment_root_from_iteration_path,
     find_iteration_spec_path,
@@ -54,7 +54,7 @@ from ..workspace import (
     update_iteration_meta,
     write_feedback,
 )
-from ..workspace.skips import append_k8s_skip
+from workspace.skips import append_k8s_skip
 
 
 # ---------------------------------------------------------------------------
@@ -459,7 +459,7 @@ def run_bench_attempt(
             )
             return BenchAttemptResult(ok=False, error=error, failure=failure)
 
-    from ..plots import refresh_plots_after_bench
+    from plots import refresh_plots_after_bench
 
     refresh_plots_after_bench(
         run_dir,

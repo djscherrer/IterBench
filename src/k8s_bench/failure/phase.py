@@ -6,9 +6,9 @@ import logging
 from datetime import datetime, timezone
 from pathlib import Path
 
-from ..workspace.meta import update_iteration_meta
-from ..workspace.paths import mark_iteration_folder_failed
-from ..workspace.skips import append_k8s_skip
+from workspace.meta import update_iteration_meta
+from workspace.paths import mark_iteration_folder_failed
+from workspace.skips import append_k8s_skip
 from .persist import write_iteration_failure
 from .record import (
     BenchFailureRecord,

@@ -23,7 +23,7 @@ from bench_diagnostics.summary.adaptive_log import (
 )
 
 from .feedback import IterationFeedback
-from .workspace import (
+from workspace import (
     ITERATIONS_DIRNAME,
     PLOTS_DIRNAME,
     experiment_root_from_iteration_path,
@@ -94,7 +94,7 @@ def _should_record_spec_generation(iteration_path: Path) -> bool:
     """Spec blocks only for baseline / spec iterations where the LLM wrote a new spec."""
     if _iteration_folder_kind(iteration_path) == "code":
         return False
-    from .workspace.meta import read_iteration_meta
+    from workspace.meta import read_iteration_meta
 
     if read_iteration_meta(iteration_path).get("spec_reused_from"):
         return False
@@ -141,7 +141,7 @@ def _experiment_metadata(experiment_root: Path) -> dict[str, str]:
         for child in sorted(iterations_dir.iterdir()):
             if not child.is_dir():
                 continue
-            from .workspace import baseline_codegen_meta_path
+            from workspace import baseline_codegen_meta_path
 
             codegen_path = baseline_codegen_meta_path(child)
             if not codegen_path.is_file():
@@ -510,7 +510,7 @@ def _relative_workspace_link(root: Path, target: Path, *, label: str | None = No
 
 
 def _read_ft_counts(iteration_path: Path) -> tuple[int, int] | None:
-    from .workspace.paths import iteration_functional_tests_dir
+    from workspace.paths import iteration_functional_tests_dir
 
     path = iteration_functional_tests_dir(iteration_path) / "test_results.json"
     if not path.is_file():
@@ -1058,7 +1058,7 @@ def _load_goodput_timeseries(perf_run_dir: Path | None) -> list[tuple[int, float
     if perf_run_dir is None:
         return None
     try:
-        from .plots.ramp_data import load_stats_timeseries
+        from plots.ramp.data import load_stats_timeseries
 
         df = load_stats_timeseries(perf_run_dir)
     except (FileNotFoundError, ValueError, ImportError):
@@ -1196,7 +1196,7 @@ def _adaptive_table_markdown(
             f"(max of goodput-max column)."
         )
     try:
-        from .plots.ramp_data import (
+        from plots.ramp.data import (
             gather_bench_log_text,
             is_explore_refine_bench,
             peak_goodput_from_bench_log,
@@ -1220,7 +1220,7 @@ def _adaptive_table_markdown(
                     f"drift={sustained.drift_pct:.1f}%){phase_note} — primary experiment metric."
                 )
             elif is_explore_refine_bench(perf_run_dir):
-                from .plots.ramp_data import classify_bench_run_outcome
+                from plots.ramp.data import classify_bench_run_outcome
 
                 outcome = classify_bench_run_outcome(perf_run_dir, perf_log)
                 if outcome is not None:
@@ -1314,7 +1314,7 @@ def _adaptive_ramp_plot_markdown(
     experiment_root: Path,
     perf_run_dir: Path,
 ) -> str:
-    from .plots.adaptive_ramp import ADAPTIVE_RAMP_PLOT_FILENAME
+    from plots.ramp.plot import ADAPTIVE_RAMP_PLOT_FILENAME
 
     plot_path = perf_run_dir / PLOTS_DIRNAME / ADAPTIVE_RAMP_PLOT_FILENAME
     if not plot_path.is_file():
@@ -1327,7 +1327,7 @@ def _adaptive_ramp_plot_markdown(
 
 
 def _load_codegen_meta(iteration_path: Path) -> dict[str, Any]:
-    from .workspace import baseline_codegen_meta_path
+    from workspace import baseline_codegen_meta_path
 
     meta_path = baseline_codegen_meta_path(iteration_path)
     if not meta_path.is_file():
@@ -1354,7 +1354,7 @@ def _build_baseline_codegen_block_text(
     Layout: overall status / attempts used / code link first, then a per-attempt
     section listing each try and the failure that occurred.
     """
-    from .workspace import iteration_code_attempts_dir as _attempts_dir
+    from workspace import iteration_code_attempts_dir as _attempts_dir
 
     meta = _load_codegen_meta(iteration_path)
     attempts_data = [
@@ -1493,7 +1493,7 @@ def _spec_attempts_section(iteration_path: Path, experiment_root: Path) -> str:
     for each failed attempt under ``03-spec/attempts/<NNN>/``, the validation
     failure that occurred. Returns ``""`` when there is nothing useful to show.
     """
-    from .workspace import iteration_spec_attempts_dir
+    from workspace import iteration_spec_attempts_dir
 
     attempts_dir = iteration_spec_attempts_dir(iteration_path)
     failed: list[tuple[int, dict[str, Any], Path]] = []
@@ -1673,7 +1673,7 @@ def _build_perf_run_block_text(
 
     fb = feedback
     if fb is None:
-        from .workspace import load_feedback
+        from workspace import load_feedback
 
         fb = load_feedback(perf_run_dir)
 
@@ -1805,7 +1805,7 @@ def _iteration_folder_map(
     experiment_root: Path, *, include_failed: bool = False
 ) -> dict[int, str]:
     """Map iteration index → on-disk folder name (prefer non-failed when both exist)."""
-    from .workspace import iteration_folder_is_failed
+    from workspace import iteration_folder_is_failed
 
     success: dict[int, str] = {}
     failed: dict[int, str] = {}
@@ -1884,7 +1884,7 @@ def strip_irrelevant_summary_blocks(content: str, experiment_root: Path) -> str:
 
 def regenerate_experiment_summary_spec_blocks(experiment_root: Path) -> Path:
     """Rebuild every ``### Spec generation`` subsection from on-disk specs."""
-    from .workspace import (
+    from workspace import (
         ITERATIONS_DIRNAME,
         iteration_folder_is_failed,
         parse_iteration_index,
@@ -1894,7 +1894,7 @@ def regenerate_experiment_summary_spec_blocks(experiment_root: Path) -> Path:
     if (experiment_path / ITERATIONS_DIRNAME).is_dir():
         root = experiment_path
     else:
-        from .workspace import k8s_workspace_root
+        from workspace import k8s_workspace_root
 
         root = k8s_workspace_root(experiment_path)
     path = experiment_summary_path(root)
@@ -1957,7 +1957,7 @@ def regenerate_experiment_summary_perf_blocks(
 
     Useful after changing adaptive table formatting without re-running Locust.
     """
-    from .workspace import (
+    from workspace import (
         ITERATIONS_DIRNAME,
         iteration_bench_dir,
         iteration_folder_is_failed,
@@ -1969,7 +1969,7 @@ def regenerate_experiment_summary_perf_blocks(
     if (experiment_path / ITERATIONS_DIRNAME).is_dir():
         root = experiment_path
     else:
-        from .workspace import k8s_workspace_root
+        from workspace import k8s_workspace_root
 
         root = k8s_workspace_root(experiment_path)
     path = experiment_summary_path(root)
@@ -2012,7 +2012,7 @@ def regenerate_experiment_summary_perf_blocks(
 
 def regenerate_experiment_summary_baseline_blocks(experiment_root: Path) -> Path:
     """Rebuild every ``### Baseline code generation`` block from ``codegen.json``."""
-    from .workspace import (
+    from workspace import (
         ITERATIONS_DIRNAME,
         iteration_folder_is_failed,
         k8s_workspace_root,
@@ -2090,7 +2090,7 @@ def regenerate_experiment_summary(
     load_profile: str | None = None,
 ) -> Path:
     """Migrate headings, strip irrelevant blocks, and rebuild all iteration blocks."""
-    from .workspace import k8s_workspace_root
+    from workspace import k8s_workspace_root
 
     experiment_path = experiment_root.expanduser().resolve()
     if (experiment_path / ITERATIONS_DIRNAME).is_dir():

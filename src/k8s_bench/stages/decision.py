@@ -78,7 +78,7 @@ def persist_refinement_decision(
     *,
     based_on_iteration: str,
 ) -> None:
-    from ..workspace import update_iteration_meta, write_decision
+    from workspace import update_iteration_meta, write_decision
 
     write_decision(iteration_path, decision)
     update_iteration_meta(
@@ -246,7 +246,7 @@ def decide_refinement_action(
     prior_feedback: IterationFeedback | None = None,
     prior_iteration_failure: "IterationFailure | None" = None,
 ) -> RefinementDecision:
-    from ..workspace import PROMPT_LOG_FILENAME, iteration_decision_dir
+    from workspace import PROMPT_LOG_FILENAME, iteration_decision_dir
 
     prompt = build_refinement_decision_prompt(
         task=task,
@@ -358,7 +358,7 @@ def run_decision_stage(
 
     Does not rename the iteration folder; call :func:`finalize_iteration_plan` next.
     """
-    from ..workspace import parse_iteration_index
+    from workspace import parse_iteration_index
 
     if setup.is_baseline:
         logger.info(
@@ -483,7 +483,7 @@ def _run_refinement_decision(
 ) -> RefinementDecision:
     """LLM or ``refinement_mode`` forced choice for code vs deployment refinement."""
     from ..orchestration.lineage import lineage_based_on_iteration_id
-    from ..workspace import update_iteration_meta
+    from workspace import update_iteration_meta
 
     if ctx.session is None:
         raise RuntimeError(
@@ -498,7 +498,7 @@ def _run_refinement_decision(
 
     based_on_iteration_id = lineage_based_on_iteration_id(lineage)
     if based_on_iteration_id is None:
-        from ..workspace import iteration_id_for_index
+        from workspace import iteration_id_for_index
 
         prev_id = iteration_id_for_index(iteration_index - 1)
         reason = (

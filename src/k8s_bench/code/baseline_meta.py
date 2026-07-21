@@ -11,7 +11,7 @@ from typing import Any
 
 from .docker_image import ensure_docker_image
 from .shared import functional_tests_passed_at
-from ..workspace import (
+from workspace import (
     PROMPT_LOG_FILENAME,
     RESPONSE_LOG_FILENAME,
     attempt_subdir,

@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
-from ..workspace import (
+from workspace import (
     ITERATIONS_DIRNAME,
     bench_dir_has_complete_run,
     iteration_bench_dir,
@@ -49,7 +49,7 @@ def resolve_experiment_root(path: Path) -> Path:
     path = path.expanduser().resolve()
     if (path / ITERATIONS_DIRNAME).is_dir():
         return path
-    from ..workspace import k8s_workspace_root
+    from workspace import k8s_workspace_root
 
     candidate = k8s_workspace_root(path)
     if (candidate / ITERATIONS_DIRNAME).is_dir():
@@ -150,7 +150,7 @@ def collect_iteration_goodput_points(experiment_root: Path) -> list[IterationGoo
             if stop and stop.get("history")
             else []
         )
-        from .ramp_data import (
+        from .ramp.data import (
             is_explore_refine_bench,
             peak_goodput_from_bench_log,
             sustained_goodput_from_bench,

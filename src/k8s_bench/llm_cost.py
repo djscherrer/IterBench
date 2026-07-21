@@ -14,7 +14,7 @@ from llm.usage import (
 )
 
 from .experiment_summary import experiment_summary_path
-from .workspace import k8s_workspace_root
+from workspace import k8s_workspace_root
 
 
 def k8s_llm_ledger_dir(

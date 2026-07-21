@@ -7,7 +7,7 @@ from typing import Any
 
 import yaml
 
-from ..workspace import default_k8s_namespace, normalize_iteration_id
+from workspace import default_k8s_namespace, normalize_iteration_id
 from .components import DEFAULT_READ_POOLER_SERVICE, CacheSpec, PoolerSpec
 from .models import BackendSpec, DatabaseSpec, K8sWorkloadSpec
 

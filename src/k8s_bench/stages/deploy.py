@@ -34,7 +34,7 @@ from ..spec.models import (
     DatabaseSpec,
     K8sWorkloadSpec,
 )
-from ..workspace import (
+from workspace import (
     deploy_probe_record_path,
     ensure_iteration_core_layout,
     find_iteration_spec_path,
@@ -131,7 +131,7 @@ class DeployStageResult:
 def _iteration_namespace(iteration_path: Path) -> str:
     try:
         from ..spec.models import K8sWorkloadSpec
-        from ..workspace import find_iteration_spec_path
+        from workspace import find_iteration_spec_path
 
         spec_path = find_iteration_spec_path(iteration_path)
         if spec_path is None:

@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-from ..workspace import (
+from workspace import (
     ensure_iteration_core_layout,
     find_iteration_spec_path,
     iteration_spec_dir,

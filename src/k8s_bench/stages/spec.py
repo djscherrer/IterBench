@@ -22,7 +22,7 @@ from ..orchestration.config import IterationPlan, RunConfig, SampleContext
 from ..orchestration.lineage import prior_spec_failure_record
 from ..spec.attempt import SpecAttemptResult, run_spec_attempt
 from ..spec.reuse import reuse_deployment_spec_for_iteration
-from ..workspace import (
+from workspace import (
     find_iteration_spec_path,
     resolve_iteration_dir,
     update_iteration_meta,

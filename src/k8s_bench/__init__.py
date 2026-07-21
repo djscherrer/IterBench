@@ -13,7 +13,7 @@ from .cluster import (
 )
 from .loop import resolve_iterations_to_run
 from .stages.bench import run_distributed_locust
-from .workspace import (
+from workspace import (
     ITERATIONS_DIRNAME,
     K8S_EXPERIMENTS_DIRNAME,
     deploy_probe_record_path,

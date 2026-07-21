@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from ..workspace import iteration_bench_log_path
+from workspace import iteration_bench_log_path
 from .text import trim
 
 

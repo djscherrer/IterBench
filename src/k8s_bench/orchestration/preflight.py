@@ -21,8 +21,8 @@ from ..llm_cost import refresh_k8s_cost_summary
 from ..stages.decision import resolve_refinement_mode
 from ..code.docker_image import ensure_docker_image
 from ..code.shared import functional_tests_passed_at
-from ..workspace.skips import append_k8s_skip
-from ..workspace import (
+from workspace.skips import append_k8s_skip
+from workspace import (
     image_id_from_test_log,
     iteration_code_snapshot_dir,
     iteration_functional_tests_dir,
@@ -108,7 +108,7 @@ def _plan_iteration_ids(
     ``num_refinement_iterations=N`` yields ``iteration-000`` (baseline) plus
     ``iteration-001`` … ``iteration-{N:03d}`` (N refinement iterations).
     """
-    from ..workspace import normalize_iteration_id
+    from workspace import normalize_iteration_id
 
     if explicit_iteration:
         return [normalize_iteration_id(explicit_iteration)]
