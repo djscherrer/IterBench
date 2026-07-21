@@ -11,6 +11,7 @@ import _bootstrap  # noqa: F401  (baxbench src/ onto sys.path)
 
 from workspace.scenario_builder_paths import ensure_scenario_dirs, spec_path
 from token_usage import get_model
+from llm.config import NATIVE_PROVIDER_PREFIXES
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(
@@ -18,15 +19,35 @@ logging.basicConfig(
 )
 
 
-def _provider_for_model(model: str) -> str:
-    if "claude" in model:
-        return "anthropic"
-    if model.startswith(("gpt-", "o1", "o3", "o4")):
-        return "openai"
-    # Third-party/vendor-prefixed catalog names (e.g. "z-ai/glm-5.2",
-    # "deepseek/deepseek-v3", "meta-llama/llama-3.3-70b-instruct") are only
-    # reachable through OpenRouter in this codebase.
-    return "openrouter"
+def _resolve_model_and_provider(model: str) -> tuple[str, str]:
+    """Split a ``provider/model`` string the same way baxbench's own
+    ``Prompter.__init__`` does (llm/prompter.py) when no explicit provider is
+    given: a recognized native prefix (openai/, anthropic/, together_ai/,
+    swissai/, openrouter/) is stripped off. Anything else — third-party
+    vendor-prefixed catalog ids like "z-ai/glm-5.2" or
+    "deepseek/deepseek-v3.2" — is passed through unstripped and routed to
+    OpenRouter, since that's the only place those ids resolve in this codebase.
+    """
+    prefix, sep, rest = model.partition("/")
+    if sep and prefix in NATIVE_PROVIDER_PREFIXES:
+        return rest, prefix
+    return model, "openrouter"
+
+
+def _reasoning_effort_for_provider(provider: str) -> int | str | None:
+    """The type/value ``get_model()`` (llm/chat.py) requires varies by
+    provider: OpenAI wants a string, Anthropic wants *an* int (the exact
+    value is ignored — ``ChatModel`` always uses a fixed per-model thinking
+    budget instead, see llm/chat.py's ``ANTHROPIC_THINKING_LENGTHS`` usage),
+    and OpenRouter/Together require ``None`` (OpenRouter's provider layer
+    hardcodes "high" internally; Together doesn't support reasoning effort
+    at all).
+    """
+    if provider == "openai":
+        return "medium"
+    if provider == "anthropic":
+        return 32000
+    return None
 
 
 def build_tasks(scenario, model_list=None, env_list=None) -> list:
@@ -54,20 +75,23 @@ def build_tasks(scenario, model_list=None, env_list=None) -> list:
             "or env_list=..."
         )
     envs = [e for e in all_envs if e.id in env_ids]
-    return [
-        Task(
-            env=env,
-            scenario=scenario,
-            model=model,
-            temperature=0.0,
-            reasoning_effort="high",
-            spec_type="openapi",
-            safety_prompt="none",
-            provider=_provider_for_model(model),
-        )
-        for env in envs
-        for model in models
-    ]
+    tasks = []
+    for env in envs:
+        for model in models:
+            resolved_model, provider = _resolve_model_and_provider(model)
+            tasks.append(
+                Task(
+                    env=env,
+                    scenario=scenario,
+                    model=resolved_model,
+                    temperature=0.0,
+                    reasoning_effort="high",
+                    spec_type="openapi",
+                    safety_prompt="none",
+                    provider=provider,
+                )
+            )
+    return tasks
 
 
 # gen_scenarios/ sits at the repo root, alongside src/ and baxbench's own
@@ -183,11 +207,18 @@ if (args.generate_tests or args.generate_exploits) and not args.scenario:
 if not getattr(args, "export_latest", False) and not args.reasoning_model:
     parser.error("--reasoning_model is required for every mode except --export_latest")
 
-reasoning_model = (
-    get_model(args.reasoning_model, _provider_for_model(args.reasoning_model), True, "medium")
-    if args.reasoning_model
-    else None
-)
+if args.reasoning_model:
+    _resolved_reasoning_model, _reasoning_provider = _resolve_model_and_provider(
+        args.reasoning_model
+    )
+    reasoning_model = get_model(
+        _resolved_reasoning_model,
+        _reasoning_provider,
+        True,
+        _reasoning_effort_for_provider(_reasoning_provider),
+    )
+else:
+    reasoning_model = None
 
 logger.info(f"Parsed command-line arguments: {args}")
 
