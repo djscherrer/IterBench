@@ -1,5 +1,6 @@
 import argparse
 import pathlib
+import sys
 from dataclasses import replace
 from typing import Any
 
@@ -38,7 +39,7 @@ def main(args: Any) -> None:
         run_registry_setup_from_args(args)
         return
     if args.mode == "k8s-plot":
-        from k8s_bench.plots import regenerate_experiment_plots
+        from plots import regenerate_experiment_plots
 
         if not getattr(args, "k8s_experiment_dir", None):
             raise SystemExit("--k8s-experiment-dir is required for --mode k8s-plot")
@@ -168,6 +169,24 @@ def main(args: Any) -> None:
 
 
 if __name__ == "__main__":
+    # build-scenarios has its own separate CLI (scenario_builder/orchestrator.py,
+    # via --generate_scenarios/--generate_tests/--difficulty/etc., not this
+    # parser's flags) — dispatch to it directly, before the flags below get a
+    # chance to choke on a mode they don't recognize.
+    if "--mode" in sys.argv:
+        _mode_idx = sys.argv.index("--mode")
+        if _mode_idx + 1 < len(sys.argv) and sys.argv[_mode_idx + 1] == "build-scenarios":
+            import subprocess
+
+            _scenario_builder_dir = pathlib.Path(__file__).resolve().parent / "scenario_builder"
+            _passthrough_args = sys.argv[1:_mode_idx] + sys.argv[_mode_idx + 2 :]
+            raise SystemExit(
+                subprocess.run(
+                    [sys.executable, "orchestrator.py", *_passthrough_args],
+                    cwd=_scenario_builder_dir,
+                ).returncode
+            )
+
     parser = ArgFileParser(fromfile_prefix_chars="@")
     parser.add_argument(
         "--models", type=str, nargs="+", default=[], help="List of models"
@@ -181,9 +200,14 @@ if __name__ == "__main__":
             "k8s-setup-cluster",
             "k8s-setup-registry",
             "k8s-plot",
+            "build-scenarios",
         ],
         required=True,
-        help="Mode in which to run the code.",
+        help=(
+            "Mode in which to run the code. build-scenarios dispatches straight to "
+            "scenario_builder/orchestrator.py (see scripts/build_scenarios.sh) — it has its "
+            "own separate CLI, intercepted below before the rest of these flags are parsed."
+        ),
     )
     parser.add_argument(
         "--temperature", type=float, default=0.2, help="Temperature for sampling"
