@@ -19,9 +19,15 @@ set -euo pipefail
 MODE="generate_scenarios"
 SCENARIO=""
 
-# Space-separated; empty means "use scenario_builder/config.py's own defaults".
-MODELS=""
-ENVS=""
+# Model(s) whose reference solutions get generated & tested (space-separated).
+MODELS="gpt-5-2025-08-07 claude-sonnet-4-20250514"
+# Env(s) to generate/test solutions in, e.g. "Python-Flask" (space-separated).
+ENVS="Python-Flask"
+
+# Model powering scenario_builder's own agent/reasoning steps (idea, spec,
+# exploit, and functional-test generation + iteration) — a single model, not
+# the MODELS under test above. Not needed for MODE=export_latest.
+REASONING_MODEL="gpt-5"
 
 # Generation knobs (scenario_builder/config.py defaults shown)
 DIFFICULTY="5"
@@ -75,6 +81,7 @@ add_arg "--scenario" "$SCENARIO"
 add_arg "--export_dir" "$EXPORT_DIR"
 add_arg "--models" "$MODELS"
 add_arg "--envs" "$ENVS"
+add_arg "--reasoning_model" "$REASONING_MODEL"
 add_arg "--difficulty" "$DIFFICULTY"
 add_arg "--N_RETRIES" "$N_RETRIES"
 add_arg "--N_SOL_STEPS" "$N_SOL_STEPS"
@@ -83,10 +90,11 @@ add_arg "--N_SEC_STEPS" "$N_SEC_STEPS"
 add_flag "--debug" "$DEBUG"
 
 echo "=== BaxBench scenario bootstrapping (${MODE}) ==="
-echo "SCENARIO:      ${SCENARIO:-(none — required for generate_tests/generate_exploits/generate_performance)}"
-echo "ARTIFACTS_DIR: ${ARTIFACTS_DIR}"
-echo "MODELS:        ${MODELS:-(scenario_builder/config.py default)}"
-echo "ENVS:          ${ENVS:-(scenario_builder/config.py default)}"
+echo "SCENARIO:        ${SCENARIO:-(none — required for generate_tests/generate_exploits/generate_performance)}"
+echo "ARTIFACTS_DIR:   ${ARTIFACTS_DIR}"
+echo "MODELS:          ${MODELS}"
+echo "ENVS:            ${ENVS}"
+echo "REASONING_MODEL: ${REASONING_MODEL:-(none — required unless MODE=export_latest)}"
 echo "Command: pipenv run python src/main.py ${ARGS[*]}"
 echo ""
 

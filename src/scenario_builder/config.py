@@ -17,52 +17,6 @@ logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
 )
 
-# List of language models to use for solution generation
-# MODEL_LIST = [
-#     "gpt-5-2025-08-07",
-#     "claude-sonnet-4-20250514",
-#     "deepseek-ai/DeepSeek-R1",
-#     "Qwen/Qwen3-Coder-480B-A35B-Instruct-FP8",
-# ]
-
-
-MODEL_LIST = [
-    "gpt-5-2025-08-07",
-    "claude-sonnet-4-20250514",
-]
-
-# for ablation
-# MODEL_LIST = [
-#     "claude-sonnet-4-20250514",
-#     "meta-llama/Llama-3.3-70B-Instruct-Turbo",
-#     "Qwen/Qwen3-Coder-480B-A35B-Instruct-FP8",
-# ]
-
-reasoning_model = get_model("gpt-5", "openai", True, "medium")
-
-# for ablation
-# reasoning_model = get_model("claude-sonnet-4-5-20250929", "anthropic", True, 32000)
-
-
-ENV_LIST = [
-    "Python-Flask",
-]
-
-# Explicitly covered CWEs
-MITRE_TOP_25 = [
-    79,  # Cross-site Scripting (XSS)
-    22,  # Improper Limitation of a Pathname
-    94,  # Improper Control of Code Generation
-    89,  # SQL Injection
-    284,  # Improper Access Control
-    78,  # OS Command Injection
-    400,  # Uncontrolled Resource Consumption
-    434,  # Unrestricted Upload of File with Dangerous Type
-    522,  # Insufficiently Protected Credentials
-    863,  # Incorrect Authorization
-    20,  # Improper Input Validation
-]
-
 
 def _provider_for_model(model: str) -> str:
     if "claude" in model:
@@ -85,10 +39,20 @@ def build_tasks(scenario, model_list=None, env_list=None) -> list:
     from env import all_envs
     from tasks import Task
 
-    # `args` (parsed below, module-level) may carry --models/--envs from the
-    # CLI (see scripts/build_scenarios.sh); falls back to the constants above.
-    models = model_list or args.models or MODEL_LIST
-    env_ids = env_list or args.envs or ENV_LIST
+    # `args` (parsed below, module-level) carries --models/--envs from the CLI
+    # (see scripts/build_scenarios.sh) unless overridden by the params here.
+    models = model_list or args.models
+    env_ids = env_list or args.envs
+    if not models:
+        raise ValueError(
+            "No models specified: pass --models (see MODELS in scripts/build_scenarios.sh) "
+            "or model_list=..."
+        )
+    if not env_ids:
+        raise ValueError(
+            "No envs specified: pass --envs (see ENVS in scripts/build_scenarios.sh) "
+            "or env_list=..."
+        )
     envs = [e for e in all_envs if e.id in env_ids]
     return [
         Task(
@@ -164,14 +128,25 @@ parser.add_argument(
     type=str,
     nargs="+",
     default=None,
-    help="Models to use for solution generation (default: MODEL_LIST in this file)",
+    help="Models to use for solution generation (see MODELS in scripts/build_scenarios.sh)",
 )
 parser.add_argument(
     "--envs",
     type=str,
     nargs="+",
     default=None,
-    help="Envs to generate/test solutions in, e.g. Python-Flask (default: ENV_LIST in this file)",
+    help="Envs to generate/test solutions in, e.g. Python-Flask (see ENVS in scripts/build_scenarios.sh)",
+)
+parser.add_argument(
+    "--reasoning_model",
+    type=str,
+    default=None,
+    help=(
+        "Model powering this package's own agent/reasoning steps (idea, spec, "
+        "exploit, and functional-test generation + iteration) — provider is "
+        "inferred the same way as --models. See REASONING_MODEL in "
+        "scripts/build_scenarios.sh. Required for every mode except --export_latest."
+    ),
 )
 
 group = parser.add_mutually_exclusive_group(required=True)
@@ -204,6 +179,15 @@ if (args.generate_tests or args.generate_exploits) and not args.scenario:
     parser.error(
         "--scenario is required when using --generate_tests or --generate_exploits"
     )
+
+if not getattr(args, "export_latest", False) and not args.reasoning_model:
+    parser.error("--reasoning_model is required for every mode except --export_latest")
+
+reasoning_model = (
+    get_model(args.reasoning_model, _provider_for_model(args.reasoning_model), True, "medium")
+    if args.reasoning_model
+    else None
+)
 
 logger.info(f"Parsed command-line arguments: {args}")
 
