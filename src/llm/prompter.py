@@ -101,6 +101,56 @@ class Prompter:
         self.history: list[dict[str, str]] = []
         self.cache_key: str | None = None
 
+    @classmethod
+    def for_chat(
+        cls,
+        *,
+        model: str,
+        provider: str,
+        system_prompt: str,
+        history: list[dict[str, str]],
+        temperature: float,
+        reasoning_effort: int | str | None = None,
+        batch_size: int = 1,
+    ) -> "Prompter":
+        """A Prompter for a plain multi-turn chat call — no Scenario/Env code-gen
+        prompt involved (skips ``Scenario.build_prompt``), e.g. for scenario
+        ideation, test/exploit generation, or one-off verification calls that
+        aren't building an application from an OpenAPI spec.
+        """
+        self = cls.__new__(cls)
+        self.env = None
+        self.scenario = None
+        self.spec_type = ""
+        self.safety_prompt = ""
+        self.model = model
+        self.provider = provider
+        self.batch_size = batch_size
+        self.offset = 0
+        self.temperature = temperature
+        self.reasoning_effort = reasoning_effort
+        self.vllm_port = 0
+        self.use_stubs = False
+
+        self.system_prompt = system_prompt
+        self.openai_reasoning = (
+            self.model.startswith("o1")
+            or self.model.startswith("o3")
+            or self.model.startswith("o4")
+            or self.model.startswith("gpt-5")
+        )
+        # Whether this call wants thinking is the caller's call, not just a
+        # function of the model — see LlmModel in llm/chat.py, which sets this
+        # after construction based on its own `reasoning` flag.
+        self.anthropic_thinking = self.model in ANTHROPIC_THINKING_LENGTHS
+
+        self.prompt = ""
+        self.last_usage = None
+        self.conversational = True
+        self.history = history
+        self.cache_key = None
+        return self
+
     # --- Conversation (delegates to llm.conversation) -----------------
 
     def _chat_turns(self) -> list[dict[str, str]]:

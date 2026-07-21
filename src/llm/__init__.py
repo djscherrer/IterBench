@@ -4,6 +4,7 @@ LLM prompting, provider adapters, response parsing, and usage tracking.
 Public API for BaxBench call sites: ``from llm import Prompter, Parser, …``.
 """
 
+from .chat import BaseModel, ChatModel, Conversation, Response, get_model
 from .keys import KeyLocs
 from .parser import Parser
 from .prompter import Prompter
@@ -27,12 +28,17 @@ from .usage import (
 )
 
 __all__ = [
+    "BaseModel",
+    "ChatModel",
+    "Conversation",
     "KeyLocs",
     "LlmUsageRecord",
     "ModelPricing",
     "Parser",
     "Prompter",
+    "Response",
     "TokenUsage",
+    "get_model",
     "append_usage_record",
     "enforce_cost_budget",
     "ensure_cost_section_in_summary",
