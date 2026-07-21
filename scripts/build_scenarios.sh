@@ -12,38 +12,53 @@
 #   generate_exploits    generate + iterate security exploits (needs SCENARIO)
 #   generate_performance generate + verify a Locust script (needs SCENARIO)
 #   export_latest        promote the latest snapshot into scenarios/generated_scenarios/
-#
-# Example:
-#   MODE="generate_tests" SCENARIO="FooBarScenario" ./scripts/build_scenarios.sh
 
 set -euo pipefail
 
-# --- What to run ---
-MODE="${MODE:-generate_scenarios}"
-SCENARIO="${SCENARIO:-}"
+# === EDIT THESE ===========================
+MODE="generate_scenarios"
+SCENARIO=""
 
-# --- Models / envs to generate & test solutions against ---
 # Space-separated; empty means "use scenario_builder/config.py's own defaults".
-MODELS="${MODELS:-}"
-ENVS="${ENVS:-}"
+MODELS=""
+ENVS=""
 
-# --- Generation knobs (scenario_builder/config.py defaults shown) ---
-DIFFICULTY="${DIFFICULTY:-5}"
-N_RETRIES="${N_RETRIES:-3}"
-N_SOL_STEPS="${N_SOL_STEPS:-5}"
-N_TEST_STEPS="${N_TEST_STEPS:-5}"
-N_SEC_STEPS="${N_SEC_STEPS:-5}"
-DEBUG="${DEBUG:-false}"
+# Generation knobs (scenario_builder/config.py defaults shown)
+DIFFICULTY="5"
+N_RETRIES="3"
+N_SOL_STEPS="5"
+N_TEST_STEPS="5"
+N_SEC_STEPS="5"
+DEBUG="false"
 
-# --- Execution ---
+# Artifacts (gen_scenarios/ sits at the repo root, alongside src/ and
+# baxbench's own results/); empty ARTIFACTS_DIR = scenario_builder/config.py's
+# own default. EXPORT_DIR only used by MODE=export_latest.
+ARTIFACTS_DIR=""
+EXPORT_DIR=""
+# ===========================================
+
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 export PYTHONPATH="${ROOT}/src${PYTHONPATH:+:${PYTHONPATH}}"
 
-# --- Artifacts (gen_scenarios/ sits at the repo root, alongside src/ and
-# baxbench's own results/ — matches scenario_builder/config.py's own default) ---
-ARTIFACTS_DIR="${ARTIFACTS_DIR:-${ROOT}/gen_scenarios/artifacts}"
-EXPORT_DIR="${EXPORT_DIR:-}"
+add_arg() {
+    local flag=$1
+    local value=$2
+    if [ -n "$value" ]; then
+        ARGS+=("$flag")
+        for part in $value; do
+            ARGS+=("$part")
+        done
+    fi
+}
 
+add_flag() {
+    if [ "$2" == "true" ]; then
+        ARGS+=("$1")
+    fi
+}
+
+[ -z "$ARTIFACTS_DIR" ] && ARTIFACTS_DIR="${ROOT}/gen_scenarios/artifacts"
 mkdir -p "${ARTIFACTS_DIR}"
 # Resolve to absolute paths: --mode build-scenarios dispatches to a subprocess
 # running with cwd=src/scenario_builder/, so relative paths here would
@@ -56,19 +71,16 @@ fi
 
 ARGS=("--mode" "build-scenarios" "--${MODE}" "--path" "${ARTIFACTS_DIR}")
 
-[ -n "$SCENARIO" ] && ARGS+=("--scenario" "$SCENARIO")
-[ -n "$EXPORT_DIR" ] && ARGS+=("--export_dir" "$EXPORT_DIR")
-[ -n "$MODELS" ] && ARGS+=("--models" $MODELS)
-[ -n "$ENVS" ] && ARGS+=("--envs" $ENVS)
-
-ARGS+=(
-    "--difficulty" "$DIFFICULTY"
-    "--N_RETRIES" "$N_RETRIES"
-    "--N_SOL_STEPS" "$N_SOL_STEPS"
-    "--N_TEST_STEPS" "$N_TEST_STEPS"
-    "--N_SEC_STEPS" "$N_SEC_STEPS"
-)
-[ "$DEBUG" == "true" ] && ARGS+=("--debug")
+add_arg "--scenario" "$SCENARIO"
+add_arg "--export_dir" "$EXPORT_DIR"
+add_arg "--models" "$MODELS"
+add_arg "--envs" "$ENVS"
+add_arg "--difficulty" "$DIFFICULTY"
+add_arg "--N_RETRIES" "$N_RETRIES"
+add_arg "--N_SOL_STEPS" "$N_SOL_STEPS"
+add_arg "--N_TEST_STEPS" "$N_TEST_STEPS"
+add_arg "--N_SEC_STEPS" "$N_SEC_STEPS"
+add_flag "--debug" "$DEBUG"
 
 echo "=== BaxBench scenario bootstrapping (${MODE}) ==="
 echo "SCENARIO:      ${SCENARIO:-(none — required for generate_tests/generate_exploits/generate_performance)}"
