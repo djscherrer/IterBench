@@ -1,26 +1,42 @@
+import concurrent.futures
 import inspect
 import json
 import logging
+import math
 import multiprocessing
 import multiprocessing.managers
 import os
 import pathlib
+import shutil
 import time
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import Any, Generator, Self, cast
 
 import requests
+import tqdm
 from docker.models.containers import Container
 
 import cwes as cwe
 from db_manager import PostgresConnectionParams, PostgresManager
 from env.base import COMMON_DOCKER_RUN_COMMANDS, Env
+from llm import Parser, Prompter
 from scenarios.base import AppInstance, FunctionalTest, Scenario, SecurityTest
 
 
 def esc(s: str) -> str:
     return s.replace("/", "-")
+
+
+def preprocess_log(log_string: str) -> str:
+    log_string = log_string.strip()
+    max_log_length = 2000
+    if len(log_string) > max_log_length:
+        log_string = (
+            log_string[:max_log_length]
+            + "\n\n[...log truncated: output exceeds 2000 characters...]"
+        )
+    return log_string
 
 
 def run_test_with_timeout(
@@ -278,6 +294,34 @@ class Task:
     def get_code_dir(self, results_dir: pathlib.Path, sample: int) -> pathlib.Path:
         return self.get_sample_dir(results_dir, sample) / "code"
 
+    def get_test_results_json_path(
+        self, results_dir: pathlib.Path, sample: int
+    ) -> pathlib.Path:
+        return self.get_sample_dir(results_dir, sample) / "test_results.json"
+
+    def load_code(
+        self, results_dir: pathlib.Path, sample: int
+    ) -> dict[pathlib.Path, str]:
+        return self.load_code_from_dir(self.get_code_dir(results_dir, sample))
+
+    def save_code(
+        self, files: dict[pathlib.Path, str], results_dir: pathlib.Path, sample: int
+    ) -> None:
+        code_dir = self.get_code_dir(results_dir, sample)
+        code_dir.mkdir(parents=True, exist_ok=True)
+        for path, code in files.items():
+            full_path = code_dir / path
+            full_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(full_path, "w") as f:
+                f.write(code)
+
+    def save_test_results(
+        self, results: "TestResult", results_dir: pathlib.Path, sample: int
+    ) -> None:
+        self.save_test_results_at(
+            results, self.get_test_results_json_path(results_dir, sample)
+        )
+
     def load_code_from_dir(
         self,
         code_dir: pathlib.Path,
@@ -444,6 +488,312 @@ class Task:
             total_n = int(data.get("num_total_ft", 0))
             return total_n > 0 and passed_n >= total_n
 
+    def generate_code(
+        self,
+        results_dir: pathlib.Path,
+        batch_size: int,
+        max_retries: int,
+        base_delay: float,
+        max_delay: float,
+        force: bool,
+    ) -> None:
+        """Generate ``batch_size`` reference-solution samples for this task."""
+        if (
+            all(
+                self.get_code_dir(results_dir, sample).exists()
+                for sample in range(batch_size)
+            )
+            and not any(
+                (self.get_code_dir(results_dir, sample) / "failed").exists()
+                for sample in range(batch_size)
+            )
+            and not force
+        ):
+            return
+
+        save_dir = self.get_save_dir(results_dir)
+        try:
+            save_dir.mkdir(parents=True, exist_ok=False)
+        except Exception:
+            shutil.rmtree(save_dir)
+            save_dir.mkdir(parents=True, exist_ok=False)
+
+        gen_logfile_path = save_dir / "gen.log"
+        with open(gen_logfile_path, "w") as f:
+            f.write("")
+        with self.create_logger(gen_logfile_path) as logger:
+            logger.info(
+                "generating %s code samples at temp %s for task %s with reasoning effort %s",
+                batch_size,
+                self.temperature,
+                self.id,
+                self.reasoning_effort,
+            )
+
+            prompter = Prompter(
+                env=self.env,
+                scenario=self.scenario,
+                model=self.model,
+                spec_type=self.spec_type,
+                safety_prompt=self.safety_prompt,
+                batch_size=batch_size,
+                offset=0,
+                temperature=self.temperature,
+                reasoning_effort=self.reasoning_effort,
+                vllm_port=0,
+                provider=self.provider,
+                use_stubs=self.use_stubs,
+            )
+            logger.info("built prompt:\n%s", prompter.prompt)
+            logger.info("-" * 100)
+
+            try:
+                model_responses = prompter.prompt_model_batch_with_exp_backoff(
+                    max_retries=max_retries,
+                    base_delay=base_delay,
+                    max_delay=max_delay,
+                    logger=logger,
+                )
+            except KeyboardInterrupt:
+                raise
+            except Exception as e:
+                logger.exception("got exception:\n%s", str(e), exc_info=e)
+                return
+
+            logger.info(
+                "got model responses:\n%s",
+                "\n\n<<<RESPONSE DELIM>>>\n\n".join(model_responses),
+            )
+            logger.info("-" * 100)
+
+            file_contents = [
+                Parser(self.env, logger).parse_response(r) for r in model_responses
+            ]
+
+            for i, files in enumerate(file_contents):
+                try:
+                    self.save_code(files, results_dir, i)
+                    logger.info("saved code sample %d", i)
+                except Exception as e:
+                    logger.exception("got exception:\n%s", str(e), exc_info=e)
+                logger.info("-" * 80)
+
+    def test_code(  # noqa: C901
+        self,
+        results_dir: pathlib.Path,
+        samples: list[int],
+        port_manager: "SlotManager",
+        timeout: int,
+        force: bool,
+    ) -> None:
+        """Build each sample once, then run every functional + security test
+        against it, saving one aggregate ``TestResult`` per sample."""
+        if force:
+            for sample in samples:
+                sample_dir = self.get_sample_dir(results_dir, sample)
+                if sample_dir.exists():
+                    for extension in ("*.log", "*.json"):
+                        for file_path in sample_dir.glob(extension):
+                            if file_path.is_file():
+                                file_path.unlink()
+
+        for sample in samples:
+            sample_dir = self.get_sample_dir(results_dir, sample)
+            if not self.get_code_dir(results_dir, sample).exists():
+                continue
+            test_results_path = self.get_test_results_json_path(results_dir, sample)
+            if test_results_path.exists() and not force:
+                continue
+            test_results_path.unlink(missing_ok=True)
+            log_file = sample_dir / "test.log"
+            with self.create_logger(log_file) as logger:
+                image_id = self._build_image(results_dir, sample, logger)
+                if image_id is None:
+                    result = TestResult()
+                    for ft in self.scenario.functional_tests:
+                        result.record_ft_result(
+                            name=ft.__name__,
+                            passed=False,
+                            had_exception=True,
+                            container_logs="",
+                            test_logs="",
+                        )
+                    for st in self.scenario.security_tests:
+                        result.record_st_result(
+                            cwes=None, name=st.__name__, container_logs="", test_logs=""
+                        )
+                    logger.info(
+                        f"Finished testing sample {sample}, which failed to build image"
+                    )
+                    self.save_test_results(result, results_dir, sample)
+                    logger.info("Saved test results")
+                    logger.info("-" * 100)
+                    continue
+
+                logger.info("Image ready: %s", image_id)
+                logger.info("-" * 100)
+
+                result = TestResult()
+                for ft in self.scenario.functional_tests:
+                    logger.info("running functional test: %s", ft.__name__)
+                    passed = False
+                    had_exception = False
+                    container_logs = ""
+                    test_logs = ""
+                    server_process_crashed = False
+                    try:
+                        with ContainerRunner(
+                            self.env, port_manager, image_id, logger
+                        ) as cr:
+                            server_ran_before = self.env.process_still_running(
+                                cr.container.id, logger
+                            )
+                            passed = run_test_with_timeout(
+                                ft,
+                                AppInstance(
+                                    port=cr.port,
+                                    log_file_path=sample_dir / (ft.__name__ + ".log"),
+                                    container_id=cr.container.id,
+                                    env=self.env,
+                                    db_params=cr._db_params,
+                                ),
+                                timeout,
+                            )
+                            if (
+                                not self.env.process_still_running(
+                                    cr.container.id, logger
+                                )
+                                and server_ran_before
+                            ):
+                                logger.warning(
+                                    "server process crashed during functional test"
+                                )
+                                server_process_crashed = True
+                            container_logs = cr._container_log_text()
+                    except Exception as e:
+                        logger.exception("got exception:\n%s", str(e), exc_info=e)
+                        if "No such container" in str(e) and "404" in str(e):
+                            container_logs = "container crashed:\n"
+                        else:
+                            container_logs = f"got exception:\n{str(e)}"
+                        had_exception = True
+
+                    logger.info(
+                        f"Functional test {ft.__name__} {'passed' if passed else 'failed'}"
+                    )
+
+                    if os.path.exists(sample_dir / (ft.__name__ + ".log")):
+                        with open(
+                            sample_dir / (ft.__name__ + ".log"), "r"
+                        ) as test_log_file:
+                            test_logs = test_log_file.read().strip()
+
+                    result.record_ft_result(
+                        name=ft.__name__,
+                        passed=passed,
+                        had_exception=had_exception,
+                        container_logs=preprocess_log(container_logs),
+                        test_logs=preprocess_log(test_logs),
+                    )
+
+                    if server_process_crashed:
+                        result.record_st_result(
+                            cwes={
+                                cwe.CWE.IMPROPER_CHECK_OR_HANDLING_OF_EXCEPTIONAL_CONDITIONS
+                            },
+                            name=ft.__name__,
+                            container_logs=preprocess_log(container_logs),
+                            test_logs=preprocess_log(test_logs),
+                        )
+
+                    logger.info("-" * 80)
+
+                for st in self.scenario.security_tests:
+                    logger.info("running security test: %s", st.__name__)
+                    container_logs = ""
+                    test_logs = ""
+                    cwes: set[cwe.CWE] | None = None
+                    try:
+                        with ContainerRunner(
+                            self.env, port_manager, image_id, logger
+                        ) as cr:
+                            server_ran_before = self.env.process_still_running(
+                                cr.container.id, logger
+                            )
+                            cwes = run_test_with_timeout(
+                                st,
+                                AppInstance(
+                                    port=cr.port,
+                                    log_file_path=sample_dir / (st.__name__ + ".log"),
+                                    container_id=cr.container.id,
+                                    env=self.env,
+                                    db_params=cr._db_params,
+                                ),
+                                timeout,
+                            )
+                            if (
+                                not self.env.process_still_running(
+                                    cr.container.id, logger
+                                )
+                                and server_ran_before
+                            ):
+                                logger.warning(
+                                    "server process crashed during security test"
+                                )
+                                if cwes is None:
+                                    cwes = set()
+                                if (
+                                    cwe.CWE.UNCONTROLLED_RESOURCE_CONSUMPTION
+                                    not in cwes
+                                ):
+                                    cwes.add(
+                                        cwe.CWE.IMPROPER_CHECK_OR_HANDLING_OF_EXCEPTIONAL_CONDITIONS
+                                    )
+                            container_logs = cr._container_log_text()
+                    except Exception as e:
+                        logger.exception("got exception:\n%s", str(e), exc_info=e)
+                        if "No such container" in str(e) and "404" in str(e):
+                            container_logs = "container crashed:\n"
+                        else:
+                            container_logs = f"got exception:\n{str(e)}"
+
+                    logger.info(
+                        f"Security test {st.__name__} {'passed' if not cwes else 'failed'}"
+                    )
+
+                    if os.path.exists(sample_dir / (st.__name__ + ".log")):
+                        with open(
+                            sample_dir / (st.__name__ + ".log"), "r"
+                        ) as test_log_file:
+                            test_logs = test_log_file.read().strip()
+
+                    result.record_st_result(
+                        cwes=cwes,
+                        name=st.__name__,
+                        container_logs=preprocess_log(container_logs),
+                        test_logs=preprocess_log(test_logs),
+                    )
+
+                    logger.info("-" * 80)
+
+                logger.info("finished testing sample %d", sample)
+                self.save_test_results(result, results_dir, sample)
+                logger.info("saved test results")
+                logger.info("-" * 100)
+
+    def evaluate_results(
+        self, results_dir: pathlib.Path, samples: list[int], ks: list[int]
+    ) -> "SampleTestResult":
+        r = SampleTestResult()
+        for sample in samples:
+            test_result_path = self.get_test_results_json_path(results_dir, sample)
+            if test_result_path.exists():
+                with open(test_result_path, "r") as f:
+                    test_result = TestResult.from_dict(json.load(f))
+                    r.record_result(test_result, sample)
+        r.calculate_metrics(ks=ks)
+        return r
+
 
 @dataclass
 class TestResult:
@@ -465,6 +815,13 @@ class TestResult:
     # The set of CWEs that were identified in the generated code
     cwes: set[cwe.CWE] = field(default_factory=set)
 
+    # Per-test detail (name -> {status, container_logs, test_logs, [cwes]}),
+    # used by the classic generate/test/evaluate reporting path (print.py,
+    # SampleTestResult). Optional: callers that only need aggregate counts
+    # (e.g. test_functional_tests_at, the k8s_bench iterative path) can leave
+    # it empty.
+    full_results: dict[str, dict[str, str]] = field(default_factory=dict)
+
     @staticmethod
     def from_dict(d: dict[str, Any]) -> "TestResult":
         return TestResult(
@@ -474,6 +831,7 @@ class TestResult:
             num_total_st=d["num_total_st"],
             num_st_exceptions=d["num_st_exceptions"],
             cwes=set(cwe.CWE(x) for x in d["cwes"]),
+            full_results=d.get("full_results", {}),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -484,21 +842,54 @@ class TestResult:
             "num_total_st": self.num_total_st,
             "num_st_exceptions": self.num_st_exceptions,
             "cwes": list(c.value for c in self.cwes),
+            "full_results": self.full_results,
         }
 
-    def record_ft_result(self, passed: bool, had_exception: bool) -> None:
+    def record_ft_result(
+        self,
+        passed: bool,
+        had_exception: bool,
+        name: str | None = None,
+        container_logs: str = "",
+        test_logs: str = "",
+    ) -> None:
         self.num_total_ft += 1
         if passed:
             self.num_passed_ft += 1
         if had_exception:
             self.num_ft_exceptions += 1
 
-    def record_st_result(self, cwes: set[cwe.CWE] | None) -> None:
+        if name is not None:
+            status = "exception" if had_exception else ("passed" if passed else "failed")
+            self.full_results[name] = {
+                "status": status,
+                "container_logs": container_logs,
+                "test_logs": test_logs,
+            }
+
+    def record_st_result(
+        self,
+        cwes: set[cwe.CWE] | None,
+        name: str | None = None,
+        container_logs: str = "",
+        test_logs: str = "",
+    ) -> None:
         self.num_total_st += 1
         if cwes is None:
             self.num_st_exceptions += 1
         else:
             self.cwes = self.cwes.union(cwes)
+
+        if name is not None:
+            entry = self.full_results.setdefault(name, {})
+            if cwes is None:
+                entry["status"] = "exception"
+                entry["cwes"] = ""
+            else:
+                entry["status"] = "passed" if len(cwes) == 0 else "failed"
+                entry["cwes"] = ", ".join(str(c.value["num"]) for c in cwes)
+            entry["container_logs"] = container_logs
+            entry["test_logs"] = test_logs
 
     @property
     def num_exceptions(self) -> int:
@@ -533,3 +924,175 @@ class SlotManager:
         with self.lock:
             if 0 <= slot_index < len(self.slots):
                 self.slots[slot_index] = True
+
+
+def pass_at_k(k: int, c: int, n: int) -> float:
+    if n - c < k:
+        return 1.0
+    return 1.0 - math.prod([1.0 - k / i for i in range(n - c + 1, n + 1)])
+
+
+@dataclass
+class SampleTestResult:
+    full_results: list[dict[str, dict[str, str]]] = field(default_factory=list)
+    n_samples: int = 0
+    n_ft_correct: int = 0
+    n_ft_and_st_correct: int = 0
+    n_ft_correct_st_incorrect: int = 0
+    cwes: dict[cwe.CWE, int] = field(default_factory=dict)
+    cwes_ft_correct: dict[cwe.CWE, int] = field(default_factory=dict)
+    ft_exceptions: list[int] = field(default_factory=list)
+    st_exceptions: list[int] = field(default_factory=list)
+    test_exceptions: list[int] = field(default_factory=list)
+
+    pass_at_k: dict[int, float] = field(default_factory=dict)
+    secure_pass_at_k: dict[int, float] = field(default_factory=dict)
+    insec_pass: float = field(default_factory=float)
+    cwe_percentages: dict[str, float] = field(default_factory=dict)
+    cwe_ft_correct_percentages: dict[str, float] = field(default_factory=dict)
+
+    def record_result(self, test_result: "TestResult", sample: int) -> None:
+        self.full_results.append(test_result.full_results)
+        self.n_samples += 1
+        if test_result.num_passed_ft == test_result.num_total_ft:
+            self.n_ft_correct += 1
+            if len(test_result.cwes) == 0:
+                self.n_ft_and_st_correct += 1
+            else:
+                self.n_ft_correct_st_incorrect += 1
+            for cwe_ in test_result.cwes:
+                self.cwes_ft_correct[cwe_] = self.cwes_ft_correct.get(cwe_, 0) + 1
+        for cwe_ in test_result.cwes:
+            self.cwes[cwe_] = self.cwes.get(cwe_, 0) + 1
+        if test_result.num_ft_exceptions > 0:
+            self.ft_exceptions.append(sample)
+        if test_result.num_st_exceptions > 0:
+            self.st_exceptions.append(sample)
+        if test_result.num_ft_exceptions + test_result.num_st_exceptions > 0:
+            self.test_exceptions.append(sample)
+
+    def calculate_metrics(self, ks: list[int]) -> None:
+        self.pass_at_k = {
+            k: pass_at_k(k, self.n_ft_correct, self.n_samples)
+            for k in ks
+            if self.n_samples >= k
+        }
+        self.secure_pass_at_k = {
+            k: pass_at_k(k, self.n_ft_and_st_correct, self.n_samples)
+            for k in ks
+            if self.n_samples >= k
+        }
+        if self.n_ft_correct == 0:
+            self.insec_pass = float("nan")
+        else:
+            self.insec_pass = self.n_ft_correct_st_incorrect / self.n_ft_correct
+        self.cwe_percentages = {
+            str(cwe.value["num"]): count / self.n_samples
+            for cwe, count in self.cwes.items()
+            if self.n_samples > 0
+        }
+        self.cwe_ft_correct_percentages = {
+            str(cwe.value["num"]): count / self.n_ft_correct
+            for cwe, count in self.cwes_ft_correct.items()
+            if self.n_ft_correct > 0
+        }
+
+
+type TasksAndSampleResults = list[tuple[Task, SampleTestResult]]
+
+
+class TaskHandler:
+    """Batch-orchestrates the classic generate/test/evaluate flow across many
+    Tasks. Not used by the k8s_bench iterative loop (run_k8s_bench is a
+    separate, heavier orchestrator) — this is for the simple "generate N
+    samples, test each once" flow scenario_builder's scenario bootstrapping uses.
+    """
+
+    def __init__(
+        self,
+        tasks: list[Task],
+        results_dir: pathlib.Path,
+        max_concurrent_runs: int | None,
+    ):
+        self.tasks = tasks
+        self.results_dir = results_dir
+        self.max_concurrent_runs = max_concurrent_runs
+
+    def run_generation(
+        self,
+        batch_size: int,
+        max_retries: int,
+        base_delay: float,
+        max_delay: float,
+        force: bool,
+    ) -> list[int]:
+        with tqdm.tqdm(total=len(self.tasks)) as pbar:
+            pbar.get_lock()  # type: ignore[no-untyped-call]
+
+            def run_gen_task(task: Task) -> int:
+                task.generate_code(
+                    results_dir=self.results_dir,
+                    batch_size=batch_size,
+                    force=force,
+                    max_retries=max_retries,
+                    base_delay=base_delay,
+                    max_delay=max_delay,
+                )
+                with pbar.get_lock():  # type: ignore[no-untyped-call]
+                    pbar.update(1)
+                return 1
+
+            with concurrent.futures.ThreadPoolExecutor(
+                max_workers=self.max_concurrent_runs
+            ) as executor:
+                return list(executor.map(run_gen_task, self.tasks))
+
+    def run_tests(
+        self,
+        samples: list[int],
+        timeout: int,
+        num_ports: int,
+        min_port: int,
+        force: bool,
+    ) -> list[int]:
+        with multiprocessing.Manager() as manager:
+            port_manager = SlotManager(manager, num_ports, min_port)
+
+            with tqdm.tqdm(total=len(self.tasks)) as pbar:
+
+                def run_test_task(index_and_task: tuple[int, Task]) -> int:
+                    _, task = index_and_task
+                    task.test_code(
+                        results_dir=self.results_dir,
+                        samples=samples,
+                        port_manager=port_manager,
+                        timeout=timeout,
+                        force=force,
+                    )
+                    with pbar.get_lock():  # type: ignore[no-untyped-call]
+                        pbar.update(1)
+                    return 1
+
+                with concurrent.futures.ThreadPoolExecutor(
+                    max_workers=self.max_concurrent_runs
+                ) as executor:
+                    return list(executor.map(run_test_task, enumerate(self.tasks)))
+
+    def evaluate_results(
+        self, samples: list[int], ks: list[int]
+    ) -> TasksAndSampleResults:
+        with tqdm.tqdm(total=len(self.tasks)) as pbar:
+            pbar.get_lock()  # type: ignore[no-untyped-call]
+
+            def evaluate_results_task(task: Task) -> tuple[Task, SampleTestResult]:
+                rs = task.evaluate_results(
+                    results_dir=self.results_dir, samples=samples, ks=ks
+                )
+                with pbar.get_lock():  # type: ignore[no-untyped-call]
+                    pbar.update(1)
+                return (task, rs)
+
+            with concurrent.futures.ThreadPoolExecutor(
+                max_workers=self.max_concurrent_runs
+            ) as executor:
+                return list(executor.map(evaluate_results_task, self.tasks))
