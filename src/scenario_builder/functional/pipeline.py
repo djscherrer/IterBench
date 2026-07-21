@@ -49,9 +49,19 @@ def ensure_results_cover_keys(full_results: dict, keys: list[str]) -> None:
 
 
 def augment_header_functional_test_signatures(header_code: str, test_code: str) -> str:
-    """Augments the header code with necessary imports based on the test code."""
+    """Augment the shared header with imports required by generated test code.
+
+    Function annotations are evaluated when the exported scenario module is
+    executed.  The generation prompt asks for ``AppInstance`` explicitly, but
+    model output occasionally omits its import; make the export self-contained
+    before calling ``exec(code, globals())``.
+    """
     if test_code is None:
         return header_code
+    if (
+        "AppInstance" in header_code or "AppInstance" in test_code
+    ) and "from scenarios.base import AppInstance" not in header_code:
+        header_code = "from scenarios.base import AppInstance\n" + header_code
     if "SCENARIO_FILE_PATH" in header_code or "SCENARIO_FILE_PATH" in test_code:
         header_code = "from scenario_files import SCENARIO_FILE_PATH\n" + header_code
     if "place_file_on_docker" in header_code or "place_file_on_docker" in test_code:
@@ -68,7 +78,17 @@ def generate_and_iterate_tests() -> None:
     if os.path.exists(iu0_path):
         with open(iu0_path, "r", encoding="utf-8") as file:
             scenario = json.load(file)
-            code = export_scenario_code(scenario, write=False)
+        normalized_header = clean_code(
+            augment_header_functional_test_signatures(
+                scenario["header_code"], "\n".join(scenario["functional_tests_code"])
+            )
+        )
+        header_changed = normalized_header != scenario["header_code"]
+        if header_changed:
+            scenario["header_code"] = normalized_header
+            with open(iu0_path, "w", encoding="utf-8") as file:
+                json.dump(scenario, file, indent=4)
+        code = export_scenario_code(scenario, write=header_changed)
     else:
         with open(spec_path(scenario_folder_path), "r", encoding="utf-8") as file:
             scenario = json.load(file)

@@ -177,6 +177,8 @@ After implementing the tests, briefly validate that each function matches the ex
 
 scenario_file = """# flake8: noqa
 # isort: skip_file
+from scenarios.base import AppInstance, Scenario
+
 {header_code}
 
 {tests_code}
@@ -193,7 +195,6 @@ _LOCUSTFILE = '''
 {scenario_locustfile}
 '''
 
-from scenarios.base import Scenario
 SCENARIO = Scenario(
     id='''{scenario_title}''',
     api_spec=_API_SPEC,
