@@ -3,6 +3,16 @@ import re
 
 import templates
 from config import args, logger, reasoning_model, scenario_folder_path
+from functional.conversations import (
+    ImplementationConversationStore,
+    aggregate_judge_conversation,
+    pair_judge_conversation,
+)
+from functional.failure import (
+    BuilderFunctionalFailureRecord,
+    build_functional_failure_record,
+    persist_functional_failure,
+)
 from utils import AgentException, agentic_loop
 from workspace.scenario_builder_paths import record_verdict
 from llm import Conversation, Response
@@ -45,36 +55,8 @@ def parse_implementation(conversation: Conversation, implementation: dict) -> di
     return new_implementation
 
 
-def iterate_blackbox(
-    scenario: dict, key: str, test_results: dict, implementation: dict
-) -> dict:
-    """Iterates on the implementation using blackbox feedback."""
-    logger.info(f"Iterating implementation of {key}")
-    # Check if any tests failed
-    failed_tests = []
-    container_logs = []
-
-    for test_name, test_result in test_results.items():
-        if test_result["status"] != "passed":
-            failed_tests.append(test_name)
-            container_logs.append(
-                f"Test: {test_name}\nLogs: {test_result['container_logs']}"
-            )
-
-    if not failed_tests:
-        logger.info("No failed tests, returning implementation")
-        return implementation
-    else:
-        logger.info(f"Failed tests: {", ".join(failed_tests)}")
-
-    parsed_container_logs = "\n\n".join(
-        [
-            f"An execution of the application code collected the following logs:\n```\n{log_}\n```\n"
-            for log_ in container_logs
-        ]
-    )
-
-    impl_format = templates.iterate_impl_format.format(
+def _implementation_format(implementation: dict) -> str:
+    return templates.iterate_impl_format.format(
         format_specifications="\n\n".join(
             [
                 f"<{posixpath.basename(path)}>\n```\n```\n</{posixpath.basename(path)}>\n"
@@ -83,35 +65,86 @@ def iterate_blackbox(
         )
     )
 
-    prompt = templates.iterate_impl_blackbox.format(
-        scenario_title=scenario["title"],
-        scenario_description=scenario["description"],
-        scenario_openapi=scenario["schema"],
-        implementation="\n\n".join(
-            [
-                f"File {posixpath.basename(path)}:\n```\n{content.strip()}\n```\n"
-                for path, content in implementation.items()
-            ]
-        ),
-        container_logs=parsed_container_logs,
-        format_specifications=impl_format,
-    )
 
-    conversation = Conversation().add_message(Response(role="user", text=prompt))
+def repair_implementation(
+    *,
+    key: str,
+    implementation: dict,
+    conversation: Conversation,
+    failure: BuilderFunctionalFailureRecord,
+    thread_store: ImplementationConversationStore,
+    purpose: str,
+) -> dict:
+    """Ask one implementation-owner thread to repair its current source tree."""
+    impl_format = _implementation_format(implementation)
+    prompt = (
+        f"{failure.to_prompt_block()}\n\n"
+        "Use the scenario contract and latest complete implementation already in "
+        "this conversation. Do not ask for or repeat those artifacts in your "
+        "reasoning. Return `OK` only if no source change is justified. Otherwise "
+        "return complete replacement files in this exact format:\n"
+        f"{impl_format}"
+    )
+    conversation.add_message(Response(role="user", text=prompt))
     response = reasoning_model.generate(
         conversation,
         temperature=0,
-        purpose=f"iterate_functional_tests: blackbox iterating implementation of {key}",
+        purpose=purpose,
     )
     conversation.add_message(response)
-    record_verdict(scenario_folder_path, "FT Blackbox", response.text.strip())
-    # Use agentic loop to handle parsing/compilation errors
-    return agentic_loop(
+    thread_store.persist(key)
+    record_verdict(scenario_folder_path, "FT Implementation repair", response.text.strip())
+    revised = agentic_loop(
         conversation,
         lambda c: parse_implementation(c, implementation),
         args.N_RETRIES,
         f"parsing re-implementation of {key}",
         impl_format,
+        on_response=lambda: thread_store.persist(key),
+    )
+    thread_store.set_implementation(key, revised)
+    return revised
+
+
+def iterate_blackbox(
+    scenario: dict,
+    key: str,
+    test_results: dict,
+    implementation: dict,
+    *,
+    iteration: int,
+    thread_store: ImplementationConversationStore,
+) -> dict:
+    """Iterate one implementation from provisional black-box failure evidence."""
+    logger.info(f"Iterating implementation of {key}")
+    # Check if any tests failed
+    failed_tests = []
+    for test_name, test_result in test_results.items():
+        if test_result["status"] != "passed":
+            failed_tests.append(test_name)
+
+    if not failed_tests:
+        logger.info("No failed tests, returning implementation")
+        return implementation
+    else:
+        logger.info(f"Failed tests: {", ".join(failed_tests)}")
+
+    failure = build_functional_failure_record(
+        loop="blackbox",
+        iteration=iteration,
+        implementation_key=key,
+        implementation=implementation,
+        test_results=test_results,
+    )
+    persist_functional_failure(scenario_folder_path, failure)
+    conversation = thread_store.get(scenario, key, implementation)
+    return repair_implementation(
+        key=key,
+        implementation=implementation,
+        conversation=conversation,
+        failure=failure,
+        thread_store=thread_store,
+        purpose=f"iterate_functional_tests: blackbox iterating implementation of {key}",
     )
 
 
@@ -194,39 +227,61 @@ def parse_verdict_3(conversation: Conversation) -> str:
 
 
 def iterate_whitebox(
-    i, scenario, test_name, test_results, implementations, verdict_cache
+    i,
+    scenario,
+    test_name,
+    test_results,
+    implementations,
+    verdict_cache,
+    *,
+    iteration: int,
+    thread_store: ImplementationConversationStore,
 ):
     logger.info(f"Iterating functional test {test_name}")
 
     verdicts = []
+    test_code = scenario["functional_tests_code"][i]
+    test_spec = scenario["tests_spec"][i]
     for key, test_result in test_results.items():
         test_log = test_result["test_logs"]
         container_log = test_result["container_logs"]
-        test_code = scenario["functional_tests_code"][i]
-        test_spec = scenario["tests_spec"][i]
 
         if not verdict_cache[(test_name, key)]:
-            prompt = templates.iterate_test.format(
-                scenario_title=scenario["title"],
-                scenario_description=scenario["description"],
-                scenario_openapi=scenario["schema"],
+            conversation = pair_judge_conversation(
+                scenario,
+                test_header=scenario["header_code"],
+                test_code=test_code,
+                test_spec=test_spec,
+            )
+            prompt = """Review this independent execution case.
+
+The implementation code is:
+{implementation}
+
+The result of the functional test is: {test_status}
+
+The execution logs of the test are:
+```
+{test_logs}
+```
+
+The execution logs of the implementation are:
+```
+{container_logs}
+```
+""".format(
                 implementation="\n\n".join(
                     [
                         f"File {posixpath.basename(path)}:\n```\n{content.strip()}\n```\n"
                         for path, content in implementations[key].items()
                     ]
                 ),
-                test_header=scenario["header_code"],
-                test_code=test_code,
-                test_spec=test_spec,
                 test_logs=test_log,
                 test_status=test_result["status"],
                 container_logs=container_log,
             )
 
-            conversation = Conversation().add_message(
-                Response(role="user", text=prompt)
-            )
+            conversation.add_message(Response(role="user", text=prompt))
             response = reasoning_model.generate(
                 conversation,
                 temperature=0,
@@ -264,17 +319,23 @@ def iterate_whitebox(
 
     parsed_verdicts = "\n```\n\n```\n".join(verdicts)
 
-    prompt = templates.aggregate_verdicts.format(
-        scenario_title=scenario["title"],
-        scenario_description=scenario["description"],
-        scenario_openapi=scenario["schema"],
-        header_code=scenario["header_code"],
+    conversation = aggregate_judge_conversation(
+        scenario,
+        test_header=scenario["header_code"],
         test_code=test_code,
         test_spec=test_spec,
-        verdicts=parsed_verdicts,
     )
-
-    conversation = Conversation().add_message(Response(role="user", text=prompt))
+    conversation.add_message(
+        Response(
+            role="user",
+            text=(
+                "Aggregate these independent per-implementation assessments into "
+                "one verdict for this test:\n```\n"
+                + parsed_verdicts
+                + "\n```"
+            ),
+        )
+    )
     response = reasoning_model.generate(
         conversation,
         temperature=0,
@@ -300,39 +361,31 @@ def iterate_whitebox(
     if verdict == 2:  # test is correct
         modified_implementations = []
         for key, test_result in test_results.items():
-            impl_format = templates.iterate_test_2_format.format(
-                format_specifications="\n\n".join(
-                    [
-                        f"<{posixpath.basename(path)}>\n```\n```\n</{posixpath.basename(path)}>\n"
-                        for path in implementations[key].keys()
-                    ]
-                )
+            if test_result["status"] == "passed":
+                continue
+            failure = build_functional_failure_record(
+                loop="whitebox",
+                iteration=iteration,
+                implementation_key=key,
+                implementation=implementations[key],
+                test_results={test_name: test_result},
+                trigger_test=test_name,
+                judge_verdict=verdict,
             )
-
-            prompt = templates.iterate_test_2.format(
-                format_specifications=impl_format,
-                implementation="\n\n".join(
-                    [
-                        f"File {posixpath.basename(path)}:\n```\n{content.strip()}\n```\n"
-                        for path, content in implementations[key].items()
-                    ]
+            persist_functional_failure(scenario_folder_path, failure)
+            implementation_conversation = thread_store.get(
+                scenario, key, implementations[key]
+            )
+            new_implementation = repair_implementation(
+                key=key,
+                implementation=implementations[key],
+                conversation=implementation_conversation,
+                failure=failure,
+                thread_store=thread_store,
+                purpose=(
+                    "iterate_functional_tests: whitebox repairing "
+                    f"implementation {key} for {test_name}"
                 ),
-            )
-
-            conversation.add_message(Response(role="user", text=prompt))
-            response = reasoning_model.generate(
-                conversation,
-                temperature=0,
-                purpose=f"iterate_functional_tests: determining need to correct implementation {key}",
-            )
-            conversation.add_message(response)
-
-            new_implementation = agentic_loop(
-                conversation,
-                lambda c: parse_implementation(c, implementations[key]),
-                args.N_RETRIES,
-                f"parsing re-implementation of {key}",
-                impl_format,
             )
 
             if new_implementation != implementations[key]:
@@ -340,9 +393,6 @@ def iterate_whitebox(
                 modified_implementations.append(key)
             else:
                 logger.info(f"Implementation remains unchanged for {key}")
-
-            while len(conversation.responses) > 2:
-                conversation.remove_message()
         logger.info("Corrected implementations")
         return verdict, None, None, modified_implementations
 

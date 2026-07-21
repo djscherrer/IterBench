@@ -21,6 +21,7 @@ from workspace.scenario_builder_paths import (
 from config import RESULTS_DIR, args, build_tasks, logger, scenario_folder_path
 from functional.generate import generate_tests_code, generate_tests_spec
 from functional.iterate import iterate_blackbox, iterate_whitebox
+from functional.conversations import ImplementationConversationStore
 from utils import (
     clean_code,
     deep_update,
@@ -157,6 +158,7 @@ def generate_and_iterate_tests() -> None:
     )
 
     keys = list(task_dict.keys())
+    implementation_threads = ImplementationConversationStore(scenario_folder_path)
     for it in range(1, args.N_SOL_STEPS + 1):
         it_impl_path = implementation_path(scenario_folder_path, "it", it)
         it_results_exists = os.path.exists(results_summary_path(scenario_folder_path, "it", it))
@@ -182,7 +184,12 @@ def generate_and_iterate_tests() -> None:
                     logger.warning(f"No test execution results found for {key}, skipping blackbox iteration.")
                     continue
                 new_implementation = iterate_blackbox(
-                    scenario, key, model_results, implementations[key]
+                    scenario,
+                    key,
+                    model_results,
+                    implementations[key],
+                    iteration=it,
+                    thread_store=implementation_threads,
                 )
                 if new_implementation != implementations[key]:
                     implementations[key] = new_implementation
@@ -253,7 +260,14 @@ def generate_and_iterate_tests() -> None:
 
                 verdict, test_code, test_spec, modified_implementations = (
                     iterate_whitebox(
-                        i, scenario, test, results, implementations, verdict_cache
+                        i,
+                        scenario,
+                        test,
+                        results,
+                        implementations,
+                        verdict_cache,
+                        iteration=it,
+                        thread_store=implementation_threads,
                     )
                 )
                 if verdict == 0:  # cached verdict

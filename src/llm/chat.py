@@ -43,6 +43,11 @@ class Conversation:
         "and technically accurate responses."
     )
     responses: list[Response] = field(default_factory=list)
+    # A stable provider-side cache routing key.  Callers that create an
+    # append-only conversation can set this once so follow-up requests land on
+    # the same cache shard.  It is intentionally metadata only: the complete
+    # history remains the source of conversational context.
+    cache_key: str | None = None
 
     def __str__(self) -> str:
         s = "### System Prompt ###\n"
@@ -127,6 +132,7 @@ class ChatModel(BaseModel):
             temperature=temperature,
             reasoning_effort=self.reasoning_effort,
         )
+        prompter.cache_key = conversation.cache_key
         if self._provider == "anthropic":
             prompter.anthropic_thinking = self.reasoning
         return prompter

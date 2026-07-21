@@ -19,6 +19,8 @@ Layout under a scenario root (``{args.path}/{scenario}/``)::
     logs/{tag}{n}/{test_name}/{model}/test.log
     logs/llm_cost_ledger.json          per-stage LLM token/cost breakdown (see token_usage.py)
     logs/verdicts.txt
+    failures/functional/<loop><n>-<implementation>.json
+    conversations/functional/implementations/<implementation>.json
 
 All functions take ``root`` (the scenario folder, i.e. ``scenario_folder_path``)
 as their first argument so callers stay explicit about which scenario they mean.
@@ -27,6 +29,7 @@ as their first argument so callers stay explicit about which scenario they mean.
 from __future__ import annotations
 
 import glob
+import hashlib
 import json
 import os
 import pathlib
@@ -42,6 +45,11 @@ def ensure_scenario_dirs(root: str) -> None:
     os.makedirs(os.path.join(root, "results"), exist_ok=True)
     os.makedirs(os.path.join(root, "exports"), exist_ok=True)
     os.makedirs(os.path.join(root, "logs"), exist_ok=True)
+    os.makedirs(os.path.join(root, "failures", "functional"), exist_ok=True)
+    os.makedirs(
+        os.path.join(root, "conversations", "functional", "implementations"),
+        exist_ok=True,
+    )
     for kind in _SNAPSHOT_KIND.values():
         os.makedirs(os.path.join(root, "snapshots", kind), exist_ok=True)
 
@@ -132,6 +140,43 @@ def llm_cost_ledger_path(root: str) -> str:
 
 def verdicts_path(root: str) -> str:
     return os.path.join(root, "logs", "verdicts.txt")
+
+
+def _artifact_filename(value: str) -> str:
+    """Filesystem-safe, readable name for a builder artifact identifier."""
+    readable = "".join(
+        char if char.isalnum() or char in "._-" else "_" for char in value
+    ).strip("._") or "artifact"
+    digest = hashlib.sha256(value.encode("utf-8")).hexdigest()[:10]
+    return f"{readable}-{digest}"
+
+
+def functional_failure_path(
+    root: str, loop: str, iteration: int, implementation_key: str
+) -> str:
+    """Path for one builder functional-failure record.
+
+    ``loop`` is deliberately part of the filename: the same implementation can
+    receive provisional black-box feedback and later specification-validated
+    white-box feedback during the same numeric iteration.
+    """
+    return os.path.join(
+        root,
+        "failures",
+        "functional",
+        f"{loop}{iteration}-{_artifact_filename(implementation_key)}.json",
+    )
+
+
+def implementation_conversation_path(root: str, implementation_key: str) -> str:
+    """Persisted repair thread for one generated implementation."""
+    return os.path.join(
+        root,
+        "conversations",
+        "functional",
+        "implementations",
+        f"{_artifact_filename(implementation_key)}.json",
+    )
 
 
 def write_results(root: str, tag: str, n, full_results: dict) -> None:

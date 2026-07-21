@@ -9,6 +9,7 @@ This module provides various utility functions including:
 
 import os
 import sys
+from collections.abc import Callable
 
 import black
 import isort
@@ -39,7 +40,13 @@ class AgentException(Exception):
 
 
 def agentic_loop(
-    conversation, f, N, action, format_requirements, model_=reasoning_model
+    conversation,
+    f,
+    N,
+    action,
+    format_requirements,
+    model_=reasoning_model,
+    on_response: Callable[[], None] | None = None,
 ):
     """
     Execute a retry loop with model-based error recovery.
@@ -76,6 +83,8 @@ def agentic_loop(
                 conversation, temperature=0, purpose=f"utils: agentic loop for {action}"
             )
             conversation.add_message(response)
+            if on_response is not None:
+                on_response()
         i += 1
     logger.warning(conversation)
     logger.error("aborting...")
