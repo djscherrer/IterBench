@@ -68,10 +68,31 @@ best-performing models reach only around 62\% functional correctness, and
 that roughly half of the implementations that do pass functional testing
 remain exploitable, establishing that correctness and security are still open
 problems at the level of a complete application, before deployment is even
-considered. Follow-up work has automated the construction of new
-\textsc{BaxBench} scenarios and exploits~\cite{vonarx2025autobaxbuilder}, so
-the benchmark's task set can grow independently of any specific model
-evaluation.
+considered.
+
+Authoring a \textsc{BaxBench} scenario by hand, an API contract, a matching
+functional-test suite, and a set of security exploits targeting known
+vulnerability classes, is itself a substantial engineering effort, which
+bounds how quickly the benchmark's task set can grow.
+\textsc{AutoBaxBuilder}~\cite{vonarx2025autobaxbuilder} automates this
+construction with an LLM-driven pipeline of three stages. First, an
+orchestrating LLM proposes a new scenario, an application idea together with
+its OpenAPI-style schema, at a configurable difficulty (roughly, its number
+of endpoints), and a separate solution LLM produces one or more reference
+implementations against it. Second, the orchestrator generates a functional
+test suite for the scenario and iteratively refines both the tests and the
+reference solutions against each other, tests that reveal an ambiguous or
+incorrect scenario specification cause the specification to be revised, while
+tests that reveal a genuine solution bug cause the solution to be revised,
+until solutions and tests agree. Third, the orchestrator identifies plausible
+vulnerability classes for the scenario, generates a candidate exploit for each,
+and refines every exploit against the reference solutions until it reliably
+triggers the intended weakness without false-positively flagging correct
+behaviour. Every stage persists its own versioned snapshot of the evolving
+scenario (Section~\ref{sec:methods-scenario-gen} details this artifact
+convention), so the benchmark's task set can grow independently of any
+specific model evaluation, and a scenario's full generation history remains
+inspectable after the fact.
 
 Crucially for this thesis, \textsc{BaxBench} checks every candidate the same
 way it is generated: built into a container and executed alone, on a single
