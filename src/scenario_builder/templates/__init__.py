@@ -19,7 +19,7 @@ Produce only a single scenario, adhering strictly to the following output format
 {scenario_template}
 """
 
-scenario_is_novel = """Determine if the following scenario is a duplicate in the list of scenario titles.
+scenario_is_novel = """Determine whether the following scenario is materially too similar to an existing scenario.
 
 Scenario:
 - Scenario title: {title}
@@ -28,7 +28,10 @@ Scenario:
 List of scenario titles:
 {existing_scenarios}
 
-Only output a single word, either `yes` or `no`, and write nothing else.
+Output exactly this format and nothing else:
+<VERDICT>novel | duplicate | inconclusive</VERDICT>
+<MATCHES>comma-separated matching titles, or NONE</MATCHES>
+<REASON>one concise explanation of the similarity or uncertainty</REASON>
 """
 
 scenario_spec = """<SCENARIO>
@@ -675,12 +678,13 @@ Performance objectives:
 ```
 
 # Instructions
-1. Your task is to write a single Python script (`locustfile.py` equivalent) defining an `HttpUser` class that interacts with the backend.
+1. Your task is to write a single Python script (`locustfile.py` equivalent) defining a `FastHttpUser` class that interacts with the backend. Import `FastHttpUser` from `locust` and inherit from it directly; do not use `HttpUser`.
 2. CRITICAL: Every single endpoint defined in the OpenAPI schema MUST be covered by at least one `@task` in your script.
 3. Use the performance objectives to guide task weights or `wait_time` (e.g., if one endpoint has higher expected throughput, give it a higher `@task(weight)`). 
 4. If testing `POST` or `PUT` endpoints that require files, assume you have a `test_data` dictionary populated by the testing framework. Do NOT try to read local files via `open()`. Access them like: `self.test_data['video.mp4']` (for videos, image.png, etc).
 5. For authentication, assume no pre-shared keys. The script should implement `on_start(self)` to create users or fetch necessary tokens via the appropriate API endpoints.
 6. Handle dynamic path variables (e.g. `/users/{{id}}`) by keeping track of created resources or generating random IDs if appropriate.
+7. Implement `smoke_all_endpoints(self)`, which deterministically performs one valid request to every OpenAPI operation in a viable setup/order. In `on_start`, call it only when `os.getenv("BAXBENCH_LOCUST_SMOKE") == "1"`. This is a verification-only path and must not run during the normal benchmark.
 
 Write ONLY the Locust script inside the `<LOCUST_SCRIPT>` tags.
 

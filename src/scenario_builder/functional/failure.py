@@ -9,24 +9,13 @@ from __future__ import annotations
 
 import hashlib
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Literal
 
+from failure import FailureRecord, persist_failure_record, sanitize_test_log_tail, trim
 from workspace.scenario_builder_paths import functional_failure_path
 
 FunctionalLoop = Literal["blackbox", "whitebox"]
-
-
-def _trim(text: str, *, max_chars: int) -> str:
-    text = (text or "").strip()
-    return text if len(text) <= max_chars else text[:max_chars] + "\n…(truncated)"
-
-
-def _sanitize_test_log_tail(text: str) -> str:
-    """Do not send explicit expected-value oracle lines to a repair agent."""
-    return "\n".join(
-        line for line in (text or "").splitlines() if "expected" not in line.lower()
-    ).strip()
 
 
 @dataclass(frozen=True)
@@ -51,7 +40,9 @@ class FunctionalFailureEvidence:
         blob = f"{self.per_test_log_tail}\n{self.container_error_excerpt}".lower()
         if "timed out" in blob or "timeout" in blob:
             return "timeout — endpoint did not respond in time"
-        if any(marker in blob for marker in ("traceback", "exception", "error:", "panic")):
+        if any(
+            marker in blob for marker in ("traceback", "exception", "error:", "panic")
+        ):
             return "server error (unhandled exception)"
         if "mismatch" in blob or "expected" in blob:
             return "incorrect response (wrong body / values)"
@@ -61,7 +52,7 @@ class FunctionalFailureEvidence:
 
 
 @dataclass(frozen=True)
-class BuilderCodeFailureRecord:
+class BuilderCodeFailureRecord(FailureRecord):
     """K8s-compatible functional-code evidence without K8s orchestration state."""
 
     phase: Literal["code"]
@@ -75,12 +66,8 @@ class BuilderCodeFailureRecord:
     passed_tests: tuple[str, ...] = ()
 
     def to_dict(self) -> dict[str, object]:
-        result: dict[str, object] = {
-            "phase": self.phase,
-            "kind": self.kind,
-            "iteration_id": self.iteration_id,
-            "summary": self.summary,
-            "attempt": self.attempt,
+        result = {
+            **self.common_dict(),
             "num_passed_ft": self.num_passed_ft,
             "num_total_ft": self.num_total_ft,
             "failed_tests": [failure.to_dict() for failure in self.failed_tests],
@@ -105,7 +92,14 @@ class BuilderCodeFailureRecord:
                 ]
             )
             if failure.per_test_log_tail:
-                lines.extend(["- Test harness observed:", "```", failure.per_test_log_tail, "```"])
+                lines.extend(
+                    [
+                        "- Test harness observed:",
+                        "```",
+                        failure.per_test_log_tail,
+                        "```",
+                    ]
+                )
             if failure.container_error_excerpt:
                 lines.extend(
                     [
@@ -132,7 +126,7 @@ def implementation_digest(implementation: dict) -> str:
 
 
 @dataclass(frozen=True)
-class BuilderFunctionalFailureRecord:
+class BuilderFunctionalFailureRecord(FailureRecord):
     """A K8s-compatible code failure with scenario-builder routing metadata."""
 
     phase: Literal["functional"]
@@ -143,11 +137,22 @@ class BuilderFunctionalFailureRecord:
     code_failure: BuilderCodeFailureRecord
     trigger_test: str | None = None
     judge_verdict: int | None = None
+    kind: Literal["implementation_execution"] = field(
+        init=False, default="implementation_execution"
+    )
+    iteration_id: str = field(init=False)
+    summary: str = field(init=False)
+    attempt: int = field(init=False)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "iteration_id", f"{self.loop}{self.iteration}")
+        object.__setattr__(self, "summary", self.code_failure.summary)
+        object.__setattr__(self, "attempt", self.iteration)
 
     def to_dict(self) -> dict[str, object]:
         return {
             "schema_version": 1,
-            "phase": self.phase,
+            **self.common_dict(),
             "loop": self.loop,
             "iteration": self.iteration,
             "implementation_key": self.implementation_key,
@@ -210,7 +215,7 @@ def build_functional_failure_record(
             passed_names.append(test_name)
             continue
         if isinstance(result, dict):
-            test_log = _sanitize_test_log_tail(str(result.get("test_logs") or ""))
+            test_log = sanitize_test_log_tail(str(result.get("test_logs") or ""))
             container_log = str(result.get("container_logs") or "")
         else:
             test_log = str(result)
@@ -219,8 +224,8 @@ def build_functional_failure_record(
             FunctionalFailureEvidence(
                 name=test_name,
                 status=status,
-                per_test_log_tail=_trim(test_log, max_chars=800),
-                container_error_excerpt=_trim(container_log, max_chars=1600),
+                per_test_log_tail=trim(test_log, max_chars=800),
+                container_error_excerpt=trim(container_log, max_chars=1600),
             )
         )
 
@@ -229,7 +234,11 @@ def build_functional_failure_record(
     iteration_id = f"{loop}{iteration}"
     summary = (
         f"Functional tests ({loop} iteration {iteration}): {passed}/{total} passed"
-        + (f"; failed: {', '.join(failure.name for failure in failures)}" if failures else "")
+        + (
+            f"; failed: {', '.join(failure.name for failure in failures)}"
+            if failures
+            else ""
+        )
     )
     code_failure = BuilderCodeFailureRecord(
         phase="code",
@@ -254,12 +263,11 @@ def build_functional_failure_record(
     )
 
 
-def persist_functional_failure(root: str, record: BuilderFunctionalFailureRecord) -> str:
+def persist_functional_failure(
+    root: str, record: BuilderFunctionalFailureRecord
+) -> str:
     """Write a builder failure record and return its path."""
     path = functional_failure_path(
         root, record.loop, record.iteration, record.implementation_key
     )
-    with open(path, "w", encoding="utf-8") as file:
-        json.dump(record.to_dict(), file, indent=2, sort_keys=True)
-        file.write("\n")
-    return path
+    return str(persist_failure_record(path, record))

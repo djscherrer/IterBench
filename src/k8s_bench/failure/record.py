@@ -6,6 +6,8 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Literal, TypeAlias
 
+from failure import FailureRecord
+
 from .text import failure_prompt_header, sanitize_test_log_tail, trim
 
 Phase = Literal["decision", "code", "spec", "deploy", "bench"]
@@ -18,7 +20,7 @@ DecisionFailureKind = Literal["llm_call", "llm_parse"]
 
 
 @dataclass(frozen=True)
-class DecisionFailureRecord:
+class DecisionFailureRecord(FailureRecord):
     phase: Literal["decision"]
     kind: DecisionFailureKind
     iteration_id: str
@@ -27,13 +29,7 @@ class DecisionFailureRecord:
     llm_error: str = ""
 
     def to_dict(self) -> dict[str, object]:
-        out: dict[str, object] = {
-            "phase": "decision",
-            "kind": self.kind,
-            "iteration_id": self.iteration_id,
-            "summary": self.summary,
-            "attempt": self.attempt,
-        }
+        out = self.common_dict()
         if self.llm_error:
             out["llm_error"] = self.llm_error
         return out
@@ -57,7 +53,9 @@ class DecisionFailureRecord:
             f"attempt {self.attempt}" if self.attempt is not None else self.iteration_id
         )
         label = (
-            "LLM call failed" if self.kind == "llm_call" else "Could not parse LLM response"
+            "LLM call failed"
+            if self.kind == "llm_call"
+            else "Could not parse LLM response"
         )
         # We persist `diagnostic_excerpt` (typically raw model output) for debugging,
         # but we do not include it in the refinement prompt by default.
@@ -85,7 +83,7 @@ CodeFailureKind = Literal[
 
 
 @dataclass(frozen=True)
-class CodeFailureRecord:
+class CodeFailureRecord(FailureRecord):
     @dataclass(frozen=True)
     class FunctionalFailure:
         """One failing functional test with the evidence we found for it."""
@@ -102,7 +100,9 @@ class CodeFailureRecord:
             }
 
         @classmethod
-        def from_dict(cls, data: dict[str, object]) -> CodeFailureRecord.FunctionalFailure:
+        def from_dict(
+            cls, data: dict[str, object]
+        ) -> CodeFailureRecord.FunctionalFailure:
             return cls(
                 name=str(data.get("name", "")),
                 per_test_log_tail=str(data.get("per_test_log_tail", "")),
@@ -152,7 +152,9 @@ class CodeFailureRecord:
             }
 
         @classmethod
-        def from_dict(cls, data: dict[str, object]) -> CodeFailureRecord.InfrastructureFailure:
+        def from_dict(
+            cls, data: dict[str, object]
+        ) -> CodeFailureRecord.InfrastructureFailure:
             return cls(
                 description=str(data.get("description", "")),
                 evidence=str(data.get("evidence", "")),
@@ -180,13 +182,7 @@ class CodeFailureRecord:
         return self.kind == "infrastructure"
 
     def to_dict(self) -> dict[str, object]:
-        out: dict[str, object] = {
-            "phase": "code",
-            "kind": self.kind,
-            "iteration_id": self.iteration_id,
-            "summary": self.summary,
-            "attempt": self.attempt,
-        }
+        out = self.common_dict()
         if self.num_total_ft:
             out["num_passed_ft"] = self.num_passed_ft
             out["num_total_ft"] = self.num_total_ft
@@ -211,7 +207,9 @@ class CodeFailureRecord:
             if isinstance(entry, dict)
         )
         passed_raw = data.get("passed_tests") or []
-        passed = tuple(str(x) for x in passed_raw) if isinstance(passed_raw, list) else ()
+        passed = (
+            tuple(str(x) for x in passed_raw) if isinstance(passed_raw, list) else ()
+        )
         infra_raw = data.get("infrastructure_failure")
         infra = (
             cls.InfrastructureFailure.from_dict(infra_raw)
@@ -275,7 +273,9 @@ class CodeFailureRecord:
         )
 
     def to_prompt_block(self) -> str:
-        attempt_label = f"attempt {self.attempt}" if self.attempt is not None else self.iteration_id
+        attempt_label = (
+            f"attempt {self.attempt}" if self.attempt is not None else self.iteration_id
+        )
         if self.kind == "infrastructure" and self.infrastructure_failure is not None:
             infra = self.infrastructure_failure
             lines = [
@@ -285,7 +285,14 @@ class CodeFailureRecord:
                 f"- **What broke**: {infra.description}",
             ]
             if infra.evidence:
-                lines.extend(["- **Evidence (raw log line)**:", "  ```", f"  {infra.evidence}", "  ```"])
+                lines.extend(
+                    [
+                        "- **Evidence (raw log line)**:",
+                        "  ```",
+                        f"  {infra.evidence}",
+                        "  ```",
+                    ]
+                )
             blocked_names = [ft.name for ft in self.failed_tests]
             if blocked_names:
                 lines.append(
@@ -322,9 +329,11 @@ class CodeFailureRecord:
             label = (
                 "LLM call failed"
                 if self.kind == "llm_call"
-                else "Could not parse LLM response"
-                if self.kind == "llm_parse"
-                else "Functional-test runner failed"
+                else (
+                    "Could not parse LLM response"
+                    if self.kind == "llm_parse"
+                    else "Functional-test runner failed"
+                )
             )
             return "\n".join(
                 [
@@ -356,14 +365,21 @@ class CodeFailureRecord:
                 if observed:
                     lines.append("  - Test harness observed:")
                     lines.append("    ```")
-                    lines.extend("    " + line for line in trim(observed, max_chars=800).splitlines())
+                    lines.extend(
+                        "    " + line
+                        for line in trim(observed, max_chars=800).splitlines()
+                    )
                     lines.append("    ```")
                 if ft.container_error_excerpt.strip():
-                    lines.append("  - Application error from container logs (your app's own output):")
+                    lines.append(
+                        "  - Application error from container logs (your app's own output):"
+                    )
                     lines.append("    ```")
                     lines.extend(
                         "    " + line
-                        for line in trim(ft.container_error_excerpt, max_chars=1600).splitlines()
+                        for line in trim(
+                            ft.container_error_excerpt, max_chars=1600
+                        ).splitlines()
                     )
                     lines.append("    ```")
         if self.passed_tests:
@@ -381,7 +397,7 @@ SpecFailureKind = Literal["spec_validation", "llm_call", "llm_parse"]
 
 
 @dataclass(frozen=True)
-class SpecFailureRecord:
+class SpecFailureRecord(FailureRecord):
     phase: Literal["spec"]
     kind: SpecFailureKind
     iteration_id: str
@@ -392,14 +408,7 @@ class SpecFailureRecord:
     llm_error: str = ""
 
     def to_dict(self) -> dict[str, object]:
-        out: dict[str, object] = {
-            "phase": "spec",
-            "kind": self.kind,
-            "iteration_id": self.iteration_id,
-            "summary": self.summary,
-        }
-        if self.attempt is not None:
-            out["attempt"] = self.attempt
+        out = self.common_dict(include_null_attempt=False)
         if self.errors:
             out["errors"] = list(self.errors)
         if self.warnings:
@@ -410,8 +419,16 @@ class SpecFailureRecord:
 
     @classmethod
     def from_dict(cls, data: dict[str, object]) -> "SpecFailureRecord":
-        errs = tuple(str(x) for x in (data.get("errors") or []) if str(x).strip()) if isinstance(data.get("errors"), list) else ()
-        warns = tuple(str(x) for x in (data.get("warnings") or []) if str(x).strip()) if isinstance(data.get("warnings"), list) else ()
+        errs = (
+            tuple(str(x) for x in (data.get("errors") or []) if str(x).strip())
+            if isinstance(data.get("errors"), list)
+            else ()
+        )
+        warns = (
+            tuple(str(x) for x in (data.get("warnings") or []) if str(x).strip())
+            if isinstance(data.get("warnings"), list)
+            else ()
+        )
         return cls(
             phase="spec",
             kind=str(data.get("kind") or "spec_validation"),  # type: ignore[arg-type]
@@ -442,11 +459,15 @@ class SpecFailureRecord:
         label = (
             "failed static validation"
             if self.kind == "spec_validation"
-            else "LLM call failed"
-            if self.kind == "llm_call"
-            else "could not parse LLM response"
+            else (
+                "LLM call failed"
+                if self.kind == "llm_call"
+                else "could not parse LLM response"
+            )
         )
-        attempt_label = f"attempt {self.attempt}" if self.attempt is not None else self.iteration_id
+        attempt_label = (
+            f"attempt {self.attempt}" if self.attempt is not None else self.iteration_id
+        )
         lines = [
             f"**Spec stage (`{attempt_label}`): {label}.**",
             "",
@@ -482,7 +503,7 @@ DeployFailureKind = Literal[
 
 
 @dataclass(frozen=True)
-class DeployFailureRecord:
+class DeployFailureRecord(FailureRecord):
     phase: Literal["deploy"]
     kind: DeployFailureKind
     iteration_id: str
@@ -492,13 +513,7 @@ class DeployFailureRecord:
     diagnostic_excerpt: str = ""
 
     def to_dict(self) -> dict[str, object]:
-        out: dict[str, object] = {
-            "phase": "deploy",
-            "kind": self.kind,
-            "iteration_id": self.iteration_id,
-            "summary": self.summary,
-            "attempt": self.attempt,
-        }
+        out = self.common_dict()
         if self.details:
             out["details"] = dict(self.details)
         if self.diagnostic_excerpt:
@@ -546,7 +561,9 @@ class DeployFailureRecord:
             lines.extend(["", "### kubectl wait details"])
             for resource, detail in wait_lines:
                 lines.append(f"- **{resource}**: {detail}")
-        other_details = {k: v for k, v in self.details.items() if not k.startswith("wait/")}
+        other_details = {
+            k: v for k, v in self.details.items() if not k.startswith("wait/")
+        }
         if other_details:
             lines.extend(["", "### Additional checks"])
             for k, v in other_details.items():
@@ -561,7 +578,12 @@ class DeployFailureRecord:
                     "```",
                 ]
             )
-        lines.extend(["", "Fix replicas, resources, and placement so pods schedule and become Ready."])
+        lines.extend(
+            [
+                "",
+                "Fix replicas, resources, and placement so pods schedule and become Ready.",
+            ]
+        )
         return "\n".join(lines)
 
 
@@ -577,7 +599,7 @@ BenchFailureKind = Literal[
 
 
 @dataclass(frozen=True)
-class BenchFailureRecord:
+class BenchFailureRecord(FailureRecord):
     phase: Literal["bench"]
     kind: BenchFailureKind
     iteration_id: str
@@ -586,13 +608,7 @@ class BenchFailureRecord:
     diagnostic_excerpt: str = ""
 
     def to_dict(self) -> dict[str, object]:
-        out: dict[str, object] = {
-            "phase": "bench",
-            "kind": self.kind,
-            "iteration_id": self.iteration_id,
-            "summary": self.summary,
-            "attempt": self.attempt,
-        }
+        out = self.common_dict()
         if self.diagnostic_excerpt:
             out["diagnostic_excerpt"] = self.diagnostic_excerpt
         return out
@@ -641,7 +657,7 @@ class BenchFailureRecord:
         return "\n".join(lines)
 
 
-FailureRecord: TypeAlias = (
+K8sFailureRecord: TypeAlias = (
     DecisionFailureRecord
     | CodeFailureRecord
     | SpecFailureRecord
@@ -650,7 +666,7 @@ FailureRecord: TypeAlias = (
 )
 
 
-def failure_record_from_dict(data: dict[str, object]) -> FailureRecord:
+def failure_record_from_dict(data: dict[str, object]) -> K8sFailureRecord:
     phase = str(data.get("phase") or "")
     if phase == "decision":
         return DecisionFailureRecord.from_dict(data)
@@ -669,9 +685,9 @@ class IterationFailure:
 
     iteration_id: str
     phase: Phase
-    terminal: FailureRecord
+    terminal: K8sFailureRecord
     terminal_attempt: int | None = None
-    attempts: dict[int, FailureRecord] = field(default_factory=dict)
+    attempts: dict[int, K8sFailureRecord] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, object]:
         out: dict[str, object] = {
@@ -693,7 +709,7 @@ class IterationFailure:
             raise ValueError("IterationFailure missing terminal record")
         terminal = failure_record_from_dict(terminal_raw)
         attempts_raw = data.get("attempts") or {}
-        attempts: dict[int, FailureRecord] = {}
+        attempts: dict[int, K8sFailureRecord] = {}
         if isinstance(attempts_raw, dict):
             for key, value in attempts_raw.items():
                 if isinstance(value, dict):
@@ -703,6 +719,10 @@ class IterationFailure:
             iteration_id=str(data.get("iteration_id", "")),
             phase=phase,  # type: ignore[arg-type]
             terminal=terminal,
-            terminal_attempt=int(data["terminal_attempt"]) if data.get("terminal_attempt") is not None else None,
+            terminal_attempt=(
+                int(data["terminal_attempt"])
+                if data.get("terminal_attempt") is not None
+                else None
+            ),
             attempts=attempts,
         )

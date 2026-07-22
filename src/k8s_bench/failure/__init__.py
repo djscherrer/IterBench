@@ -8,6 +8,8 @@ Failure handling for k8s iterative experiments.
 
 from __future__ import annotations
 
+from failure import FailureRecord, RetryTarget
+
 from .build import build_code_failure_record, docker_build_failed_in_test_log
 from .infra import classify_ft_failure
 from .persist import (
@@ -44,10 +46,12 @@ __all__ = [
     "DecisionFailureRecord",
     "DeployFailureKind",
     "DeployFailureRecord",
+    "FailureRecord",
     "FunctionalFailure",
     "InfrastructureFailure",
     "IterationFailure",
     "Phase",
+    "RetryTarget",
     "SpecFailureRecord",
     "build_bench_iteration_failure",
     "build_code_failure_record",

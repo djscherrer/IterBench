@@ -9,6 +9,7 @@ distributed runner load_bench/k8s_bench use for actual cluster benchmarking.
 from __future__ import annotations
 
 import logging
+import os
 import pathlib
 import subprocess
 
@@ -26,6 +27,7 @@ def run_locust_against_container(
     run_time_s: int = 15,
     users: int = 1,
     spawn_rate: int = 1,
+    smoke: bool = False,
 ) -> subprocess.CompletedProcess:
     """Runs the locustfile headless for ``run_time_s`` seconds against
     localhost:target_port, writing ``<csv_prefix>_stats.csv`` (+ siblings)."""
@@ -49,4 +51,9 @@ def run_locust_against_container(
         str(csv_prefix),
     ]
     logger.info("Running locust: %s", " ".join(cmd))
-    return subprocess.run(cmd, capture_output=True, text=True)
+    process_env = os.environ.copy()
+    if smoke:
+        process_env["BAXBENCH_LOCUST_SMOKE"] = "1"
+    else:
+        process_env.pop("BAXBENCH_LOCUST_SMOKE", None)
+    return subprocess.run(cmd, capture_output=True, text=True, env=process_env)

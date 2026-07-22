@@ -1,8 +1,10 @@
-"""Small text helpers for functional-test log excerpts."""
+"""K8s-specific text helpers plus compatibility re-exports from ``failure``."""
 
 from __future__ import annotations
 
 import re
+
+from failure.text import failure_prompt_header, sanitize_test_log_tail, tail, trim
 
 # BaxBench scenarios log assertions as ``... mismatch. Expected <X>, got <Y>``;
 # drop oracle lines so the coding agent cannot hardcode outputs.
@@ -51,41 +53,3 @@ def filter_compile_diagnostics(text: str, *, max_lines: int = 40) -> str:
         if _COMPILE_DIAGNOSTIC_LINE_RE.search(ln)
     ]
     return "\n".join(kept[-max_lines:]).strip()
-
-
-def sanitize_test_log_tail(text: str) -> str:
-    """Strip oracle-revealing lines from a per-test harness log tail."""
-    if not text:
-        return ""
-    kept = [ln for ln in text.splitlines() if not _ORACLE_HINT_RE.search(ln)]
-    return "\n".join(kept).strip()
-
-
-def trim(text: str, *, max_chars: int) -> str:
-    text = (text or "").strip()
-    if len(text) <= max_chars:
-        return text
-    return text[:max_chars] + "\n…(truncated)"
-
-
-def failure_prompt_header(
-    *,
-    stage_label: str,
-    iteration_id: str,
-    attempt: int | None,
-    kind: str,
-) -> list[str]:
-    """Shared opening lines for ``FailureRecord.to_prompt_block()``."""
-    attempt_label = f"attempt {attempt}" if attempt is not None else iteration_id
-    return [
-        f"**{stage_label} (`{attempt_label}`) failed.**",
-        "",
-        f"- **Kind**: `{kind}`",
-        "",
-    ]
-
-
-def tail(text: str, *, max_lines: int, max_chars: int = 1600) -> str:
-    lines = (text or "").splitlines()
-    excerpt = "\n".join(lines[-max_lines:])
-    return trim(excerpt, max_chars=max_chars)

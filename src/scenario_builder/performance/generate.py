@@ -4,10 +4,16 @@ import re
 from typing import Optional
 
 import templates
-from workspace.scenario_builder_paths import implementation_path, latest_index, snapshot_path, spec_path
 from config import args, logger, reasoning_model, scenario_folder_path
 from utils import AgentException, agentic_loop
+
 from llm import Conversation, Response
+from workspace.scenario_builder_paths import (
+    implementation_path,
+    latest_index,
+    snapshot_path,
+    spec_path,
+)
 
 
 def parse_locust_code(conversation: Conversation) -> str:
@@ -36,43 +42,80 @@ def parse_locust_code(conversation: Conversation) -> str:
             f"Unable to compile Locst Script natively. SyntaxError: {e}",
         )
 
-    # Basic quick validation: make sure we have a class extending HttpUser
-    if "HttpUser" not in locust_code:
+    if not uses_fast_http_user(locust_code):
         raise AgentException(
             "ConsistencyError",
-            "The generated script does not seem to define an HttpUser class.",
+            "The generated script must define a class that directly extends FastHttpUser.",
+        )
+    if not uses_deterministic_smoke_contract(locust_code):
+        raise AgentException(
+            "ConsistencyError",
+            "The generated script must define smoke_all_endpoints() and gate it with BAXBENCH_LOCUST_SMOKE.",
         )
 
     return locust_code
 
 
-def generate_locust_code(
-    scenario: dict, conversation: Conversation, feedback: Optional[str] = None
-) -> str:
-    """Generates Python code for the Locust performance script."""
-    
-    prompt = templates.generate_locust_script.format(
-        scenario_title=scenario["title"],
-        scenario_description=scenario["description"],
-        scenario_openapi=scenario["schema"],
-        scenario_performance_objectives=json.dumps(scenario.get("performance_objectives", {}), indent=2),
-        locust_code_template=templates.locust_code_template,
+def uses_fast_http_user(locust_code: str) -> bool:
+    """Whether a generated script directly uses Locust's fast user class."""
+    return bool(
+        re.search(r"from\s+locust\s+import[^\n]*\bFastHttpUser\b", locust_code)
+        and re.search(r"class\s+\w+\s*\(\s*FastHttpUser\s*\)", locust_code)
     )
 
-    if feedback:
-        prompt += (
-            "\n\nPrevious Locust attempt feedback to fix:\n"
-            f"{feedback}\n"
-            "Return a corrected full Locust script in the required format."
+
+def uses_deterministic_smoke_contract(locust_code: str) -> bool:
+    """Whether the script supplies the verification-only endpoint smoke path."""
+    return bool(
+        re.search(r"def\s+smoke_all_endpoints\s*\(", locust_code)
+        and re.search(r"def\s+on_start\s*\(", locust_code)
+        and "self.smoke_all_endpoints()" in locust_code
+        and "BAXBENCH_LOCUST_SMOKE" in locust_code
+    )
+
+
+def generate_locust_code(
+    scenario: dict,
+    conversation: Conversation,
+    feedback: Optional[str] = None,
+    *,
+    on_response=None,
+    on_failure=None,
+) -> str:
+    """Generates Python code for the Locust performance script."""
+
+    if conversation.responses:
+        if not feedback:
+            raise ValueError(
+                "A continuing Locust conversation requires failure feedback."
+            )
+        prompt = (
+            f"{feedback}\n\nReturn one corrected complete Locust script in the required "
+            "format. The scenario contract and previous complete script are already in "
+            "this conversation; do not repeat them in prose."
+        )
+    else:
+        prompt = templates.generate_locust_script.format(
+            scenario_title=scenario["title"],
+            scenario_description=scenario["description"],
+            scenario_openapi=scenario["schema"],
+            scenario_performance_objectives=json.dumps(
+                scenario.get("performance_objectives", {}), indent=2
+            ),
+            locust_code_template=templates.locust_code_template,
         )
 
     conversation.add_message(Response(role="user", text=prompt))
+    if on_response is not None:
+        on_response()
     response = reasoning_model.generate(
         conversation,
-        temperature=0.2, # Slight temp for creative problem solving in generating test data
+        temperature=0.2,  # Slight temp for creative problem solving in generating test data
         purpose="generate_locust_script: generating locust code",
     )
     conversation.add_message(response)
+    if on_response is not None:
+        on_response()
 
     logger.info("Generated Locust script code")
 
@@ -83,6 +126,8 @@ def generate_locust_code(
         args.N_RETRIES,
         "parsing and verifying compilability of the locust script code",
         templates.locust_code_template,
+        on_response=on_response,
+        on_failure=on_failure,
     )
 
     return locust_code
@@ -164,7 +209,9 @@ def generate_performance() -> None:
 
         # Pick a reference implementation that actually has files.
         ref_key = next(iter(non_empty_implementations.keys()))
-        logger.info("Using reference implementation for Locust verification: %s", ref_key)
+        logger.info(
+            "Using reference implementation for Locust verification: %s", ref_key
+        )
         key_parts = ref_key.split()
         env_lang, env_framework = key_parts[0], key_parts[1]
 

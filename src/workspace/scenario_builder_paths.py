@@ -20,7 +20,13 @@ Layout under a scenario root (``{args.path}/{scenario}/``)::
     logs/llm_cost_ledger.json          per-stage LLM token/cost breakdown (see token_usage.py)
     logs/verdicts.txt
     failures/functional/<loop><n>-<implementation>.json
+    failures/performance/locust-<attempt>.json
     conversations/functional/implementations/<implementation>.json
+    conversations/performance/locust.json
+
+Before a scenario title has been accepted, only confirmed generation-failure
+diagnostics may live under ``{args.path}/.scenario_builder/generation_runs/<run-id>/``.
+Candidate scenario content and author conversations remain in memory.
 
 All functions take ``root`` (the scenario folder, i.e. ``scenario_folder_path``)
 as their first argument so callers stay explicit about which scenario they mean.
@@ -46,10 +52,12 @@ def ensure_scenario_dirs(root: str) -> None:
     os.makedirs(os.path.join(root, "exports"), exist_ok=True)
     os.makedirs(os.path.join(root, "logs"), exist_ok=True)
     os.makedirs(os.path.join(root, "failures", "functional"), exist_ok=True)
+    os.makedirs(os.path.join(root, "failures", "performance"), exist_ok=True)
     os.makedirs(
         os.path.join(root, "conversations", "functional", "implementations"),
         exist_ok=True,
     )
+    os.makedirs(os.path.join(root, "conversations", "performance"), exist_ok=True)
     for kind in _SNAPSHOT_KIND.values():
         os.makedirs(os.path.join(root, "snapshots", kind), exist_ok=True)
 
@@ -118,7 +126,9 @@ def results_png_path(root: str, tag: str, n) -> str:
     return os.path.join(results_dir(root, tag, n), "summary.png")
 
 
-def export_path(root: str, tag: str | None = None, n=None, filename: str | None = None) -> str:
+def export_path(
+    root: str, tag: str | None = None, n=None, filename: str | None = None
+) -> str:
     if filename is not None:
         return os.path.join(root, "exports", filename)
     return os.path.join(root, "exports", f"{tag}{n}.py")
@@ -144,9 +154,12 @@ def verdicts_path(root: str) -> str:
 
 def _artifact_filename(value: str) -> str:
     """Filesystem-safe, readable name for a builder artifact identifier."""
-    readable = "".join(
-        char if char.isalnum() or char in "._-" else "_" for char in value
-    ).strip("._") or "artifact"
+    readable = (
+        "".join(
+            char if char.isalnum() or char in "._-" else "_" for char in value
+        ).strip("._")
+        or "artifact"
+    )
     digest = hashlib.sha256(value.encode("utf-8")).hexdigest()[:10]
     return f"{readable}-{digest}"
 
@@ -179,6 +192,42 @@ def implementation_conversation_path(root: str, implementation_key: str) -> str:
     )
 
 
+def locust_failure_path(root: str, attempt: int, kind: str) -> str:
+    """Path for a Locust generation/verification failure record."""
+    return os.path.join(
+        root,
+        "failures",
+        "performance",
+        f"locust-{attempt}-{_artifact_filename(kind)}.json",
+    )
+
+
+def locust_candidate_path(root: str, attempt: int) -> str:
+    """Preserve an invalid Locust candidate without marking it scenario-valid."""
+    return os.path.join(root, "failures", "performance", f"locust-{attempt}.py")
+
+
+def locust_conversation_path(root: str) -> str:
+    """Durable Locust-author conversation for one scenario."""
+    return os.path.join(root, "conversations", "performance", "locust.json")
+
+
+def generation_run_dir(root: str, run_id: str) -> str:
+    """Artifact root for scenario generation before a scenario title exists."""
+    return os.path.join(root, ".scenario_builder", "generation_runs", run_id)
+
+
+def generation_failure_path(
+    root: str, run_id: str, stage: str, attempt: int, kind: str
+) -> str:
+    """Path for one scenario-generation failure record."""
+    return os.path.join(
+        generation_run_dir(root, run_id),
+        "failures",
+        f"{stage}-{attempt}-{_artifact_filename(kind)}.json",
+    )
+
+
 def write_results(root: str, tag: str, n, full_results: dict) -> None:
     """Persist test results as a lean status-only summary.json, with any
     container/test logs split out into sidecar files under logs/."""
@@ -193,7 +242,9 @@ def write_results(root: str, tag: str, n, full_results: dict) -> None:
                 summary[test_name][model_key] = result
                 continue
             summary[test_name][model_key] = {
-                k: v for k, v in result.items() if k not in ("container_logs", "test_logs")
+                k: v
+                for k, v in result.items()
+                if k not in ("container_logs", "test_logs")
             }
             container_logs = result.get("container_logs") or ""
             test_logs = result.get("test_logs") or ""
@@ -235,7 +286,9 @@ def read_results(root: str, tag: str, n, with_logs: bool = True) -> dict:
             d = log_dir(root, tag, n, test_name, model_key)
             c_path = os.path.join(d, "container.log")
             t_path = os.path.join(d, "test.log")
-            entry["container_logs"] = open(c_path).read() if os.path.exists(c_path) else ""
+            entry["container_logs"] = (
+                open(c_path).read() if os.path.exists(c_path) else ""
+            )
             entry["test_logs"] = open(t_path).read() if os.path.exists(t_path) else ""
             full[test_name][model_key] = entry
     return full
@@ -267,7 +320,9 @@ def save_code(files: dict[pathlib.Path, str], code_dir: str) -> None:
 
 def record_verdict(root: str, message: str, verdict: str) -> None:
     """Append a verdict message to this scenario's verdicts log file."""
-    with open(verdicts_path(root), "a") as f:
+    path = verdicts_path(root)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "a") as f:
         f.write(
             f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} | {message=} {verdict=}\n"
         )

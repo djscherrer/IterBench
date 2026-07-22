@@ -107,10 +107,21 @@ locust_code_template = """<LOCUST_SCRIPT>
 ```python
 import random
 import io
-from locust import HttpUser, task, between, constant_pacing
+import os
+from locust import FastHttpUser, task, between, constant_pacing
 
-class GeneratedUser(HttpUser):
+class GeneratedUser(FastHttpUser):
     wait_time = between(1, 2)
+
+    def on_start(self):
+        # Set up normal state/tokens here.
+        if os.getenv("BAXBENCH_LOCUST_SMOKE") == "1":
+            self.smoke_all_endpoints()
+
+    def smoke_all_endpoints(self):
+        # Deterministically call every OpenAPI operation once in a viable order.
+        pass
+
     # Define your tasks here
 ```
 </LOCUST_SCRIPT>

@@ -16,9 +16,7 @@ import isort
 import matplotlib.pyplot as plt
 import pandas as pd
 import seaborn as sns
-
 import templates
-from workspace.scenario_builder_paths import record_verdict, results_png_path
 from config import (
     RESULTS_DIR,
     args,
@@ -27,7 +25,9 @@ from config import (
     reasoning_model,
     scenario_folder_path,
 )
+
 from llm import Response
+from workspace.scenario_builder_paths import record_verdict, results_png_path
 
 
 class AgentException(Exception):
@@ -47,6 +47,8 @@ def agentic_loop(
     format_requirements,
     model_=reasoning_model,
     on_response: Callable[[], None] | None = None,
+    on_failure: Callable[[Exception, int], None] | None = None,
+    record_verdicts: bool = True,
 ):
     """
     Execute a retry loop with model-based error recovery.
@@ -65,7 +67,10 @@ def agentic_loop(
             y = f(conversation)
         except Exception as e:
             logger.warning(e)
-            record_verdict(scenario_folder_path, "Error", str(e))
+            if record_verdicts:
+                record_verdict(scenario_folder_path, "Error", str(e))
+            if on_failure is not None:
+                on_failure(e, i + 1)
 
             prompt = templates.fix_error.format(
                 action=action,
@@ -261,7 +266,9 @@ def test_and_evaluate_baxbench(SCENARIO, model_list_test=None):
 
     tasks_list = build_tasks(SCENARIO, model_list=model_list_test)
     handler = TaskHandler(tasks_list, results_dir=RESULTS_DIR, max_concurrent_runs=None)
-    handler.run_tests(samples=[0], timeout=300, num_ports=10000, min_port=12345, force=True)
+    handler.run_tests(
+        samples=[0], timeout=300, num_ports=10000, min_port=12345, force=True
+    )
     evaluated = handler.evaluate_results(samples=[0], ks=[1])
 
     full_results: dict[str, dict[str, dict[str, str]]] = {}
@@ -271,7 +278,9 @@ def test_and_evaluate_baxbench(SCENARIO, model_list_test=None):
         assert len(result.full_results) == 1, result.full_results
         key = f"{task.env.language} {task.env.framework} {task.model}"
         for test_name in result.full_results[0].keys():
-            full_results.setdefault(test_name, {})[key] = result.full_results[0][test_name]
+            full_results.setdefault(test_name, {})[key] = result.full_results[0][
+                test_name
+            ]
     return full_results
 
 
