@@ -113,6 +113,7 @@ def generate_scenario_idea(
             endpoints=args.difficulty,
         )
         conversation.add_message(Response(role="user", text=prompt))
+        session.persist_conversation("idea_author")
 
     try:
         response = reasoning_model.generate(
@@ -131,6 +132,7 @@ def generate_scenario_idea(
         )
         raise
     conversation.add_message(response)
+    session.persist_conversation("idea_author")
 
     def on_failure(exc: Exception, parse_attempt: int) -> None:
         _record(
@@ -149,6 +151,7 @@ def generate_scenario_idea(
         "parsing scenario idea",
         templates.scenario_template,
         on_failure=on_failure,
+        on_response=lambda: session.persist_conversation("idea_author"),
         record_verdicts=False,
     )
 

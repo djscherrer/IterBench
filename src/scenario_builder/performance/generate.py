@@ -163,7 +163,10 @@ def generate_performance() -> None:
     # Local import: generate_and_verify_locust_script (performance/locust_pipeline.py)
     # itself imports generate_locust_code from this module, so importing it at
     # module level here would be circular.
-    from performance.locust_pipeline import generate_and_verify_locust_script
+    from performance.locust_pipeline import (
+        ensure_locust_conversation,
+        generate_and_verify_locust_script,
+    )
 
     logger.info("Generating performance tests")
 
@@ -171,6 +174,7 @@ def generate_performance() -> None:
     scenario_file = _pick_performance_input_file(args.scenario)
     with open(scenario_file, "r", encoding="utf-8") as file:
         scenario = json.load(file)
+    ensure_locust_conversation(scenario)
 
     # Load the best known implementations
     implementations = {}

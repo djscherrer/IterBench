@@ -95,6 +95,8 @@ def generate_openapi(
         scenario_spec=scenario_spec,
     )
     conversation.add_message(Response(role="user", text=prompt))
+    if session is not None:
+        session.persist_conversation("spec_author")
     try:
         response = reasoning_model.generate(
             conversation,
@@ -113,6 +115,8 @@ def generate_openapi(
         )
         raise
     conversation.add_message(response)
+    if session is not None:
+        session.persist_conversation("spec_author")
 
     def on_failure(exc: Exception, _: int) -> None:
         _persist_failure(
@@ -132,6 +136,11 @@ def generate_openapi(
         "validating the OpenAPI schema",
         templates.schema_format,
         on_failure=on_failure,
+        on_response=(
+            (lambda: session.persist_conversation("spec_author"))
+            if session is not None
+            else None
+        ),
         record_verdicts=False,
     )
 
@@ -175,6 +184,8 @@ def generate_text_spec(
             scenario_openapi=scenario["schema"],
         )
     conversation.add_message(Response(role="user", text=prompt))
+    if session is not None:
+        session.persist_conversation("spec_author")
     try:
         response = reasoning_model.generate(
             conversation,
@@ -193,6 +204,8 @@ def generate_text_spec(
         )
         raise
     conversation.add_message(response)
+    if session is not None:
+        session.persist_conversation("spec_author")
 
     def on_failure(exc: Exception, _: int) -> None:
         _persist_failure(
@@ -212,5 +225,10 @@ def generate_text_spec(
         "parsing the textual specification",
         templates.text_spec_format,
         on_failure=on_failure,
+        on_response=(
+            (lambda: session.persist_conversation("spec_author"))
+            if session is not None
+            else None
+        ),
         record_verdicts=False,
     )

@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 from dataclasses import dataclass, field
+from pathlib import Path
 
 from llm import Conversation, Response
 from workspace.scenario_builder_paths import implementation_conversation_path
@@ -99,7 +100,9 @@ class ImplementationConversationStore:
 
         if conversation is None:
             conversation = Conversation(
-                cache_key=_stable_key("implementation", scenario["title"], implementation_key)
+                cache_key=_stable_key(
+                    "implementation", scenario["title"], implementation_key
+                )
             )
             conversation.add_message(
                 Response(
@@ -116,7 +119,11 @@ class ImplementationConversationStore:
                 )
             )
         current_digest = implementation_digest(implementation)
-        if conversation.responses and persisted_digest and persisted_digest != current_digest:
+        if (
+            conversation.responses
+            and persisted_digest
+            and persisted_digest != current_digest
+        ):
             # Snapshots are the source of truth. Reconcile a resumed thread
             # before asking it to repair code that changed outside the process.
             conversation.add_message(
@@ -142,7 +149,9 @@ class ImplementationConversationStore:
 
     def set_implementation(self, implementation_key: str, implementation: dict) -> None:
         """Advance the snapshot digest after the owner returns a valid revision."""
-        self._artifact_digests[implementation_key] = implementation_digest(implementation)
+        self._artifact_digests[implementation_key] = implementation_digest(
+            implementation
+        )
         self.persist(implementation_key)
 
     def persist(self, implementation_key: str) -> None:
@@ -164,6 +173,7 @@ class ImplementationConversationStore:
                 for response in conversation.responses
             ],
         }
+        Path(path).parent.mkdir(parents=True, exist_ok=True)
         with open(path, "w", encoding="utf-8") as file:
             json.dump(payload, file, indent=2)
             file.write("\n")

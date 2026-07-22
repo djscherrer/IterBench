@@ -162,6 +162,14 @@ def generate_and_iterate_tests() -> None:
                 indent=4,
             )
 
+    # Create every implementation-owner conversation when its initial source
+    # snapshot is loaded, not only after it first fails.  This makes the
+    # durable artifact faithfully represent every reference-implementation
+    # worker and lets one thread continue across black- and white-box repair.
+    implementation_threads = ImplementationConversationStore(scenario_folder_path)
+    for key in task_dict:
+        implementation_threads.get(scenario, key, implementations[key])
+
     if os.path.exists(results_summary_path(scenario_folder_path, "it", 0)):
         full_results = read_results(scenario_folder_path, "it", 0)
     else:
@@ -178,10 +186,11 @@ def generate_and_iterate_tests() -> None:
     )
 
     keys = list(task_dict.keys())
-    implementation_threads = ImplementationConversationStore(scenario_folder_path)
     for it in range(1, args.N_SOL_STEPS + 1):
         it_impl_path = implementation_path(scenario_folder_path, "it", it)
-        it_results_exists = os.path.exists(results_summary_path(scenario_folder_path, "it", it))
+        it_results_exists = os.path.exists(
+            results_summary_path(scenario_folder_path, "it", it)
+        )
         if os.path.exists(it_impl_path) and it_results_exists:
             with open(it_impl_path, "r") as file:
                 raw_implementations = json.load(file)
@@ -201,7 +210,9 @@ def generate_and_iterate_tests() -> None:
                     if key in test_results
                 }
                 if not model_results:
-                    logger.warning(f"No test execution results found for {key}, skipping blackbox iteration.")
+                    logger.warning(
+                        f"No test execution results found for {key}, skipping blackbox iteration."
+                    )
                     continue
                 new_implementation = iterate_blackbox(
                     scenario,

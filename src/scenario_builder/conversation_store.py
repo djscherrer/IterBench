@@ -37,7 +37,7 @@ def load_conversation(path: str | Path) -> Conversation | None:
                     reasoning=str(turn.get("reasoning") or ""),
                 )
             )
-    return conversation if conversation.responses else None
+    return conversation
 
 
 def persist_conversation(path: str | Path, conversation: Conversation) -> Path:

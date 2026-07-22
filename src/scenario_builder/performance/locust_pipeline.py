@@ -28,6 +28,7 @@ from llm import Conversation
 from scenario_builder.conversation_store import load_conversation, persist_conversation
 from scenarios.base import Scenario
 from workspace.scenario_builder_paths import (
+    legacy_lowcost_conversation_path,
     locust_candidate_path,
     locust_conversation_path,
 )
@@ -44,6 +45,17 @@ def _locust_cache_key(scenario: dict) -> str:
 def _load_or_create_conversation(scenario: dict) -> Conversation:
     path = locust_conversation_path(scenario_folder_path)
     conversation = load_conversation(path)
+    if conversation is not None and conversation.responses:
+        return conversation
+    legacy_conversation = load_conversation(
+        legacy_lowcost_conversation_path(scenario_folder_path)
+    )
+    if legacy_conversation is not None and legacy_conversation.responses:
+        # Keep the old artifact untouched, but make future reads and writes use
+        # the canonical locust.json filename.
+        persist_conversation(path, legacy_conversation)
+        logger.info("Migrated Locust conversation to %s", path)
+        return legacy_conversation
     if conversation is not None:
         return conversation
     return Conversation(
@@ -54,6 +66,13 @@ def _load_or_create_conversation(scenario: dict) -> Conversation:
         ),
         cache_key=_locust_cache_key(scenario),
     )
+
+
+def ensure_locust_conversation(scenario: dict) -> Conversation:
+    """Create the durable performance-author thread on phase entry."""
+    conversation = _load_or_create_conversation(scenario)
+    persist_conversation(locust_conversation_path(scenario_folder_path), conversation)
+    return conversation
 
 
 def _persist_candidate(attempt: int, code: str) -> None:
@@ -122,6 +141,12 @@ def generate_and_verify_locust_script(
     script retry; reference implementation and harness failures are preserved
     for diagnosis instead of being misattributed to the script author.
     """
+    # Persist the author artifact on phase entry, including for scenarios that
+    # already have a verified script and therefore need no model call.
+    conversation = ensure_locust_conversation(scenario_dict)
+    conversation_path = locust_conversation_path(scenario_folder_path)
+    persist = lambda: persist_conversation(conversation_path, conversation)
+
     existing = scenario_dict.get("locust_script")
     if (
         existing
@@ -168,10 +193,6 @@ def generate_and_verify_locust_script(
     )
     ref_impl_key = next(iter(implementations))
     ref_impl_files = implementations[ref_impl_key]
-    conversation = _load_or_create_conversation(scenario_dict)
-    conversation_path = locust_conversation_path(scenario_folder_path)
-    persist = lambda: persist_conversation(conversation_path, conversation)
-
     feedback: str | None = None
     valid_code = ""
     max_attempts = args.N_RETRIES + 1

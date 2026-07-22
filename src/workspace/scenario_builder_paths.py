@@ -23,10 +23,14 @@ Layout under a scenario root (``{args.path}/{scenario}/``)::
     failures/performance/locust-<attempt>.json
     conversations/functional/implementations/<implementation>.json
     conversations/performance/locust.json
+    conversations/scenario_generation/idea_author.json
+    conversations/scenario_generation/spec_author.json
 
-Before a scenario title has been accepted, only confirmed generation-failure
-diagnostics may live under ``{args.path}/.scenario_builder/generation_runs/<run-id>/``.
-Candidate scenario content and author conversations remain in memory.
+Before a scenario title has been accepted, the candidate itself remains in
+memory. Its author conversations and confirmed generation-failure diagnostics
+are persisted under ``{args.path}/.scenario_builder/generation_runs/<run-id>/``.
+Once accepted, the author conversations are copied into the scenario artifact
+directory alongside the canonical scenario definition.
 
 All functions take ``root`` (the scenario folder, i.e. ``scenario_folder_path``)
 as their first argument so callers stay explicit about which scenario they mean.
@@ -58,6 +62,9 @@ def ensure_scenario_dirs(root: str) -> None:
         exist_ok=True,
     )
     os.makedirs(os.path.join(root, "conversations", "performance"), exist_ok=True)
+    os.makedirs(
+        os.path.join(root, "conversations", "scenario_generation"), exist_ok=True
+    )
     for kind in _SNAPSHOT_KIND.values():
         os.makedirs(os.path.join(root, "snapshots", kind), exist_ok=True)
 
@@ -212,6 +219,11 @@ def locust_conversation_path(root: str) -> str:
     return os.path.join(root, "conversations", "performance", "locust.json")
 
 
+def legacy_lowcost_conversation_path(root: str) -> str:
+    """Short-lived alternate filename, retained for read migration."""
+    return os.path.join(root, "conversations", "performance", "lowcost.json")
+
+
 def generation_run_dir(root: str, run_id: str) -> str:
     """Artifact root for scenario generation before a scenario title exists."""
     return os.path.join(root, ".scenario_builder", "generation_runs", run_id)
@@ -226,6 +238,18 @@ def generation_failure_path(
         "failures",
         f"{stage}-{attempt}-{_artifact_filename(kind)}.json",
     )
+
+
+def generation_conversation_path(root: str, run_id: str, author: str) -> str:
+    """Durable pre-title conversation for one scenario-generation author."""
+    return os.path.join(
+        generation_run_dir(root, run_id), "conversations", f"{author}.json"
+    )
+
+
+def scenario_generation_conversation_path(root: str, author: str) -> str:
+    """Accepted scenario's copy of one scenario-generation author history."""
+    return os.path.join(root, "conversations", "scenario_generation", f"{author}.json")
 
 
 def write_results(root: str, tag: str, n, full_results: dict) -> None:

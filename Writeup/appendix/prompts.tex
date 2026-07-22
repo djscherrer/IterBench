@@ -25,6 +25,12 @@ iteration folders the agent's own prior \texttt{<CODE>} and
 \texttt{<SPEC>} responses live under in conversation history; the context
 block is either the previous iteration's benchmark feedback or its
 failure record, never both.
+When the previous iteration completed successfully, the benchmark-feedback
+block has the structure described in Section~\ref{sec:methods-bench}: an
+adaptive-ramp summary, endpoint-level Locust statistics and HTTP errors,
+followed by deterministically aggregated diagnostics. Thus the decision
+prompt receives the evidence behind the prior score, not only its goodput
+value.
 
 \small
 \begin{verbatim}
@@ -59,8 +65,10 @@ You may choose **exactly one** path:
 [[pointer block: which iteration folder holds the current <CODE> /
 <SPEC>, and whether that code currently passes functional tests]]
 
-[[context block: benchmark feedback from iteration-004, OR its
-structured failure record, never both]]
+[[context block: if iteration-004 completed, the iteration-feedback report
+described in the Load Benchmark subsection of Section~\ref{sec:methods-bench}
+(adaptive-ramp summary, endpoint-level Locust table/errors, and aggregated
+diagnostics); otherwise its structured failure record. Never both.]]
 
 ## Output format
 

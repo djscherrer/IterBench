@@ -68,6 +68,7 @@ def generate_scenarios() -> None:
                 ),
             )
         )
+        session.persist_conversation("idea_author")
 
     if scenario is None:
         raise RuntimeError(
@@ -102,5 +103,6 @@ def generate_scenarios() -> None:
 
     with open(full_path, "w", encoding="utf-8") as f:
         json.dump(scenario, f, indent=4)
+    session.persist_accepted_conversations(scenario_folder_path)
 
     logger.info(f"Saved scenario to {full_path}")

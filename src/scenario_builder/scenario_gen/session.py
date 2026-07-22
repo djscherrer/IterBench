@@ -1,4 +1,4 @@
-"""In-memory author conversations and durable failure routing for scenario generation."""
+"""Durable author conversations and failure routing for scenario generation."""
 
 from __future__ import annotations
 
@@ -7,6 +7,11 @@ import uuid
 from dataclasses import dataclass, field
 
 from llm import Conversation
+from scenario_builder.conversation_store import load_conversation, persist_conversation
+from workspace.scenario_builder_paths import (
+    generation_conversation_path,
+    scenario_generation_conversation_path,
+)
 
 from .failure import ScenarioGenerationFailureRecord, persist_generation_failure
 
@@ -18,11 +23,13 @@ def _cache_key(run_id: str, name: str) -> str:
 
 @dataclass
 class ScenarioGenerationSession:
-    """One pre-title run with in-memory authors and persisted diagnostics only.
+    """One pre-title run with durable author histories and diagnostics.
 
-    A candidate and its raw conversation are provisional until novelty, OpenAPI,
-    and text-spec validation all succeed. They therefore remain in memory. A
-    persisted record represents only a confirmed failure observation.
+    Candidate scenario content remains provisional until novelty, OpenAPI, and
+    text-spec validation succeed. The candidate is therefore not written as a
+    scenario artifact before acceptance, but the author history is persisted
+    from the first turn under its generation-run directory. On acceptance, the
+    same histories are copied into the scenario's artifact directory.
     """
 
     root: str
@@ -32,11 +39,31 @@ class ScenarioGenerationSession:
     def conversation(self, name: str, *, system_prompt: str) -> Conversation:
         if name in self._conversations:
             return self._conversations[name]
-        conversation = Conversation(
-            system_prompt=system_prompt, cache_key=_cache_key(self.run_id, name)
-        )
+        path = generation_conversation_path(self.root, self.run_id, name)
+        conversation = load_conversation(path)
+        if conversation is None:
+            conversation = Conversation(
+                system_prompt=system_prompt, cache_key=_cache_key(self.run_id, name)
+            )
         self._conversations[name] = conversation
+        self.persist_conversation(name)
         return conversation
+
+    def persist_conversation(self, name: str) -> str:
+        """Write one author history immediately after any state transition."""
+        return str(
+            persist_conversation(
+                generation_conversation_path(self.root, self.run_id, name),
+                self._conversations[name],
+            )
+        )
+
+    def persist_accepted_conversations(self, scenario_root: str) -> None:
+        """Copy all durable pre-title author histories into the accepted scenario."""
+        for name, conversation in self._conversations.items():
+            persist_conversation(
+                scenario_generation_conversation_path(scenario_root, name), conversation
+            )
 
     def persist_failure(self, record: ScenarioGenerationFailureRecord) -> str:
         return persist_generation_failure(self.root, self.run_id, record)
