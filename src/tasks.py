@@ -20,7 +20,7 @@ from docker.models.containers import Container
 import cwes as cwe
 from db_manager import PostgresConnectionParams, PostgresManager
 from env.base import COMMON_DOCKER_RUN_COMMANDS, Env
-from llm import Parser, Prompter
+from llm import Prompter
 from scenarios.base import AppInstance, FunctionalTest, Scenario, SecurityTest
 
 
@@ -548,10 +548,11 @@ class Task:
             logger.info("-" * 100)
 
             try:
-                model_responses = prompter.prompt_model_batch_with_exp_backoff(
+                prompter.prompt_model_batch_with_exp_backoff(
                     max_retries=max_retries,
                     base_delay=base_delay,
                     max_delay=max_delay,
+                    save_dir=save_dir,
                     logger=logger,
                 )
             except KeyboardInterrupt:
@@ -559,24 +560,6 @@ class Task:
             except Exception as e:
                 logger.exception("got exception:\n%s", str(e), exc_info=e)
                 return
-
-            logger.info(
-                "got model responses:\n%s",
-                "\n\n<<<RESPONSE DELIM>>>\n\n".join(model_responses),
-            )
-            logger.info("-" * 100)
-
-            file_contents = [
-                Parser(self.env, logger).parse_response(r) for r in model_responses
-            ]
-
-            for i, files in enumerate(file_contents):
-                try:
-                    self.save_code(files, results_dir, i)
-                    logger.info("saved code sample %d", i)
-                except Exception as e:
-                    logger.exception("got exception:\n%s", str(e), exc_info=e)
-                logger.info("-" * 80)
 
     def test_code(  # noqa: C901
         self,

@@ -23,17 +23,18 @@ locust = "*"
 faker = "*"
 pydantic = "*"
 beautifulsoup4 = "*"
-natsort = "*"
-openapi-spec-validator = "*"
 psutil = "*"
-seaborn = "*"
 pyperclip = "*"
+natsort = "*"
+black = "*"
+isort = "*"
+seaborn = "*"
+openapi-spec-validator = "*"
 
 [dev-packages]
 mypy = "*"
 black = "*"
 isort = "*"
-
 
 [requires]
 python_version = "3.12"

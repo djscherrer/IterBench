@@ -68,6 +68,7 @@ ANTHROPIC_THINKING_LENGTHS: dict[str, int] = {
     "claude-sonnet-4-20250514": 64000,
     "claude-3-7-sonnet-20250219": 64000,
     "claude-opus-4-1-20250805": 32000,
+    "claude-opus-4-8": 128000,
     "claude-opus-4-7": 128000,
     "claude-opus-4-6": 128000,
 }

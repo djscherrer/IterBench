@@ -31,6 +31,15 @@ from utils import (
 from llm import Conversation
 
 
+def _code_dirs_ready(task_dict: dict[str, str]) -> bool:
+    """True when every tasklist code dir exists and contains at least one file."""
+    for code_dir in task_dict.values():
+        p = Path(code_dir)
+        if not p.is_dir() or not any(p.iterdir()):
+            return False
+    return True
+
+
 def ensure_results_cover_keys(full_results: dict, keys: list[str]) -> None:
     """Ensure each test has a result entry for every implementation key."""
     for test_name, test_results in full_results.items():
@@ -119,10 +128,19 @@ def generate_and_iterate_tests() -> None:
     exec(code, globals())
 
     tasklist_file = tasklist_path(scenario_folder_path)
+    task_dict: dict[str, str] | None = None
     if os.path.exists(tasklist_file):
         with open(tasklist_file, "r") as file:
-            task_dict = json.load(file)
-    else:
+            cached = json.load(file)
+        if _code_dirs_ready(cached):
+            task_dict = cached
+        else:
+            logger.warning(
+                "Stale tasklist (%s): code dirs missing or empty — regenerating solutions",
+                tasklist_file,
+            )
+
+    if task_dict is None:
         from tasks import TaskHandler
 
         task_list = build_tasks(SCENARIO)
@@ -140,16 +158,22 @@ def generate_and_iterate_tests() -> None:
         with open(tasklist_file, "w") as file:
             json.dump(task_dict, file, indent=4)
 
-    implementations = {}
+    implementations: dict[str, dict[PosixPath, str]] = {}
     it0_impl_path = implementation_path(scenario_folder_path, "it", 0)
     if os.path.exists(it0_impl_path):
         with open(it0_impl_path, "r") as file:
             raw_implementations = json.load(file)
+        if any(v for v in raw_implementations.values()):
             implementations = {
                 k: {PosixPath(path): code for path, code in v.items()}
                 for k, v in raw_implementations.items()
             }
-    else:
+        else:
+            logger.warning(
+                "Cached it0 implementations are empty — reloading from code dirs"
+            )
+
+    if not implementations:
         for key, code_dir_str in task_dict.items():
             implementations[key] = load_code(code_dir_str)
         with open(it0_impl_path, "w") as file:

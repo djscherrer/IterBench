@@ -4,9 +4,9 @@ Filesystem I/O for per-iteration artifacts.
 Workspace owns *where* artifacts live on disk and *how* they're serialized. The
 data classes themselves live with their builders/parsers:
 
-- ``IterationFeedback``  → ``feedback.py``           (Locust + kubectl parsing)
-- Phase-specific failure records + ``IterationFailure`` → ``failure/``
-- ``RefinementDecision`` → ``stages/decision.py`` (LLM decision)
+- ``IterationFeedback``  → ``k8s_bench/feedback.py``           (Locust + kubectl parsing)
+- Phase-specific failure records + ``IterationFailure`` → ``k8s_bench/failure/``
+- ``RefinementDecision`` → ``k8s_bench/stages/decision.py`` (LLM decision)
 """
 
 from __future__ import annotations
@@ -18,8 +18,8 @@ from typing import TYPE_CHECKING, Any
 from .paths import iteration_decision_dir
 
 if TYPE_CHECKING:
-    from ..feedback import IterationFeedback
-    from ..stages.decision import RefinementDecision
+    from k8s_bench.feedback import IterationFeedback
+    from k8s_bench.stages.decision import RefinementDecision
 
 
 FEEDBACK_FILENAME = "iteration_feedback.json"
@@ -73,7 +73,7 @@ def write_feedback(
 
 def load_feedback(perf_run_dir: Path) -> "IterationFeedback | None":
     """Load :class:`IterationFeedback` from a bench run directory, if present."""
-    from ..feedback import IterationFeedback, collect_iteration_feedback
+    from k8s_bench.feedback import IterationFeedback, collect_iteration_feedback
 
     json_path = feedback_artifact_path(perf_run_dir)
     if json_path.is_file():
