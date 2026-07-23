@@ -1,4 +1,5 @@
 import re
+from collections.abc import Callable
 
 import templates
 from config import args, logger, reasoning_model
@@ -23,7 +24,12 @@ def parse_tests_spec(conversation: Conversation) -> list[str]:
     return tests
 
 
-def generate_tests_spec(scenario: dict, conversation: Conversation) -> list[str]:
+def generate_tests_spec(
+    scenario: dict,
+    conversation: Conversation,
+    *,
+    on_update: Callable[[], None] | None = None,
+) -> list[str]:
     """Generates functional test specifications for the scenario."""
     prompt = templates.functional_tests_specs.format(
         test_spec_template=templates.test_spec_template,
@@ -37,12 +43,16 @@ def generate_tests_spec(scenario: dict, conversation: Conversation) -> list[str]
     )
 
     conversation.add_message(Response(role="user", text=prompt))
+    if on_update is not None:
+        on_update()
     response = reasoning_model.generate(
         conversation,
         temperature=0,
         purpose="generate_functional_tests: generating functional test specifications",
     )
     conversation.add_message(response)
+    if on_update is not None:
+        on_update()
 
     logger.info(
         f"Generated {response.text.count('<TEST>')} functional tests for scenario {scenario['title']}"
@@ -54,6 +64,7 @@ def generate_tests_spec(scenario: dict, conversation: Conversation) -> list[str]
         args.N_RETRIES,
         f"parsing functional test specifications for scenario {scenario['title']}",
         templates.test_spec_template,
+        on_response=on_update,
     )
 
 
@@ -127,7 +138,10 @@ def parse_tests_code(
 
 
 def generate_tests_code(
-    scenario: dict, conversation: Conversation
+    scenario: dict,
+    conversation: Conversation,
+    *,
+    on_update: Callable[[], None] | None = None,
 ) -> tuple[str, list[str], list[str]]:
     """Generates Python code for the functional tests."""
     # scnenario_tests_spec_combined = (
@@ -142,12 +156,16 @@ def generate_tests_code(
     )
 
     conversation.add_message(Response(role="user", text=prompt))
+    if on_update is not None:
+        on_update()
     response = reasoning_model.generate(
         conversation,
         temperature=0,
         purpose="generate_functional_tests: generating functional tests code",
     )
     conversation.add_message(response)
+    if on_update is not None:
+        on_update()
 
     logger.info("Generated functional tests code")
 
@@ -158,6 +176,7 @@ def generate_tests_code(
         args.N_RETRIES,
         "parsing, verifying consistency and compilability of the functional tests code",
         templates.tests_code_template,
+        on_response=on_update,
     )
 
     # augment header code

@@ -19,7 +19,6 @@ def completion_token_budget(
     prompter: Prompter,
     *,
     context_lengths: dict[str, int],
-    default_cap: int = 8192,
     hard_cap: int = 65536,
     slack: int = 1024,
 ) -> int:
@@ -29,14 +28,20 @@ def completion_token_budget(
     Subtracts the actual measured prompt size so a large refinement prompt
     no longer triggers ``input + max_tokens > context_window`` errors.
 
-    When ``prompter.model`` is absent from ``context_lengths``, returns
-    ``default_cap`` (historically 8192) — models must be listed with their
-    advertised context window so large codegen completions are not
-    truncated early.
+    Every model passed through here must have an explicit entry in
+    ``context_lengths``. A prior silent fallback to a small default cap
+    masked missing entries; for a reasoning model that default was consumed
+    entirely by internal reasoning tokens before any output was produced,
+    so every completion came back empty (e.g. moonshotai/kimi-k3).
     """
     context = context_lengths.get(prompter.model)
     if context is None:
-        return default_cap
+        raise ValueError(
+            f"No context-length entry for model {prompter.model!r}. Add one to "
+            "the relevant table in llm/config.py (OPENAI_TOGETHER_CONTEXT_LENGTHS, "
+            "VLLM_CONTEXT_LENGTHS, or OPENAI_MAX_COMPLETION_TOKENS) — there is no "
+            "safe default completion-token budget to fall back to."
+        )
     prompt_tokens = estimate_tokens(prompter.system_prompt)
     if prompter.conversational and prompter.history:
         for turn in prompter.history:

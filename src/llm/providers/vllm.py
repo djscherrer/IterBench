@@ -34,7 +34,6 @@ def prompt_vllm(prompter: Prompter, logger: logging.Logger) -> list[str]:
         client=client,
         provider_label="vllm",
         context_lengths=VLLM_CONTEXT_LENGTHS,
-        default_cap=8192,
         extra_kwargs=extra_kwargs,
     )
     if prompter.model in _GPT_OSS_MODELS:

@@ -21,14 +21,16 @@ from workspace.scenario_builder_paths import (
 from config import RESULTS_DIR, args, build_tasks, logger, scenario_folder_path
 from functional.generate import generate_tests_code, generate_tests_spec
 from functional.iterate import iterate_blackbox, iterate_whitebox
-from functional.conversations import ImplementationConversationStore
+from functional.conversations import (
+    FunctionalTestSuiteConversationStore,
+    ImplementationConversationStore,
+)
 from utils import (
     clean_code,
     deep_update,
     test_and_evaluate_baxbench,
     visualize_baxbench_eval,
 )
-from llm import Conversation
 
 
 def _code_dirs_ready(task_dict: dict[str, str]) -> bool:
@@ -82,6 +84,7 @@ def generate_and_iterate_tests() -> None:
     """Generates and iterates on functional tests for the scenario."""
     logger.info("generating tests")
     logger.info(f"Scenario folder path: {scenario_folder_path}")
+    test_suite_threads = FunctionalTestSuiteConversationStore(scenario_folder_path)
 
     iu0_path = snapshot_path(scenario_folder_path, "iu", 0)
     if os.path.exists(iu0_path):
@@ -98,16 +101,21 @@ def generate_and_iterate_tests() -> None:
             with open(iu0_path, "w", encoding="utf-8") as file:
                 json.dump(scenario, file, indent=4)
         code = export_scenario_code(scenario, write=header_changed)
+        test_suite_threads.get(scenario)
     else:
         with open(spec_path(scenario_folder_path), "r", encoding="utf-8") as file:
             scenario = json.load(file)
-            conversation = Conversation()
-            scenario["tests_spec"] = generate_tests_spec(scenario, conversation)
+            conversation = test_suite_threads.begin_initial_generation(scenario)
+            scenario["tests_spec"] = generate_tests_spec(
+                scenario, conversation, on_update=test_suite_threads.persist
+            )
             (
                 scenario["header_code"],
                 scenario["functional_tests_code"],
                 scenario["functional_tests_names"],
-            ) = generate_tests_code(scenario, conversation)
+            ) = generate_tests_code(
+                scenario, conversation, on_update=test_suite_threads.persist
+            )
             scenario["header_code"] = clean_code(
                 augment_header_functional_test_signatures(
                     scenario["header_code"],
@@ -122,6 +130,7 @@ def generate_and_iterate_tests() -> None:
             ), "Mismatch in functional tests specs vs code"
         with open(iu0_path, "w") as file:
             json.dump(scenario, file, indent=4)
+        test_suite_threads.adopt_initial_generation(conversation, scenario)
 
         code = export_scenario_code(scenario)
 
@@ -301,6 +310,7 @@ def generate_and_iterate_tests() -> None:
         if os.path.exists(iu_it_path):
             with open(iu_it_path, "r") as file:
                 scenario = json.load(file)
+            test_suite_threads.get(scenario)
             modified_header = True  # s.t. the iteration doesn't stop prematurely since the else block below is skipped
         else:
             i = 0
@@ -323,6 +333,7 @@ def generate_and_iterate_tests() -> None:
                         verdict_cache,
                         iteration=it,
                         thread_store=implementation_threads,
+                        suite_store=test_suite_threads,
                     )
                 )
                 if verdict == 0:  # cached verdict
@@ -380,6 +391,8 @@ def generate_and_iterate_tests() -> None:
                 i += 1
             with open(iu_it_path, "w") as file:
                 json.dump(scenario, file, indent=4)
+
+        test_suite_threads.set_suite(scenario)
 
         # save/load implementations of current iteration
         iu_impl_path = implementation_path(scenario_folder_path, "iu", it)

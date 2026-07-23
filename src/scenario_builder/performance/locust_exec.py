@@ -1,17 +1,19 @@
 """Runs a Locust script against a running container.
 
-Always local: shells out to ``locust`` headless against ``localhost:<port>``.
-This is a quick smoke check (does the generated script exercise every
-endpoint), not a real benchmark run, so there's no need for the SSH-based
-distributed runner load_bench/k8s_bench use for actual cluster benchmarking.
+Always local: shells out to ``locust`` headless against ``localhost:<port>``
+for the real weighted-load run, and to :mod:`performance.smoke_runner` (a
+separate process, for the same gevent-monkey-patching-isolation reason) for
+the deterministic endpoint-coverage sweep. Neither is a real benchmark run
+at cluster scale, so there's no need for the SSH-based distributed runner
+load_bench/k8s_bench use for actual cluster benchmarking.
 """
 
 from __future__ import annotations
 
 import logging
-import os
 import pathlib
 import subprocess
+import sys
 
 import _bootstrap  # noqa: F401  (baxbench src/ onto sys.path)
 
@@ -27,7 +29,6 @@ def run_locust_against_container(
     run_time_s: int = 15,
     users: int = 1,
     spawn_rate: int = 1,
-    smoke: bool = False,
 ) -> subprocess.CompletedProcess:
     """Runs the locustfile headless for ``run_time_s`` seconds against
     localhost:target_port, writing ``<csv_prefix>_stats.csv`` (+ siblings)."""
@@ -51,9 +52,33 @@ def run_locust_against_container(
         str(csv_prefix),
     ]
     logger.info("Running locust: %s", " ".join(cmd))
-    process_env = os.environ.copy()
-    if smoke:
-        process_env["BAXBENCH_LOCUST_SMOKE"] = "1"
-    else:
-        process_env.pop("BAXBENCH_LOCUST_SMOKE", None)
-    return subprocess.run(cmd, capture_output=True, text=True, env=process_env)
+    return subprocess.run(cmd, capture_output=True, text=True)
+
+
+def run_smoke_against_container(
+    *,
+    locust_file: pathlib.Path,
+    csv_prefix: pathlib.Path,
+    target_port: int,
+    logger: logging.Logger,
+) -> subprocess.CompletedProcess:
+    """Deterministically calls every distinct ``@task`` on the generated
+    script's User class exactly once against localhost:target_port, writing
+    ``<csv_prefix>_stats.csv`` in the same format the real run produces.
+
+    Unlike the weighted real run, coverage here does not depend on how many
+    users/how long a run gets: every task fires exactly once, so a rarely
+    weighted task can't fail to be sampled within a short window.
+    """
+    smoke_runner_script = pathlib.Path(__file__).resolve().parent / "smoke_runner.py"
+    cmd = [
+        sys.executable,
+        str(smoke_runner_script),
+        str(locust_file),
+        "--host",
+        f"http://localhost:{target_port}",
+        "--csv-prefix",
+        str(csv_prefix),
+    ]
+    logger.info("Running deterministic endpoint smoke: %s", " ".join(cmd))
+    return subprocess.run(cmd, capture_output=True, text=True)

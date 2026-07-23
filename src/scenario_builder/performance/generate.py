@@ -47,11 +47,6 @@ def parse_locust_code(conversation: Conversation) -> str:
             "ConsistencyError",
             "The generated script must define a class that directly extends FastHttpUser.",
         )
-    if not uses_deterministic_smoke_contract(locust_code):
-        raise AgentException(
-            "ConsistencyError",
-            "The generated script must define smoke_all_endpoints() and gate it with BAXBENCH_LOCUST_SMOKE.",
-        )
 
     return locust_code
 
@@ -61,16 +56,6 @@ def uses_fast_http_user(locust_code: str) -> bool:
     return bool(
         re.search(r"from\s+locust\s+import[^\n]*\bFastHttpUser\b", locust_code)
         and re.search(r"class\s+\w+\s*\(\s*FastHttpUser\s*\)", locust_code)
-    )
-
-
-def uses_deterministic_smoke_contract(locust_code: str) -> bool:
-    """Whether the script supplies the verification-only endpoint smoke path."""
-    return bool(
-        re.search(r"def\s+smoke_all_endpoints\s*\(", locust_code)
-        and re.search(r"def\s+on_start\s*\(", locust_code)
-        and "self.smoke_all_endpoints()" in locust_code
-        and "BAXBENCH_LOCUST_SMOKE" in locust_code
     )
 
 

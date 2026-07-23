@@ -60,7 +60,6 @@ def single_completion(
     provider_label: str,
     model: str | None = None,
     context_lengths: dict[str, int] = OPENAI_TOGETHER_CONTEXT_LENGTHS,
-    default_cap: int = 8192,
     extra_kwargs: dict[str, Any] | None = None,
 ) -> Any:
     """Run a single (``n=1``) OpenAI-style chat completion and store usage."""
@@ -72,7 +71,6 @@ def single_completion(
         max_tokens=completion_token_budget(
             prompter,
             context_lengths=context_lengths,
-            default_cap=default_cap,
         ),
         **(extra_kwargs or {}),
     )
@@ -96,15 +94,19 @@ def batch_completion(
     if prompter.openai_reasoning:
         extra_kwargs["reasoning_effort"] = prompter.reasoning_effort
     if prompter.provider == "openai":
-        extra_kwargs["max_completion_tokens"] = OPENAI_MAX_COMPLETION_TOKENS.get(
-            prompter.model,
-            completion_token_budget(
+        if prompter.model in OPENAI_MAX_COMPLETION_TOKENS:
+            extra_kwargs["max_completion_tokens"] = OPENAI_MAX_COMPLETION_TOKENS[
+                prompter.model
+            ]
+        else:
+            # dict.get(key, default) would evaluate this fallback eagerly on
+            # every call regardless of whether `key` is present, so it must
+            # stay behind an explicit branch rather than folded into .get().
+            extra_kwargs["max_completion_tokens"] = completion_token_budget(
                 prompter,
                 context_lengths=OPENAI_TOGETHER_CONTEXT_LENGTHS,
-                default_cap=128000,
                 hard_cap=128000,
-            ),
-        )
+            )
     else:
         extra_kwargs["max_tokens"] = completion_token_budget(
             prompter,

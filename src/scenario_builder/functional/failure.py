@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from dataclasses import dataclass, field
 from typing import Literal
 
@@ -17,6 +18,30 @@ from workspace.scenario_builder_paths import functional_failure_path
 
 FunctionalLoop = Literal["blackbox", "whitebox"]
 
+_HTTP_EVIDENCE_RE = re.compile(
+    r"\b(?:request|response|method|path|url|status|headers?|payload|body|json)\b",
+    re.IGNORECASE,
+)
+_SENSITIVE_HTTP_VALUE_RE = re.compile(
+    r"(?i)([\"']?(?:authorization|token|password|secret)[\"']?\s*[:=]\s*)"
+    r"(?:\"[^\"]*\"|'[^']*'|[^,\s}\]]+)"
+)
+_BEARER_TOKEN_RE = re.compile(r"(?i)\bBearer\s+[^\s,;]+")
+
+
+def redact_sensitive_http_values(text: str) -> str:
+    """Keep request diagnostics useful without persisting credentials or tokens."""
+    text = _BEARER_TOKEN_RE.sub("Bearer <redacted>", text or "")
+    return _SENSITIVE_HTTP_VALUE_RE.sub(r"\1<redacted>", text)
+
+
+def _http_evidence_excerpt(test_log: str) -> str:
+    """Keep explicit request/response diagnostics when a test logs them."""
+    matching_lines = [
+        line for line in (test_log or "").splitlines() if _HTTP_EVIDENCE_RE.search(line)
+    ]
+    return trim("\n".join(matching_lines), max_chars=1400)
+
 
 @dataclass(frozen=True)
 class FunctionalFailureEvidence:
@@ -24,6 +49,9 @@ class FunctionalFailureEvidence:
 
     name: str
     status: str = "failed"
+    expected_behavior: str = ""
+    test_code_excerpt: str = ""
+    http_evidence_excerpt: str = ""
     per_test_log_tail: str = ""
     container_error_excerpt: str = ""
 
@@ -31,6 +59,9 @@ class FunctionalFailureEvidence:
         return {
             "name": self.name,
             "status": self.status,
+            "expected_behavior": self.expected_behavior,
+            "test_code_excerpt": self.test_code_excerpt,
+            "http_evidence_excerpt": self.http_evidence_excerpt,
             "per_test_log_tail": self.per_test_log_tail,
             "container_error_excerpt": self.container_error_excerpt,
         }
@@ -97,6 +128,33 @@ class BuilderCodeFailureRecord(FailureRecord):
                         "- Test harness observed:",
                         "```",
                         failure.per_test_log_tail,
+                        "```",
+                    ]
+                )
+            if failure.expected_behavior:
+                lines.extend(
+                    [
+                        "- Generated test's stated behaviour (the scenario contract remains authoritative):",
+                        "```",
+                        failure.expected_behavior,
+                        "```",
+                    ]
+                )
+            if failure.http_evidence_excerpt:
+                lines.extend(
+                    [
+                        "- Observed HTTP request/response details:",
+                        "```",
+                        failure.http_evidence_excerpt,
+                        "```",
+                    ]
+                )
+            if failure.test_code_excerpt:
+                lines.extend(
+                    [
+                        "- Validated test excerpt (white-box evidence):",
+                        "```python",
+                        failure.test_code_excerpt,
                         "```",
                     ]
                 )
@@ -200,6 +258,9 @@ def build_functional_failure_record(
     test_results: dict,
     trigger_test: str | None = None,
     judge_verdict: int | None = None,
+    test_specifications: dict[str, str] | None = None,
+    test_code: dict[str, str] | None = None,
+    include_test_code: bool = False,
 ) -> BuilderFunctionalFailureRecord:
     """Create one typed record from builder result cells for one implementation."""
     passed_names: list[str] = []
@@ -215,15 +276,30 @@ def build_functional_failure_record(
             passed_names.append(test_name)
             continue
         if isinstance(result, dict):
-            test_log = sanitize_test_log_tail(str(result.get("test_logs") or ""))
-            container_log = str(result.get("container_logs") or "")
+            raw_test_log = redact_sensitive_http_values(
+                str(result.get("test_logs") or "")
+            )
+            test_log = sanitize_test_log_tail(raw_test_log)
+            container_log = redact_sensitive_http_values(
+                str(result.get("container_logs") or "")
+            )
         else:
+            raw_test_log = redact_sensitive_http_values(str(result))
             test_log = str(result)
             container_log = ""
         failures.append(
             FunctionalFailureEvidence(
                 name=test_name,
                 status=status,
+                expected_behavior=trim(
+                    (test_specifications or {}).get(test_name, ""), max_chars=1200
+                ),
+                test_code_excerpt=(
+                    trim((test_code or {}).get(test_name, ""), max_chars=2400)
+                    if include_test_code
+                    else ""
+                ),
+                http_evidence_excerpt=_http_evidence_excerpt(raw_test_log),
                 per_test_log_tail=trim(test_log, max_chars=800),
                 container_error_excerpt=trim(container_log, max_chars=1600),
             )

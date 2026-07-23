@@ -30,7 +30,10 @@ def name_of_functional_test2():
 </FUNCTION>
 </CODE>"""
 
-iterate_impl_format = """If according to your analysis there is no mistake in the application code, simply write `OK` and write nothing else. Otherwise, in a short paragraph, first concisely explain the error and then fix it. Output the fixed code in the following format:
+iterate_impl_format = """Return `OK` only when the supplied evidence does not justify a safe source change. Otherwise, first output exactly one evidence-grounded diagnosis in this form:
+<DIAGNOSIS>State only the concrete defect supported by the supplied evidence; do not speculate about unseen requests, tests, or requirements.</DIAGNOSIS>
+
+Then output complete replacement files in the following format, with no other prose:
 {format_specifications}
 """
 
@@ -107,7 +110,6 @@ locust_code_template = """<LOCUST_SCRIPT>
 ```python
 import random
 import io
-import os
 from locust import FastHttpUser, task, between, constant_pacing
 
 class GeneratedUser(FastHttpUser):
@@ -115,11 +117,6 @@ class GeneratedUser(FastHttpUser):
 
     def on_start(self):
         # Set up normal state/tokens here.
-        if os.getenv("BAXBENCH_LOCUST_SMOKE") == "1":
-            self.smoke_all_endpoints()
-
-    def smoke_all_endpoints(self):
-        # Deterministically call every OpenAPI operation once in a viable order.
         pass
 
     # Define your tasks here

@@ -12,15 +12,13 @@ from performance.failure import (
     locust_script_digest,
     persist_locust_failure,
 )
-from performance.generate import (
-    generate_locust_code,
-    uses_deterministic_smoke_contract,
-    uses_fast_http_user,
-)
+from performance.generate import generate_locust_code, uses_fast_http_user
 from performance.verify import (
+    aggregate_smoke_sweep,
     inspect_endpoint_coverage,
     inspect_request_health,
     run_locust,
+    run_smoke_sweep,
 )
 
 from env.base import Env
@@ -92,6 +90,8 @@ def _record(
     code: str = "",
     retry_target: str = "author_agent",
     missing_endpoints: tuple[str, ...] = (),
+    failing_endpoints: tuple[str, ...] = (),
+    failing_by_implementation: dict[str, tuple[str, ...]] | None = None,
     request_count: int = 0,
     failure_count: int = 0,
     diagnostic_excerpt: str = "",
@@ -106,6 +106,8 @@ def _record(
         reference_implementation=reference_implementation,
         script_digest=locust_script_digest(code) if code else "",
         missing_endpoints=missing_endpoints,
+        failing_endpoints=failing_endpoints,
+        failing_by_implementation=failing_by_implementation or {},
         request_count=request_count,
         failure_count=failure_count,
         diagnostic_excerpt=diagnostic_excerpt,
@@ -119,8 +121,6 @@ def _parser_failure_kind(exc: Exception) -> str:
     if name == "SyntaxError":
         return "script_syntax"
     if name == "ConsistencyError":
-        if "smoke_all_endpoints" in str(exc):
-            return "smoke_contract"
         return "invalid_user_class"
     return "script_parse"
 
@@ -148,11 +148,7 @@ def generate_and_verify_locust_script(
     persist = lambda: persist_conversation(conversation_path, conversation)
 
     existing = scenario_dict.get("locust_script")
-    if (
-        existing
-        and uses_fast_http_user(existing)
-        and uses_deterministic_smoke_contract(existing)
-    ):
+    if existing and uses_fast_http_user(existing):
         logger.info(
             "Verified-contract Locust script already present. Skipping generation."
         )
@@ -169,7 +165,7 @@ def generate_and_verify_locust_script(
         return scenario_dict, ip_start
     if existing:
         logger.warning(
-            "Existing Locust script lacks the FastHttpUser/smoke contract; regenerating it."
+            "Existing Locust script lacks the FastHttpUser contract; regenerating it."
         )
         scenario_dict.pop("locust_script", None)
 
@@ -276,18 +272,88 @@ def generate_and_verify_locust_script(
                 continue
             break
 
-        health = inspect_request_health(execution.csv_summary)
+        sweep_results = run_smoke_sweep(
+            env,
+            scenario,
+            locust_code,
+            implementations,
+            primary_key=ref_impl_key,
+            primary_smoke_csv=execution.smoke_csv_summary,
+        )
+        sweep = aggregate_smoke_sweep(scenario_dict, sweep_results)
+        logger.info("Smoke sweep across reference implementations: %s", sweep.summary)
+
+        if sweep.failing_everywhere:
+            # Attempted (not missing) and failed the same way against every
+            # implementation smoke-tested: the request the script sends is
+            # the common factor, not any one implementation's bugs.
+            record = _record(
+                kind="endpoint_failing_everywhere",
+                attempt=attempt,
+                summary=sweep.summary,
+                reference_implementation=ref_impl_key,
+                code=locust_code,
+                retry_target="author_agent",
+                failing_endpoints=sweep.failing_everywhere,
+                diagnostic_excerpt=(
+                    "Implementations smoke-tested: "
+                    f"{', '.join(sweep.implementations_tested) or 'none'}. "
+                    "Unreachable (could not be smoke-tested at all): "
+                    f"{', '.join(sweep.implementations_unreachable) or 'none'}."
+                ),
+            )
+            if attempt < max_attempts:
+                feedback = record.to_prompt_block()
+                logger.warning(
+                    "Retrying Locust author: endpoint(s) fail against every "
+                    "reference implementation, not just the one used for the "
+                    "full verification run."
+                )
+                continue
+            break
+
+        if sweep.failing_by_implementation:
+            # Informational, not a reason to reject this script: these
+            # implementations (not the one used for the full verification
+            # run above) have their own bugs on specific endpoints. Persisted
+            # for visibility/future implementation repair; does not block
+            # accepting the current script.
+            _record(
+                kind="endpoint_unhealthy",
+                attempt=attempt,
+                summary=(
+                    f"{len(sweep.failing_by_implementation)} other reference "
+                    "implementation(s) have endpoint(s) that fail only for them "
+                    "(script and primary implementation are otherwise fine)."
+                ),
+                reference_implementation=ref_impl_key,
+                code=locust_code,
+                retry_target="implementation",
+                failing_by_implementation=sweep.failing_by_implementation,
+            )
+
+        health = inspect_request_health(scenario_dict, execution.csv_summary)
         if not health.ok:
             all_requests_failed = (
                 health.request_count > 0
                 and health.request_count == health.failure_count
             )
-            kind = (
-                "reference_application_unhealthy"
-                if all_requests_failed
-                else "unexpected_request_failures"
-            )
-            retry_target = "implementation" if all_requests_failed else "author_agent"
+            # Three distinct causes, not two: the whole reference app can be
+            # down (every request fails), one or more *specific* endpoints
+            # can be consistently broken while the rest of the app is fine
+            # (still an implementation problem, just a narrower one), or
+            # failures can be scattered across endpoints with no single one
+            # fully broken (more likely something the script itself should
+            # handle, e.g. an occasional bad payload).
+            if all_requests_failed:
+                kind = "reference_application_unhealthy"
+                retry_target = "implementation"
+            elif health.failing_endpoints:
+                kind = "endpoint_unhealthy"
+                retry_target = "implementation"
+            else:
+                kind = "unexpected_request_failures"
+                retry_target = "author_agent"
             record = _record(
                 kind=kind,
                 attempt=attempt,
@@ -295,6 +361,7 @@ def generate_and_verify_locust_script(
                 reference_implementation=ref_impl_key,
                 code=locust_code,
                 retry_target=retry_target,
+                failing_endpoints=health.failing_endpoints,
                 request_count=health.request_count,
                 failure_count=health.failure_count,
                 diagnostic_excerpt=execution.csv_summary,

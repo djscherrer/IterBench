@@ -21,10 +21,16 @@ Layout under a scenario root (``{args.path}/{scenario}/``)::
     logs/verdicts.txt
     failures/functional/<loop><n>-<implementation>.json
     failures/performance/locust-<attempt>.json
-    conversations/functional/implementations/<implementation>.json
+    conversations/implementations/<implementation>.json
+    conversations/functional/test_suite.json
     conversations/performance/locust.json
     conversations/scenario_generation/idea_author.json
     conversations/scenario_generation/spec_author.json
+
+``conversations/implementations/`` is phase-agnostic on purpose: the same
+implementation-owner thread is repaired across the functional and exploit
+phases (and potentially performance), so it lives at the scenario root
+rather than under any one phase's folder.
 
 Before a scenario title has been accepted, the candidate itself remains in
 memory. Its author conversations and confirmed generation-failure diagnostics
@@ -57,10 +63,8 @@ def ensure_scenario_dirs(root: str) -> None:
     os.makedirs(os.path.join(root, "logs"), exist_ok=True)
     os.makedirs(os.path.join(root, "failures", "functional"), exist_ok=True)
     os.makedirs(os.path.join(root, "failures", "performance"), exist_ok=True)
-    os.makedirs(
-        os.path.join(root, "conversations", "functional", "implementations"),
-        exist_ok=True,
-    )
+    os.makedirs(os.path.join(root, "conversations", "functional"), exist_ok=True)
+    os.makedirs(os.path.join(root, "conversations", "implementations"), exist_ok=True)
     os.makedirs(os.path.join(root, "conversations", "performance"), exist_ok=True)
     os.makedirs(
         os.path.join(root, "conversations", "scenario_generation"), exist_ok=True
@@ -189,7 +193,26 @@ def functional_failure_path(
 
 
 def implementation_conversation_path(root: str, implementation_key: str) -> str:
-    """Persisted repair thread for one generated implementation."""
+    """Persisted repair thread for one generated implementation.
+
+    Phase-agnostic: the same implementation-owner thread is continued across
+    the functional and exploit phases (and potentially performance), so it
+    lives directly under ``conversations/`` rather than under one phase's
+    subfolder.
+    """
+    return os.path.join(
+        root,
+        "conversations",
+        "implementations",
+        f"{_artifact_filename(implementation_key)}.json",
+    )
+
+
+def legacy_functional_implementation_conversation_path(
+    root: str, implementation_key: str
+) -> str:
+    """Pre-migration location (nested under the functional phase), retained
+    for read migration only."""
     return os.path.join(
         root,
         "conversations",
@@ -197,6 +220,11 @@ def implementation_conversation_path(root: str, implementation_key: str) -> str:
         "implementations",
         f"{_artifact_filename(implementation_key)}.json",
     )
+
+
+def functional_test_suite_conversation_path(root: str) -> str:
+    """Durable author conversation for one scenario's functional test suite."""
+    return os.path.join(root, "conversations", "functional", "test_suite.json")
 
 
 def locust_failure_path(root: str, attempt: int, kind: str) -> str:

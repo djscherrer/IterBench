@@ -16,18 +16,24 @@
 set -euo pipefail
 
 # === EDIT THESE ===========================
-MODE="generate_scenarios"
-SCENARIO=""
+MODE="generate_tests"
+SCENARIO="LockerDropParcelExchange"
 
 # Model(s) whose reference solutions get generated & tested (space-separated).
-MODELS="gpt-5-2025-08-07 claude-sonnet-4-20250514"
+# Prefix with a native provider (openai/, anthropic/, together_ai/, swissai/,
+# openrouter/) to route there directly, e.g. "openai/gpt-5-2025-08-07"
+# "anthropic/claude-sonnet-4-20250514" — same convention as MODELS in
+# bench_k8s.sh. Anything without a recognized prefix (e.g. "z-ai/glm-5.2",
+# "deepseek/deepseek-v3.2") is passed through as-is to OpenRouter.
+MODELS="z-ai/glm-5.2 google/gemini-3.6-flash deepseek/deepseek-v4-flash"
 # Env(s) to generate/test solutions in, e.g. "Python-Flask" (space-separated).
 ENVS="Python-Flask"
 
 # Model powering scenario_builder's own agent/reasoning steps (idea, spec,
 # exploit, and functional-test generation + iteration) — a single model, not
-# the MODELS under test above. Not needed for MODE=export_latest.
-REASONING_MODEL="gpt-5"
+# the MODELS under test above. Same provider-prefix convention as MODELS.
+# Not needed for MODE=export_latest.
+REASONING_MODEL="openai/gpt-5.5-2026-04-23"
 
 # Generation knobs (scenario_builder/config.py defaults shown)
 DIFFICULTY="5"

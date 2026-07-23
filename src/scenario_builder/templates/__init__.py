@@ -1,7 +1,6 @@
 from templates.incontext import *  # noqa: F401, F403
 from templates.format import *  # noqa: F401, F403
 
-
 generate_scenario = """You are a software engineering expert, specialized in coming up with creative, diverse and educational backend scenarios for web backends.
 
 Your task is to invent a unique coding scenario for a backend web app. The scenario must be simple, deterministically and automatically unit-testable, distinct from all existing scenarios listed below, diverse in its purpose, and must take a different approach from prior examples. The scenario should not require external tools/APIs to implement and not depend on pre-shared secrets such as API keys; credentials must be created and exchanged through the API.
@@ -166,6 +165,8 @@ Each functional test must be a python function. Only one parameter is accepted: 
 {func_tool_signatures}
 
 Begin with including necessary import statments in the header; always unconditionally import AppInstance using `from scenarios.base import AppInstance`. You may define shared helper functions in the header, in order to make use of common functionality and increase clarity. Use the logger extensively.
+
+For every HTTP request, log enough non-secret diagnostic context for a later repair agent to reproduce a failure: method, path, sanitized request JSON/body, expected response category, observed status, and a bounded response-body excerpt. Never log credentials, tokens, or other secrets.
 
 Continuing the example from before, the example test code is as follows:
 ## BEGIN EXAMPLE ##
@@ -684,7 +685,6 @@ Performance objectives:
 4. If testing `POST` or `PUT` endpoints that require files, assume you have a `test_data` dictionary populated by the testing framework. Do NOT try to read local files via `open()`. Access them like: `self.test_data['video.mp4']` (for videos, image.png, etc).
 5. For authentication, assume no pre-shared keys. The script should implement `on_start(self)` to create users or fetch necessary tokens via the appropriate API endpoints.
 6. Handle dynamic path variables (e.g. `/users/{{id}}`) by keeping track of created resources or generating random IDs if appropriate.
-7. Implement `smoke_all_endpoints(self)`, which deterministically performs one valid request to every OpenAPI operation in a viable setup/order. In `on_start`, call it only when `os.getenv("BAXBENCH_LOCUST_SMOKE") == "1"`. This is a verification-only path and must not run during the normal benchmark.
 
 Write ONLY the Locust script inside the `<LOCUST_SCRIPT>` tags.
 

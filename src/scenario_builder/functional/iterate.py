@@ -4,14 +4,17 @@ import re
 import templates
 from config import args, logger, reasoning_model, scenario_folder_path
 from functional.conversations import (
+    FunctionalTestSuiteConversationStore,
     ImplementationConversationStore,
     aggregate_judge_conversation,
     pair_judge_conversation,
 )
+from failure import sanitize_test_log_tail, trim
 from functional.failure import (
     BuilderFunctionalFailureRecord,
     build_functional_failure_record,
     persist_functional_failure,
+    redact_sensitive_http_values,
 )
 from utils import AgentException, agentic_loop
 from workspace.scenario_builder_paths import record_verdict
@@ -80,9 +83,10 @@ def repair_implementation(
     prompt = (
         f"{failure.to_prompt_block()}\n\n"
         "Use the scenario contract and latest complete implementation already in "
-        "this conversation. Do not ask for or repeat those artifacts in your "
-        "reasoning. Return `OK` only if no source change is justified. Otherwise "
-        "return complete replacement files in this exact format:\n"
+        "this conversation. Do not ask for or repeat those artifacts. Do not infer "
+        "unseen request payloads, test assertions, or requirements. Return `OK` only "
+        "if the evidence does not support a safe source change. Otherwise return "
+        "complete replacement files in this exact format:\n"
         f"{impl_format}"
     )
     conversation.add_message(Response(role="user", text=prompt))
@@ -93,7 +97,9 @@ def repair_implementation(
     )
     conversation.add_message(response)
     thread_store.persist(key)
-    record_verdict(scenario_folder_path, "FT Implementation repair", response.text.strip())
+    record_verdict(
+        scenario_folder_path, "FT Implementation repair", response.text.strip()
+    )
     revised = agentic_loop(
         conversation,
         lambda c: parse_implementation(c, implementation),
@@ -104,6 +110,22 @@ def repair_implementation(
     )
     thread_store.set_implementation(key, revised)
     return revised
+
+
+def _scenario_test_context(scenario: dict) -> tuple[dict[str, str], dict[str, str]]:
+    """Map functional test names to their textual and executable definitions."""
+    return (
+        dict(
+            zip(scenario["functional_tests_names"], scenario["tests_spec"], strict=True)
+        ),
+        dict(
+            zip(
+                scenario["functional_tests_names"],
+                scenario["functional_tests_code"],
+                strict=True,
+            )
+        ),
+    )
 
 
 def iterate_blackbox(
@@ -135,6 +157,7 @@ def iterate_blackbox(
         implementation_key=key,
         implementation=implementation,
         test_results=test_results,
+        test_specifications=_scenario_test_context(scenario)[0],
     )
     persist_functional_failure(scenario_folder_path, failure)
     conversation = thread_store.get(scenario, key, implementation)
@@ -226,6 +249,74 @@ def parse_verdict_3(conversation: Conversation) -> str:
     return match.group(1).strip()
 
 
+def _test_execution_evidence(test_results: dict) -> str:
+    """Compact, non-secret evidence for the test-suite author after adjudication."""
+    blocks: list[str] = []
+    for implementation_key, result in test_results.items():
+        if not isinstance(result, dict):
+            blocks.append(f"- `{implementation_key}`: {result}")
+            continue
+        blocks.extend(
+            [
+                f"### `{implementation_key}`",
+                f"- Status: `{result.get('status', 'exception')}`",
+            ]
+        )
+        test_logs = trim(
+            sanitize_test_log_tail(
+                redact_sensitive_http_values(str(result.get("test_logs") or ""))
+            ),
+            max_chars=900,
+        )
+        if test_logs:
+            blocks.extend(["- Test log:", "```", test_logs, "```"])
+        container_logs = trim(
+            redact_sensitive_http_values(str(result.get("container_logs") or "")),
+            max_chars=1200,
+        )
+        if container_logs:
+            blocks.extend(
+                ["- Application/container log:", "```", container_logs, "```"]
+            )
+    return "\n".join(blocks) or "No execution diagnostics were captured."
+
+
+def _request_suite_revision(
+    *,
+    scenario: dict,
+    test_name: str,
+    verdict: int,
+    aggregate_assessment: str,
+    test_results: dict,
+    suite_store: FunctionalTestSuiteConversationStore,
+) -> Conversation:
+    """Append an independent reviewer decision to the durable suite history."""
+    action = {
+        1: "correct the test or discard it if it cannot be made sound",
+        3: "add only the information needed to make the test more diagnostic",
+        4: "correct the shared test header without changing unrelated tests",
+    }[verdict]
+    conversation = suite_store.get(scenario)
+    conversation.add_message(
+        Response(
+            role="user",
+            text=(
+                "An independent review has requested a revision to the suite you own. "
+                "The scenario contract remains authoritative. Use the latest complete "
+                "suite already in this conversation; do not repeat unrelated tests.\n\n"
+                f"- Target: `{test_name}`\n"
+                f"- Required action: {action}\n\n"
+                "### Aggregate reviewer assessment\n"
+                f"{aggregate_assessment}\n\n"
+                "### Execution evidence\n"
+                f"{_test_execution_evidence(test_results)}"
+            ),
+        )
+    )
+    suite_store.persist()
+    return conversation
+
+
 def iterate_whitebox(
     i,
     scenario,
@@ -236,6 +327,7 @@ def iterate_whitebox(
     *,
     iteration: int,
     thread_store: ImplementationConversationStore,
+    suite_store: FunctionalTestSuiteConversationStore,
 ):
     logger.info(f"Iterating functional test {test_name}")
 
@@ -330,9 +422,7 @@ The execution logs of the implementation are:
             role="user",
             text=(
                 "Aggregate these independent per-implementation assessments into "
-                "one verdict for this test:\n```\n"
-                + parsed_verdicts
-                + "\n```"
+                "one verdict for this test:\n```\n" + parsed_verdicts + "\n```"
             ),
         )
     )
@@ -355,7 +445,9 @@ The execution logs of the implementation are:
         f"Aggregated verdict on {test_name}: {['Test is wrong', 'Test is correct', 'More information needed', 'Header erronous'][verdict - 1]}"
     )
 
-    record_verdict(scenario_folder_path, "FT Whitebox", conversation.responses[-1].text.strip())
+    record_verdict(
+        scenario_folder_path, "FT Whitebox", conversation.responses[-1].text.strip()
+    )
     verdict_cache[(test_name, "all")] = conversation.responses[-1].text.strip()
 
     if verdict == 2:  # test is correct
@@ -371,6 +463,9 @@ The execution logs of the implementation are:
                 test_results={test_name: test_result},
                 trigger_test=test_name,
                 judge_verdict=verdict,
+                test_specifications={test_name: test_spec},
+                test_code={test_name: test_code},
+                include_test_code=True,
             )
             persist_functional_failure(scenario_folder_path, failure)
             implementation_conversation = thread_store.get(
@@ -396,6 +491,16 @@ The execution logs of the implementation are:
         logger.info("Corrected implementations")
         return verdict, None, None, modified_implementations
 
+    aggregate_assessment = conversation.responses[-1].text.strip()
+    author_conversation = _request_suite_revision(
+        scenario=scenario,
+        test_name=test_name,
+        verdict=verdict,
+        aggregate_assessment=aggregate_assessment,
+        test_results=test_results,
+        suite_store=suite_store,
+    )
+
     if verdict == 1:  # test is wrong
         prompt = templates.iterate_test_1.format(
             format_specifications=templates.iterate_test_1_format
@@ -410,22 +515,24 @@ The execution logs of the implementation are:
             format_specifications=templates.iterate_test_4_format
         )
 
-    conversation.add_message(Response(role="user", text=prompt))
+    author_conversation.add_message(Response(role="user", text=prompt))
 
     response = reasoning_model.generate(
-        conversation,
+        author_conversation,
         temperature=0,
         purpose=f"iterate_functional_tests: following up on verdict {verdict} for {test_name}",
     )
-    conversation.add_message(response)
+    author_conversation.add_message(response)
+    suite_store.persist()
 
     if verdict == 1:
         new_test_code, new_test_spec = agentic_loop(
-            conversation,
+            author_conversation,
             parse_verdict_1,
             args.N_RETRIES,
             "processing updated test",
             templates.iterate_test_1_format,
+            on_response=suite_store.persist,
         )
 
         if new_test_code:
@@ -435,21 +542,23 @@ The execution logs of the implementation are:
         return verdict, new_test_code, new_test_spec, None
     elif verdict == 3:
         new_test_code = agentic_loop(
-            conversation,
+            author_conversation,
             parse_verdict_3,
             args.N_RETRIES,
             "processing augmented test",
             templates.iterate_test_3_format,
+            on_response=suite_store.persist,
         )
         logger.info(f"Augmented test {test_name}")
         return verdict, new_test_code, None, None
     elif verdict == 4:
         header_code = agentic_loop(
-            conversation,
+            author_conversation,
             parse_verdict_3,
             args.N_RETRIES,
             "processing fixed header code",
             templates.iterate_test_4_format,
+            on_response=suite_store.persist,
         )
         logger.info("Fixed header code")
         return verdict, header_code, None, None
