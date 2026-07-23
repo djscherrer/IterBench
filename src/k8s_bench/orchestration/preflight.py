@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from ..cluster.cleanup import cleanup_baxbench_namespaces_after_bench
+from ..cluster.prune import prune_unused_images_for_cluster
 from ..llm_cost import refresh_k8s_cost_summary
 from ..stages.decision import resolve_refinement_mode
 from ..code.docker_image import ensure_docker_image
@@ -124,6 +125,9 @@ def sample_preflight(
     cfg: RunConfig,
 ) -> SampleContext | None:
     """Ensure experiment workspace exists; return context (no baseline codegen)."""
+    sample_logger = logging.getLogger(task.id)
+    # Free disk on control-plane + workers before this sample's iterations.
+    prune_unused_images_for_cluster(cfg.k8s_cluster, logger=sample_logger)
     task_run_dir = task.get_save_dir(results_dir)
     sample_dir = task.get_sample_dir(results_dir, sample)
     k8s_workspace_root(sample_dir, experiment_id=cfg.experiment_id).mkdir(
@@ -212,6 +216,7 @@ def deploy_only_preflight(
     task_run_dir = task.get_save_dir(results_dir)
     sample_dir = task.get_sample_dir(results_dir, sample)
     sample_logger = logging.getLogger(task.id)
+    prune_unused_images_for_cluster(cfg.k8s_cluster, logger=sample_logger)
     experiment_id = cfg.experiment_id
 
     ctx = _deploy_only_iteration_preflight(

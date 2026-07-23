@@ -142,6 +142,70 @@ def _start_registry_local(registry: RegistryConfig, logger: logging.Logger) -> N
     logger.info("Registry listening at %s (and http://127.0.0.1:%s)", registry.endpoint, registry.port)
 
 
+def wipe_local_registry(
+    *,
+    profile_name: str | None = None,
+    logger: logging.Logger | None = None,
+) -> None:
+    """
+    Wipe all images from the local ``baxbench-registry`` by recreating it.
+
+    Removes the container and its anonymous volume, then starts a fresh
+    ``registry:2``. Safe for lab use: experiments rebuild/push as needed.
+    """
+    log = logger or logging.getLogger(__name__)
+    registry = resolve_registry_config(profile_name, logger=log)
+    if registry is None:
+        log.info("No registry configured; skipping registry wipe")
+        return
+
+    vol_proc = subprocess.run(
+        [
+            "docker",
+            "inspect",
+            "-f",
+            '{{range .Mounts}}{{if eq .Destination "/var/lib/registry"}}{{.Name}}{{end}}{{end}}',
+            "baxbench-registry",
+        ],
+        capture_output=True,
+        text=True,
+    )
+    volume_name = (vol_proc.stdout or "").strip() if vol_proc.returncode == 0 else ""
+
+    log.info("Wiping local registry %s (recreate container + volume)", registry.endpoint)
+    subprocess.run(
+        ["docker", "rm", "-f", "baxbench-registry"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if volume_name:
+        rm_vol = subprocess.run(
+            ["docker", "volume", "rm", "-f", volume_name],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if rm_vol.returncode != 0:
+            log.warning(
+                "Could not remove registry volume %s: %s",
+                volume_name,
+                (rm_vol.stderr or rm_vol.stdout).strip()[:200],
+            )
+        else:
+            log.info("Removed registry volume %s", volume_name)
+    else:
+        # Fall back: drop dangling volumes left by the old container.
+        subprocess.run(
+            ["docker", "volume", "prune", "-f"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+    _start_registry_local(registry, log)
+
+
 def _containerd_config_path_awk() -> str:
     """Awk program that normalizes registry ``config_path`` in containerd config.toml.
 

@@ -19,7 +19,7 @@ def completion_token_budget(
     prompter: Prompter,
     *,
     context_lengths: dict[str, int],
-    hard_cap: int = 65536,
+    hard_cap: int = 128000,
     slack: int = 1024,
 ) -> int:
     """
