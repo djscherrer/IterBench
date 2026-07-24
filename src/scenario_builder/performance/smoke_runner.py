@@ -14,8 +14,7 @@ orchestrator process.
 Writes a Locust-compatible ``<csv-prefix>_stats.csv`` using Locust's own
 ``StatsCSV`` writer, so it is a drop-in replacement for the stats file a real
 ``locust --csv`` run would produce: :func:`performance.verify.inspect_endpoint_coverage`
-and :func:`performance.verify.inspect_request_health` read it exactly as they
-would a real run's.
+reads it exactly as it would a real run's.
 """
 
 from __future__ import annotations

@@ -118,6 +118,74 @@ def generate_locust_code(
     return locust_code
 
 
+def parse_review_decision(conversation: Conversation) -> Optional[str]:
+    """Parses the load-review turn's response.
+
+    Returns ``None`` if the author explicitly decided nothing needs to
+    change (``<DECISION>NOTHING_TO_FIX</DECISION>``), or the validated
+    revised script text otherwise. An unrecognized ``<DECISION>`` value is a
+    parse error (retried like any other); a response with no ``<DECISION>``
+    tag at all is assumed to be a script and parsed as one.
+    """
+    raw_response = conversation.responses[-1].text
+    decision_match = re.search(
+        r"<DECISION>\s*(.*?)\s*</DECISION>", raw_response, re.DOTALL
+    )
+    if decision_match:
+        decision = decision_match.group(1).strip().upper()
+        if decision == "NOTHING_TO_FIX":
+            return None
+        raise AgentException(
+            "ParseError", f"Unrecognized <DECISION> value: {decision!r}"
+        )
+    return parse_locust_code(conversation)
+
+
+def review_locust_code(
+    scenario: dict,
+    conversation: Conversation,
+    load_results_report: str,
+    *,
+    on_response=None,
+    on_failure=None,
+) -> Optional[str]:
+    """Sends stage-2 cross-implementation load results to the author and
+    asks it to either fix a genuine script-side problem or explicitly say
+    there's nothing to fix. Returns ``None`` in the latter case, or the
+    validated revised script otherwise.
+    """
+    decision_format = templates.review_locust_decision_format.format(
+        locust_code_template=templates.locust_code_template
+    )
+    prompt = templates.review_locust_load_results.format(
+        load_results_report=load_results_report,
+        review_decision_format=decision_format,
+    )
+    conversation.add_message(Response(role="user", text=prompt))
+    if on_response is not None:
+        on_response()
+    response = reasoning_model.generate(
+        conversation,
+        temperature=0.2,
+        purpose="review_locust_script: reviewing cross-implementation load results",
+    )
+    conversation.add_message(response)
+    if on_response is not None:
+        on_response()
+
+    logger.info("Reviewed Locust script against cross-implementation load results")
+
+    return agentic_loop(
+        conversation,
+        parse_review_decision,
+        args.N_RETRIES,
+        "parsing the load-review decision (nothing-to-fix or a corrected locust script)",
+        decision_format,
+        on_response=on_response,
+        on_failure=on_failure,
+    )
+
+
 def _pick_performance_input_file(stem: str) -> str:
     """
     Choose the best scenario snapshot to base performance generation on.

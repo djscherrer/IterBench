@@ -690,3 +690,26 @@ Write ONLY the Locust script inside the `<LOCUST_SCRIPT>` tags.
 
 {locust_code_template}
 """
+
+review_locust_load_results = """The script above was just run with a real weighted load (100 concurrent simulated users) against every available reference implementation of this scenario. No cluster is involved: each implementation ran as a single backend (+ database, if the scenario needs one) container, tested one at a time, locally.
+
+Below are the per-implementation results: aggregate request/failure counts, distinct failure error messages, and any unhandled exceptions raised while the script itself ran. You are only seeing this because at least one implementation produced a failure or an exception.
+
+{load_results_report}
+
+# Instructions
+Inspect every failure and exception above and decide whether it stems from the script itself -- an unhandled exception raised from inside a task, a request the script sends incorrectly, a race on shared state between simulated users, or weighting/wait_time that produces unrealistic traffic -- or from the reference implementation being tested.
+
+Use the fact that this ran against multiple implementations to help decide: a problem that shows up the same way across every implementation points at the script; a problem isolated to one implementation points at that implementation, not the script -- leave those alone, they are not yours to fix. Likewise, a single failure with no clear cause and nothing similar anywhere else is more likely incidental noise (e.g. a one-off timing collision) than a real defect -- do not invent a fix for noise.
+
+{review_decision_format}
+"""
+
+review_locust_decision_format = """Respond in ONE of the following two ways.
+
+If every failure/exception above is implementation-specific, or looks like incidental noise rather than a real script defect, make NO change and reply with exactly:
+<DECISION>NOTHING_TO_FIX</DECISION>
+
+If you found a genuine script-side problem, fix it and reply with the corrected complete script:
+{locust_code_template}
+"""

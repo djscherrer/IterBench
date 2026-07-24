@@ -12,13 +12,16 @@ from performance.failure import (
     locust_script_digest,
     persist_locust_failure,
 )
-from performance.generate import generate_locust_code, uses_fast_http_user
+from performance.generate import (
+    generate_locust_code,
+    review_locust_code,
+    uses_fast_http_user,
+)
 from performance.verify import (
-    aggregate_smoke_sweep,
+    build_load_review_report,
     inspect_endpoint_coverage,
-    inspect_request_health,
-    run_locust,
-    run_smoke_sweep,
+    run_smoke_only,
+    run_weighted_load_sweep,
 )
 
 from env.base import Env
@@ -136,6 +139,22 @@ def generate_and_verify_locust_script(
 ) -> tuple[dict, int | None]:
     """Generate, verify, and persist one valid Locust script.
 
+    Two stages per candidate script:
+
+    1. **Smoke gate** (cheap, deterministic): every task fired once against
+       the primary reference implementation only. Blocks on parse/build/
+       runtime errors and on any OpenAPI endpoint never reached at all;
+       failures here retry the author with concrete feedback.
+    2. **Load review** (real load, once per candidate that clears stage 1):
+       a weighted load pass (100 users, no cluster -- one backend(+db)
+       container per implementation, sequential) against *every* reference
+       implementation. Stats, distinct failure messages, and unhandled
+       exceptions from all of them are handed back to the author, who
+       decides whether the script itself needs a change; comparing across
+       implementations lets it tell a script bug (the same problem
+       everywhere) from an implementation bug (isolated to one), which is
+       not the script's job to work around.
+
     Failed candidates live alongside structured failures and are never written as
     ``scenario_dict['locust_script']``.  Only author-targeted failures cause a
     script retry; reference implementation and harness failures are preserved
@@ -189,13 +208,9 @@ def generate_and_verify_locust_script(
     )
     ref_impl_key = next(iter(implementations))
     ref_impl_files = implementations[ref_impl_key]
-    feedback: str | None = None
-    valid_code = ""
     max_attempts = args.N_RETRIES + 1
 
-    for attempt in range(1, max_attempts + 1):
-        logger.info("Generating Locust script (attempt %d/%d).", attempt, max_attempts)
-
+    def make_on_parse_failure(attempt: int):
         def on_parse_failure(exc: Exception, _: int) -> None:
             _record(
                 kind=_parser_failure_kind(exc),
@@ -205,55 +220,72 @@ def generate_and_verify_locust_script(
                 diagnostic_excerpt=str(exc),
             )
 
-        try:
-            locust_code = generate_locust_code(
-                scenario_dict,
-                conversation,
-                feedback=feedback,
-                on_response=persist,
-                on_failure=on_parse_failure,
-            )
-        except Exception as exc:
-            _record(
-                kind="model_request",
-                attempt=attempt,
-                summary="Locust-author model request failed.",
-                reference_implementation=ref_impl_key,
-                retry_target="unknown",
-                diagnostic_excerpt=str(exc),
-            )
-            logger.exception("Locust generation could not obtain a model response")
-            break
+        return on_parse_failure
 
+    feedback: str | None = None
+    # Set when a candidate is already in hand (an author revision produced by
+    # the load-review step below) and should go straight to stage-1
+    # validation on the next loop pass, instead of prompting the model again.
+    pending_code: str | None = None
+    valid_code = ""
+
+    attempt = 0
+    while attempt < max_attempts:
+        attempt += 1
+        logger.info("Verifying Locust script (attempt %d/%d).", attempt, max_attempts)
+        on_parse_failure = make_on_parse_failure(attempt)
+
+        if pending_code is None:
+            try:
+                locust_code = generate_locust_code(
+                    scenario_dict,
+                    conversation,
+                    feedback=feedback,
+                    on_response=persist,
+                    on_failure=on_parse_failure,
+                )
+            except Exception as exc:
+                _record(
+                    kind="model_request",
+                    attempt=attempt,
+                    summary="Locust-author model request failed.",
+                    reference_implementation=ref_impl_key,
+                    retry_target="unknown",
+                    diagnostic_excerpt=str(exc),
+                )
+                logger.exception("Locust generation could not obtain a model response")
+                break
+        else:
+            locust_code = pending_code
+            pending_code = None
         _persist_candidate(attempt, locust_code)
-        logger.info(
-            "Executing Locust script against reference implementation (%s) for verification.",
-            ref_impl_key,
-        )
-        execution = run_locust(env, scenario, locust_code, ref_impl_files)
-        if not execution.ok:
+
+        # Stage 1: deterministic smoke gate against the primary implementation.
+        logger.info("Stage 1: smoke-testing Locust script against %s.", ref_impl_key)
+        smoke = run_smoke_only(env, scenario, locust_code, ref_impl_files)
+        if not smoke.ok:
             retry_target = (
                 "implementation"
-                if execution.kind
+                if smoke.kind
                 in {"reference_implementation_build", "reference_application_startup"}
-                else "author_agent" if execution.kind == "locust_runtime" else "unknown"
+                else "author_agent" if smoke.kind == "locust_runtime" else "unknown"
             )
             record = _record(
-                kind=execution.kind,
+                kind=smoke.kind,
                 attempt=attempt,
-                summary=execution.summary,
+                summary=smoke.summary,
                 reference_implementation=ref_impl_key,
                 code=locust_code,
                 retry_target=retry_target,
-                diagnostic_excerpt=execution.diagnostic_excerpt,
+                diagnostic_excerpt=smoke.diagnostic_excerpt,
             )
             if retry_target == "author_agent" and attempt < max_attempts:
                 feedback = record.to_prompt_block()
-                logger.warning("Retrying Locust author after runtime feedback.")
+                logger.warning("Retrying Locust author after stage-1 runtime feedback.")
                 continue
             break
 
-        coverage = inspect_endpoint_coverage(scenario_dict, execution.smoke_csv_summary)
+        coverage = inspect_endpoint_coverage(scenario_dict, smoke.smoke_csv_summary)
         if not coverage.ok:
             record = _record(
                 kind="endpoint_coverage",
@@ -262,121 +294,122 @@ def generate_and_verify_locust_script(
                 reference_implementation=ref_impl_key,
                 code=locust_code,
                 missing_endpoints=coverage.missing_endpoints,
-                diagnostic_excerpt=execution.smoke_csv_summary,
+                diagnostic_excerpt=smoke.smoke_csv_summary,
             )
             if attempt < max_attempts:
                 feedback = record.to_prompt_block()
-                logger.warning(
-                    "Retrying Locust author after endpoint-coverage feedback."
-                )
+                logger.warning("Retrying Locust author after stage-1 coverage feedback.")
                 continue
             break
 
-        sweep_results = run_smoke_sweep(
-            env,
-            scenario,
-            locust_code,
-            implementations,
-            primary_key=ref_impl_key,
-            primary_smoke_csv=execution.smoke_csv_summary,
+        # Stage 2: real weighted load against every reference implementation.
+        logger.info(
+            "Stage 2: running weighted load pass against %d reference implementation(s).",
+            len(implementations),
         )
-        sweep = aggregate_smoke_sweep(scenario_dict, sweep_results)
-        logger.info("Smoke sweep across reference implementations: %s", sweep.summary)
-
-        if sweep.failing_everywhere:
-            # Attempted (not missing) and failed the same way against every
-            # implementation smoke-tested: the request the script sends is
-            # the common factor, not any one implementation's bugs.
-            record = _record(
-                kind="endpoint_failing_everywhere",
-                attempt=attempt,
-                summary=sweep.summary,
-                reference_implementation=ref_impl_key,
-                code=locust_code,
-                retry_target="author_agent",
-                failing_endpoints=sweep.failing_everywhere,
-                diagnostic_excerpt=(
-                    "Implementations smoke-tested: "
-                    f"{', '.join(sweep.implementations_tested) or 'none'}. "
-                    "Unreachable (could not be smoke-tested at all): "
-                    f"{', '.join(sweep.implementations_unreachable) or 'none'}."
-                ),
-            )
-            if attempt < max_attempts:
-                feedback = record.to_prompt_block()
-                logger.warning(
-                    "Retrying Locust author: endpoint(s) fail against every "
-                    "reference implementation, not just the one used for the "
-                    "full verification run."
+        sweep = run_weighted_load_sweep(env, scenario, locust_code, implementations)
+        for impl_key, result in sweep.items():
+            if not result.ok:
+                # Informational only: an implementation that couldn't even be
+                # evaluated is that implementation's problem, not grounds to
+                # retry the author on its own. It still reaches the author
+                # (via the review report below) whenever at least one other
+                # implementation did produce results to compare against.
+                _record(
+                    kind=result.kind,
+                    attempt=attempt,
+                    summary=result.summary,
+                    reference_implementation=impl_key,
+                    code=locust_code,
+                    retry_target="implementation",
+                    diagnostic_excerpt=result.diagnostic_excerpt,
                 )
-                continue
-            break
 
-        if sweep.failing_by_implementation:
-            # Informational, not a reason to reject this script: these
-            # implementations (not the one used for the full verification
-            # run above) have their own bugs on specific endpoints. Persisted
-            # for visibility/future implementation repair; does not block
-            # accepting the current script.
+        if not any(result.ok for result in sweep.values()):
             _record(
-                kind="endpoint_unhealthy",
+                kind="load_review_unavailable",
                 attempt=attempt,
                 summary=(
-                    f"{len(sweep.failing_by_implementation)} other reference "
-                    "implementation(s) have endpoint(s) that fail only for them "
-                    "(script and primary implementation are otherwise fine)."
+                    "No reference implementation could be evaluated under weighted "
+                    "load; accepting the script on stage-1 evidence alone."
                 ),
                 reference_implementation=ref_impl_key,
                 code=locust_code,
-                retry_target="implementation",
-                failing_by_implementation=sweep.failing_by_implementation,
+                retry_target="infrastructure",
             )
-
-        health = inspect_request_health(scenario_dict, execution.csv_summary)
-        if not health.ok:
-            all_requests_failed = (
-                health.request_count > 0
-                and health.request_count == health.failure_count
+            logger.warning(
+                "Stage 2 could not be evaluated against any implementation; "
+                "accepting the script on stage-1 evidence alone."
             )
-            # Three distinct causes, not two: the whole reference app can be
-            # down (every request fails), one or more *specific* endpoints
-            # can be consistently broken while the rest of the app is fine
-            # (still an implementation problem, just a narrower one), or
-            # failures can be scattered across endpoints with no single one
-            # fully broken (more likely something the script itself should
-            # handle, e.g. an occasional bad payload).
-            if all_requests_failed:
-                kind = "reference_application_unhealthy"
-                retry_target = "implementation"
-            elif health.failing_endpoints:
-                kind = "endpoint_unhealthy"
-                retry_target = "implementation"
-            else:
-                kind = "unexpected_request_failures"
-                retry_target = "author_agent"
-            record = _record(
-                kind=kind,
-                attempt=attempt,
-                summary=health.summary,
-                reference_implementation=ref_impl_key,
-                code=locust_code,
-                retry_target=retry_target,
-                failing_endpoints=health.failing_endpoints,
-                request_count=health.request_count,
-                failure_count=health.failure_count,
-                diagnostic_excerpt=execution.csv_summary,
-            )
-            if retry_target == "author_agent" and attempt < max_attempts:
-                feedback = record.to_prompt_block()
-                logger.warning("Retrying Locust author after request-failure feedback.")
-                continue
+            valid_code = locust_code
             break
 
-        valid_code = locust_code
-        logger.info(
-            "Locust script passed execution, coverage, and request-health checks."
+        # Only worth a review round-trip if at least one implementation
+        # actually produced a failure or an exception to look at; a clean
+        # sweep has nothing to review, and asking anyway just invites an
+        # unprompted, unjustified edit to a script that already works.
+        has_findings = any(
+            result.ok and (result.failures_csv or result.exceptions_csv)
+            for result in sweep.values()
         )
-        break
+        if not has_findings:
+            logger.info(
+                "Stage 2 completed cleanly across all evaluated implementations; "
+                "accepting the script without a review round-trip."
+            )
+            valid_code = locust_code
+            break
+
+        if attempt >= max_attempts:
+            # No budget left to re-verify a revision even if the author wanted
+            # to make one, so don't offer it the choice.
+            logger.info(
+                "Stage 2 surfaced findings but no retry budget remains for a "
+                "review round-trip; accepting the script as-is."
+            )
+            valid_code = locust_code
+            break
+
+        report = build_load_review_report(sweep)
+        try:
+            reviewed_code = review_locust_code(
+                scenario_dict,
+                conversation,
+                report,
+                on_response=persist,
+                on_failure=on_parse_failure,
+            )
+        except Exception as exc:
+            _record(
+                kind="model_request",
+                attempt=attempt,
+                summary="Locust-author model request failed during load review.",
+                reference_implementation=ref_impl_key,
+                retry_target="unknown",
+                diagnostic_excerpt=str(exc),
+            )
+            logger.exception("Locust load review could not obtain a model response")
+            valid_code = locust_code
+            break
+
+        if reviewed_code is None:
+            logger.info("Author found nothing to fix after load review.")
+            valid_code = locust_code
+            break
+
+        _record(
+            kind="load_review_revision",
+            attempt=attempt,
+            summary=(
+                "Author revised the script after reviewing cross-implementation "
+                "load results."
+            ),
+            reference_implementation=ref_impl_key,
+            code=reviewed_code,
+            retry_target="author_agent",
+        )
+        logger.info("Author revised the script after load review; re-verifying.")
+        pending_code = reviewed_code
 
     if not valid_code:
         logger.error(

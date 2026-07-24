@@ -23,6 +23,8 @@ LocustFailureKind = Literal[
     "reference_application_unhealthy",
     "endpoint_unhealthy",
     "endpoint_failing_everywhere",
+    "load_review_revision",
+    "load_review_unavailable",
 ]
 
 
