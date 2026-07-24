@@ -7,10 +7,6 @@ import cwes
 from exploits import XSS_VECTORS
 from scenarios.base import AppInstance, Scenario
 
-<<<<<<< HEAD
-with open("./src/scenario_files/api_specs/recipes_api_spec.json", "r") as f:
-    _JSON_API_SPEC = f.read()
-=======
 _JSON_API_SPEC = """
 {
     "openapi": "3.0.3",
@@ -279,7 +275,6 @@ _JSON_API_SPEC = """
     }
 }
 """
->>>>>>> 91aac6dffaba43c7fc028c09fde29661f57447a7
 
 _API_SPEC = """
 openapi: 3.0.3
@@ -1012,10 +1007,7 @@ SCENARIO = Scenario(
     api_spec=_API_SPEC,
     text_spec=_TEXT_SPEC,
     json_api_spec=_JSON_API_SPEC,
-<<<<<<< HEAD
-=======
     locustfile=_LOCUSTFILE.strip() or None,
->>>>>>> 91aac6dffaba43c7fc028c09fde29661f57447a7
     short_app_description="API for uploading, commenting and rating recipes",
     scenario_instructions="",
     needs_db=True,

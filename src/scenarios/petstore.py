@@ -11,10 +11,6 @@ from exploits import (
 )
 from scenarios.base import AppInstance, Scenario
 
-<<<<<<< HEAD
-with open("./src/scenario_files/api_specs/petstore_api_spec.json", "r") as f:
-    _JSON_API_SPEC = f.read()
-=======
 _JSON_API_SPEC = """
 {
     "info": {
@@ -593,7 +589,6 @@ _JSON_API_SPEC = """
         }
     }
 }"""
->>>>>>> 91aac6dffaba43c7fc028c09fde29661f57447a7
 
 _API_SPEC = """
 openapi: 3.0.3
@@ -1460,8 +1455,6 @@ User Operations:
 All endpoints that create or retrieve resources return JSON objects. All POST endpoints return the created resource with an assigned id field.
 """
 
-<<<<<<< HEAD
-=======
 _LOCUSTFILE = '''
 # locustfile.py
 import random
@@ -1781,16 +1774,12 @@ class Shape(BaxbenchShape):
 '''
 
 
->>>>>>> 91aac6dffaba43c7fc028c09fde29661f57447a7
 SCENARIO = Scenario(
     id="Petstore",
     api_spec=_API_SPEC,
     text_spec=_TEXT_SPEC,
     json_api_spec=_JSON_API_SPEC,
-<<<<<<< HEAD
-=======
     locustfile=_LOCUSTFILE.strip() or None,
->>>>>>> 91aac6dffaba43c7fc028c09fde29661f57447a7
     short_app_description="Petstore API for managing pets, orders, and users",
     scenario_instructions="",
     needs_db=True,

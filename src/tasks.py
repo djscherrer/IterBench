@@ -317,45 +317,6 @@ class Task:
     ) -> pathlib.Path:
         return self.get_functional_tests_dir(results_dir, sample) / "test_results.json"
 
-    def get_bench_results_csv_prefix(
-        self, results_dir: pathlib.Path, sample: int | str, user: str
-    ) -> pathlib.Path:
-        return self.get_sample_dir(results_dir, sample) / f"bench_results_{user}"
-
-    def get_bench_results_csv_path(
-        self, results_dir: pathlib.Path, sample: int | str, user: str
-    ) -> pathlib.Path:
-        return (
-            self.get_sample_dir(results_dir, sample)
-            / f"bench_results_{user}_stats_history.csv"
-        )
-
-    def get_bench_run_dir(
-        self,
-        results_dir: pathlib.Path,
-        sample: int | str,
-        bench_users: int | None,
-        bench_spawn_rate: int | None,
-        bench_run_time: int | None,
-    ) -> pathlib.Path:
-        """
-        Per-run output directory within the sample folder.
-        Example: sample9/perf-default-db-pressure-20260408-071239
-        """
-        _ = (bench_users, bench_spawn_rate, bench_run_time)
-        topology = _slugify_run_part(os.environ.get("BAXBENCH_SYSTEM_TOPOLOGY", "default"))
-        load_profile = _slugify_run_part(os.environ.get("BAXBENCH_LOAD_PROFILE", "default"))
-        ts = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
-        name = f"perf-{topology}-{load_profile}-{ts}"
-        return self.get_sample_dir(results_dir, sample) / name
-
-    def has_any_bench_results(self, sample_dir: pathlib.Path, user: str) -> bool:
-        """
-        Whether any previous bench results exist for this sample (supports per-run subdirs).
-        """
-        pattern = f"bench_results_{user}_stats_history.csv"
-        return any(sample_dir.glob(f"**/{pattern}"))
-
     def load_code(
         self, results_dir: pathlib.Path, sample: int
     ) -> dict[pathlib.Path, str]:
@@ -634,116 +595,7 @@ class Task:
                         )
                         continue
 
-            elif self.use_claude_agent:
-                logger.info(f"Using Claude Agent SDK for code generation")
-
-                prompter_ca = ClaudeAgentPrompter(
-                    env=self.env,
-                    scenario=self.scenario,
-                    model=self.model,
-                    spec_type=self.spec_type,
-                    safety_prompt=self.safety_prompt,
-                    temperature=self.temperature,
-                    max_iterations=self.agent_max_iterations,
-                    max_cost=self.agent_max_cost,
-                    max_tokens=self.agent_max_tokens,
-                )
-                logger.info("Built agent task:\n%s", prompter_ca.task)
-                for sample in range(last_sample + 1, last_sample + 1 + batch_size):
-                    try:
-                        logger.info(f"Generating sample {sample} with Claude Agent...")
-                        code_dir = prompter_ca.generate_code_with_agent(
-                            sample_id=sample,
-                            save_dir=self.get_save_dir(results_dir),
-                            logger=logger,
-                        )
-                        logger.info(f"Generated code saved to {code_dir}")
-                        logger.info("-" * 80)
-                    except KeyboardInterrupt:
-                        raise
-                    except Exception as e:
-                        logger.exception(
-                            f"Claude Agent failed for sample {sample}: {e}", exc_info=e
-                        )
-                        continue
-
-            else:
-                logger.info(
-                    f"Using single-prompt LLM ({self.model}) for code generation"
-                )
-
-                prompter = Prompter(
-                    env=self.env,
-                    scenario=self.scenario,
-                    model=self.model,
-                    spec_type=self.spec_type,
-                    safety_prompt=self.safety_prompt,
-                    batch_size=batch_size,
-                    offset=last_sample + 1,
-                    temperature=self.temperature,
-                    reasoning_effort=self.reasoning_effort,
-                    vllm_port=vllm_port,
-                    provider=self.provider,
-                    use_stubs=self.use_stubs,
-                )
-                logger.info("built prompt:\n%s", prompter.prompt)
-                logger.info("-" * 100)
-
-                try:
-                    prompter.prompt_model_batch_with_exp_backoff(
-                        max_retries=max_retries,
-                        base_delay=base_delay,
-                        max_delay=max_delay,
-                        save_dir=self.get_save_dir(results_dir),
-                        logger=logger,
-                    )
-                except KeyboardInterrupt:
-                    raise
-                except Exception as e:
-                    logger.exception("got exception:\n%s", str(e), exc_info=e)
-                    return
-
-    def _build_image(
-        self,
-        results_dir: pathlib.Path,
-        sample: int,
-        logger: logging.Logger,
-    ) -> str | None:
-        files: dict[pathlib.Path, str] = self.load_code(results_dir, sample, logger)
-        try:
-            image_id = self.env.build_docker_image(
-                files,
-                COMMON_DOCKER_RUN_COMMANDS
-                + self.scenario.needed_packages.get("_all_", [])
-                + self.scenario.needed_packages.get(self.env.language, []),
-                logger,
-                no_cache=False,
-            )
-            return image_id
-        except Exception as e:
-            logger.exception(
-                f"Failed to build docker image with cache, got exception:\n{str(e)}",
-                exc_info=e,
-            )
-            try:
-                logger.info("Retrying without cache")
-                image_id = self.env.build_docker_image(
-                    files,
-                    COMMON_DOCKER_RUN_COMMANDS
-                    + self.scenario.needed_packages.get("_all_", [])
-                    + self.scenario.needed_packages.get(self.env.language, []),
-                    logger,
-                    no_cache=True,
-                )
-                return image_id
-            except Exception as e:
-                logger.exception(
-                    f"Failed to build docker image without cache, got exception:\n{str(e)}",
-                    exc_info=e,
-                )
-                return None
-
-    def optimize_code(
+    def test_code(  # noqa: C901
         self,
         results_dir: pathlib.Path,
         samples: list[int],
@@ -864,8 +716,6 @@ class Task:
                 logger.info("-" * 100)
 
                 result = TestResult()
-
-                # run functional tests
                 for ft in self.scenario.functional_tests:
                     logger.info("running functional test: %s", ft.__name__)
                     passed = False

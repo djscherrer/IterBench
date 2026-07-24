@@ -60,13 +60,15 @@ Install the environment from the repo root:
 pipenv sync
 ```
 
-Run any script inside the project environment with:
+Run any script inside the project environment:
 
 ```bash
-pipenv run python <path_to_python_script> <args>
+pipenv run python <path_to_script> <args>
 ```
 
-Copy `.env.example` to `.env` (or export the variables directly) and fill in the API keys you intend to use; any key you do not need can stay empty.
+**API keys**
+
+Copy `.env.example` to `.env` (or export these directly) and fill in the keys you intend to use — any key you don't need can be left empty:
 
 ```bash
 OPENAI_API_KEY=
@@ -86,7 +88,7 @@ scripts/k8s_setup_cluster.sh    # provision the benchmarking cluster
 scripts/bench_k8s.sh            # run the iterative decide/code/spec/deploy/bench loop
 ```
 
-Restrict the task set with `--scenarios`, `--envs`, and `--only_samples` (space-separated values). Arguments can also be loaded from a file, e.g. `python src/main.py @config.args`.
+Restrict the task set with `--scenarios`, `--envs`, `--only_samples` (space-separated values). Arguments can also be loaded from a file, e.g. `python src/main.py @config.args`.
 
 See [docs/k8s_approach.md](docs/k8s_approach.md), [docs/k8s_stage_failures.md](docs/k8s_stage_failures.md), [docs/k8s_conversational_prompt_slimming.md](docs/k8s_conversational_prompt_slimming.md), and [docs/locust_pipeline.md](docs/locust_pipeline.md) for design details.
 
@@ -99,7 +101,7 @@ pipenv run python scripts/results_overview.py
 
 ## Generating new scenarios (AutoBaxBuilder)
 
-`src/scenario_builder/` bootstraps new BaxBench scenarios end-to-end: idea → OpenAPI spec → reference solution → functional tests → security exploits → Locust script. It is a separate package from the rest of this repo, but resolves `env`, `scenarios`, `llm`, `tasks`, and `cwes` to this repo's own copies.
+`src/scenario_builder/` bootstraps new BaxBench scenarios end-to-end — idea → OpenAPI spec → reference solution → functional tests → security exploits → Locust script — cutting manual scenario-authoring effort by ~12× while matching or outperforming expert-written tests and exploits ([paper](https://arxiv.org/abs/2512.21132)). It's a separate package from the rest of this repo, but resolves `env`, `scenarios`, `llm`, `tasks`, and `cwes` to this repo's own copies rather than keeping forks.
 
 ```bash
 scripts/orchestrate_scenarios.sh
@@ -116,15 +118,16 @@ python orchestrator.py --generate_performance --scenario FooBarScenario
 python orchestrator.py --export_latest --scenario FooBarScenario
 ```
 
-Each `--generate_*` step writes numbered artifacts into the artifacts directory. `--export_latest` promotes the newest iteration into `src/scenarios/generated_scenarios/`, which is the staging area for manual review before a scenario is wired into `scenarios.all_scenarios`.
+Each `--generate_*` step writes numbered artifacts into the artifacts directory (`FooBarScenario_iu{t}` after t test-iteration steps, `_iw{t}` after t security-iteration steps, `_implementations_i{t/u/w}{t}` for the corresponding solutions). `--export_latest` promotes the newest iteration into `src/scenarios/generated_scenarios/` — a staging area for manual review before a scenario is wired into `scenarios.all_scenarios`.
 
 ## Troubleshooting
 
-Check the k8s-bench iteration logs for token-limit, rate-limit, or provider errors; `docs/k8s_stage_failures.md` has the failure taxonomy per stage. For generation runs, `gen.log` gives the most detailed failure context.
+Check the k8s-bench iteration logs for token-limit/rate-limit/provider errors; `docs/k8s_stage_failures.md` has the failure taxonomy per stage.
 
 ## Citation
 
-This repository builds on the original BaxBench benchmark. If you find it useful, please cite:
+This repository builds on the original BaxBench benchmark:
+
 ```bib
 @article{vero2025baxbenchllmsgeneratecorrect,
         title={BaxBench: Can LLMs Generate Correct and Secure Backends?},

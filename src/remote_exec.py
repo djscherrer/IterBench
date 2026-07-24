@@ -35,30 +35,6 @@ _SSH_MULTIPLEX = os.environ.get("BAXBENCH_SSH_MULTIPLEX", "").strip().lower() in
     "yes",
     "on",
 )
-
-_ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
-_BUILD_DIAGNOSTIC_LINE_RE = re.compile(
-    r"(error\[E\d+\]|^error:|warning:|could not compile|"
-    r"Some errors have|For more information|"
-    r"^\s*-->|^\s*\d+\s*\||^\s*\||^\s*\^|^\s*=\s*(note|help):)",
-    re.IGNORECASE,
-)
-
-
-def _strip_ansi(text: str) -> str:
-    return _ANSI_RE.sub("", text)
-
-
-def _filter_build_diagnostics(lines: list[str], *, max_lines: int = 40) -> list[str]:
-    """Keep only compiler warnings/errors from docker build output."""
-    kept: list[str] = []
-    for line in lines:
-        clean = _strip_ansi(line).strip()
-        if clean and _BUILD_DIAGNOSTIC_LINE_RE.search(clean):
-            kept.append(clean)
-    return kept[-max_lines:]
-
-
 def _log_commands_enabled() -> bool:
     return os.environ.get("BAXBENCH_LOG_COMMANDS", "1").strip().lower() in (
         "1",
@@ -267,6 +243,7 @@ def ensure_docker_access(host: str, logger: logging.Logger) -> str:
     Prefer rootful Docker via sudo; if that fails, fall back to rootless mode.
     Returns the selected mode: "rootful" or "rootless".
     """
+    # Try rootful (sudo) first.
     try:
         cmd = "set -euo pipefail; sudo -n docker info >/dev/null 2>&1"
         out = ssh(host, f"bash -lc {shlex.quote(cmd)}", logger)
@@ -274,6 +251,7 @@ def ensure_docker_access(host: str, logger: logging.Logger) -> str:
         logger.info("Docker accessible (rootful) on %s", host)
         return "rootful"
     except Exception:
+        # Fallback: try rootless path (inline the previous ensure_rootless_docker logic).
         try:
             cmd = (
                 "set -euo pipefail; "
@@ -283,6 +261,8 @@ def ensure_docker_access(host: str, logger: logging.Logger) -> str:
                 "if command -v systemctl >/dev/null 2>&1; then "
                 "  systemctl --user is-active docker >/dev/null 2>&1 || systemctl --user start docker >/dev/null 2>&1 || true; "
                 "fi; "
+                # If Docker isn't reachable, fail early so later steps don't produce confusing
+                # "No such container" / readiness timeouts.
                 "docker info >/dev/null 2>&1"
             )
             out = ssh(host, f"bash -lc {shlex.quote(cmd)}", logger)
@@ -290,6 +270,7 @@ def ensure_docker_access(host: str, logger: logging.Logger) -> str:
             logger.info("Docker accessible (rootless) on %s", host)
             return "rootless"
         except Exception as exc:
+            # Collect diagnostic output for both checks for clearer errors.
             diag_cmd = (
                 "set -euo pipefail; "
                 'docker_sock="/run/user/$(id -u)/docker.sock"; '
@@ -312,6 +293,8 @@ def cleanup_remote_docker_host(
     prune_build_cache: bool = _REMOTE_PRUNE_BUILD_CACHE,
     remove_networks: bool = _REMOTE_REMOVE_NETWORKS,
 ) -> None:
+    # Always remove containers, then honor image/volume/network flags so post-checks match work done.
+    # Build-cache pruning is slow/noisy; only run when Docker root filesystem usage is high.
     threshold = 80
     script = f"""
     set -euo pipefail
@@ -319,6 +302,7 @@ def cleanup_remote_docker_host(
     if [[ -z "${{DOCKER_HOST:-}}" && -S "$docker_sock" ]]; then export DOCKER_HOST="unix://$docker_sock"; fi
     command -v docker >/dev/null 2>&1 || (echo "ERROR: docker missing" >&2; exit 51)
     docker info >/dev/null 2>&1
+    # remove all containers (stopped/running)
     ids=$(docker ps -aq || true)
     if [[ -n "${{ids}}" ]]; then docker rm -f ${{ids}} >/dev/null; fi
 
@@ -334,6 +318,8 @@ def cleanup_remote_docker_host(
         docker image prune -af >/dev/null || true
     fi
     if [ "{str(prune_volumes).lower()}" = "true" ]; then
+        # Only wipe baxbench-owned volumes. Hosts may legitimately have other volumes.
+        # `docker volume prune` is best-effort and may be blocked by volume drivers.
         docker volume prune -f >/dev/null 2>&1 || true
         bax_vols=$(docker volume ls -q | grep -E '^baxbench-' || true)
         if [[ -n "${{bax_vols}}" ]]; then
@@ -361,9 +347,11 @@ def cleanup_remote_docker_host(
     echo "cleanup: disk usage $usage_pct% < {threshold}%, skipping build-cache prune"
     fi
 
+    # produce counts and summary
     containers_left=$(docker ps -aq | wc -l | tr -d ' ')
     networks_left=$(docker network ls --filter type=custom -q | wc -l | tr -d ' ' || true)
     images_left=$(docker image ls -aq | wc -l | tr -d ' ' || true)
+    # Count only baxbench volumes so we don't fail on unrelated host state.
     volumes_left=$(docker volume ls -q | grep -E '^baxbench-' | wc -l | tr -d ' ' || true)
     echo "cleanup-summary host=$(hostname) containers_left=${{containers_left}} networks_left=${{networks_left}} images_left=${{images_left}} volumes_left=${{volumes_left}} build_cache_left=${{build_cache_left}}"
     if [ "${{containers_left}}" != "0" ]; then echo "ERROR: containers remain after cleanup" >&2; exit 61; fi
@@ -558,6 +546,8 @@ def ensure_remote_python_tooling(host: str, logger: logging.Logger) -> None:
     )
     out2 = ssh(host, f"bash -lc {shlex.quote(install_cmd)}", logger)
     out2.check_returncode()
+
+
 def save_image_tar(image_id: str, out_dir: pathlib.Path, logger: logging.Logger) -> pathlib.Path:
     tar_path = out_dir / f"{image_id[7:][:12]}.tar"
     if tar_path.exists():
