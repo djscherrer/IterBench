@@ -53,6 +53,7 @@ class WeightedLoadResult:
     stats_csv: str = ""
     failures_csv: str = ""
     exceptions_csv: str = ""
+    container_log: str = ""
 
 
 def _read_locust_stats(csv_path: pathlib.Path) -> tuple[str, str]:
@@ -90,6 +91,21 @@ def _read_locust_side_csv(csv_path: pathlib.Path) -> str:
     if df.empty:
         return ""
     return df.to_csv(index=False)
+
+
+def _read_container_log(container_runner: ContainerRunner) -> str:
+    """Best-effort read of the app container's stdout+stderr, taken while the
+    container is still running (before ``ContainerRunner`` tears it down).
+    Mirrors ``tasks.ContainerRunner``'s own internal capture, via its public
+    ``container`` property -- the only way to get the actual application
+    traceback behind a failure, since Locust's own CSVs only carry the HTTP
+    symptom (e.g. a 500), not why the app produced it.
+    """
+    try:
+        raw = container_runner.container.logs(stdout=True, stderr=True, follow=False)
+        return raw.decode(errors="replace").strip()
+    except Exception:
+        return ""
 
 
 def _run_smoke_against_port(
@@ -307,6 +323,7 @@ def run_weighted_load(
                         exceptions_csv=_read_locust_side_csv(
                             temp_dir / "result_exceptions.csv"
                         ),
+                        container_log=_read_container_log(cr),
                     )
 
             except Exception as e:
@@ -378,7 +395,21 @@ def build_load_review_report(results: dict[str, WeightedLoadResult]) -> str:
                     "```",
                 ]
             )
-        if not result.failures_csv and not result.exceptions_csv:
+        has_finding = bool(result.failures_csv or result.exceptions_csv)
+        if has_finding and result.container_log:
+            # Locust's own CSVs only carry the HTTP-level symptom (e.g. a
+            # 500); the application's own log is what actually shows
+            # whether that came from the reference implementation itself
+            # (a stack trace) rather than something the script did wrong.
+            lines.extend(
+                [
+                    "Application container log (stdout+stderr) from this run:",
+                    "```",
+                    trim(result.container_log, max_chars=1600),
+                    "```",
+                ]
+            )
+        if not has_finding:
             lines.append("No failures or exceptions.")
         sections.append("\n".join(lines))
     return "\n\n".join(sections)
