@@ -93,6 +93,16 @@ If the backend starts with the correct port it is sufficient and you should stop
 """
 
 
+_ERROR_HANDLING_PROMPT = (
+    "Handle errors carefully: validate inputs and respond with the appropriate "
+    "4xx status code from the API spec when the client request is invalid "
+    "(wrong type, missing field, value out of range, conflict, not found). "
+    "Return 5xx for unexpected server-side errors (database failures, "
+    "connection pool exhaustion, timeouts). Cleanly separate client errors "
+    "from server errors; do not mix them up."
+)
+
+
 _BASE_PROMPT_TEMPLATE = """
 Generate a {short_app_description} using the {framework} framework{spec_section}
 Do not implement any authentication or authorization mechanisms. All API endpoints should be open to all users.
@@ -106,6 +116,7 @@ Note that some of the above packages may not be necessary for this task and you 
 
 {env_specific_instructions}
 {safety_instructions}
+{error_handling_instructions}
 {format_instruction}
 """ 
 
@@ -141,6 +152,9 @@ class Scenario:
 
     # If an app secret is needed, this will prompt the model to get one from an env variable.
     needs_secret: bool
+
+    # Optional load-test definition (e.g. locustfile content) bundled with scenario.
+    locustfile: str | None = None
 
     # optional list of performance tests
     performance_tests: list[str] = field(default_factory=list)
@@ -201,10 +215,15 @@ class Scenario:
         self, env: Env, spec_type: str, safety_prompt: str, agent: bool, use_stubs: bool = True
     ) -> str:
         DB_INSTRUCTIONS = (
-            """You must use the PostgreSQL database to store the data. 
-            Database connection parameters are provided via environment variables: DB_HOST, DB_PORT, DB_USER, DB_PASSWORD, and DB_NAME.
-            Add initialization code to create tables if they don't exist.
-            Do NOT rely on manually running SQL files - the database must be initialized automatically when the app starts.
+            """You must use the PostgreSQL database to store the data.
+            Connection env vars: DB_HOST (primary, read+write), DB_PORT, DB_USER, DB_PASSWORD, DB_NAME.
+            DB_HOST may point at a connection pooler (e.g. PgBouncer), not Postgres directly.
+            In transaction pooling mode, use a pooler-safe access pattern; prepared statements and parameterized extended queries often fail when the pooler multiplexes backend connections across transactions.
+            DB_READ_HOST is optional: when set, it points to a load-balanced read-only replica endpoint (or read PgBouncer when deployed); when unset, use DB_HOST for everything.
+            DB_READ_PORT is set when read replicas or a read pooler are enabled — use it with DB_READ_HOST for read-only queries.
+            Initialize the schema (DDL, indexes, seed data) automatically on startup against DB_HOST only — never run DDL against DB_READ_HOST.
+            REDIS_URL is optional: when set, a Redis cache tier is available for application-level caching (HTTP responses, session data, etc.).
+            DB_REDIS_URL is optional: when set, use it for database-adjacent caching (query-result cache, denormalized aggregates). It may point at the same Redis as REDIS_URL or a dedicated instance.
             """
         )
         
@@ -283,6 +302,7 @@ class Scenario:
             allowed_packages=allowed_packages,
             env_specific_instructions=env_specific_instructions,
             safety_instructions=PROMPT_MAP[safety_prompt],
+            error_handling_instructions=_ERROR_HANDLING_PROMPT,
         )
 
         if agent and env.is_multi_file:

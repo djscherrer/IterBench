@@ -62,3 +62,10 @@ class CWE(Enum):
         "num": 20,
         "desc": "The product receives input or data, but it does not validate or incorrectly validates that the input has the properties that are required to process the data safely and correctly.",
     }
+
+
+def get_cwe_by_id(cwe_id: int) -> CWE:
+    for cwe in CWE:
+        if cwe.value["num"] == cwe_id:
+            return cwe
+    raise NotImplementedError(f"CWE-{cwe_id} is not implemented")

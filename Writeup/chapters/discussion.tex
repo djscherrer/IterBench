@@ -1,0 +1,195 @@
+% =============================================================
+%  Chapter 6 — Discussion
+% =============================================================
+%  Interprets Chapter~\ref{ch:results} rather than re-deriving it:
+%  no new numbers should be introduced here that are not already
+%  in the Evaluation chapter.
+% =============================================================
+
+\chapter{Discussion}
+\label{ch:discussion}
+
+
+% ----- §6.1 Interpretation -----
+\section{Interpreting the Results}
+\label{sec:discussion-interpretation}
+
+\paragraph{A methodological lesson that turned out to matter more than
+any single capability finding.} The clearest pattern in
+Chapter~\ref{ch:results} is not, in the end, a difference between models
+at all: every cell that never reached a working baseline in this dataset
+--- and most of the cells with only partial trajectories --- traces to
+provider billing or quota exhaustion during data collection, not to
+generation quality (Section~\ref{sec:results-rq3}). This is worth
+dwelling on briefly, because the raw completion funnel
+(Figure~\ref{fig:results-completion-funnel}) \emph{looks}, at a glance,
+exactly like the kind of capability gap this thesis expected to find, and
+an earlier draft of this chapter read it that way before the underlying
+\texttt{llm\_error} text was actually checked cell by cell. The lesson
+generalises beyond this dataset: a coarse failure-kind label
+(\texttt{llm\_call}) is not a reliable proxy for model reliability unless
+its error text is inspected, because it silently conflates transport
+faults, provider-side account state, and (separately again) the
+framework's own configured cost ceiling
+(Section~\ref{sec:results-rq6}). None of those three is a statement about
+the model.
+
+\paragraph{What can and cannot be said about cost.} \texttt{glm-5.2} is
+still roughly an order of magnitude cheaper per cell than
+\texttt{gpt-5.5} or \texttt{claude-opus-4-8} (Section~\ref{sec:results-rq3}),
+but that figure is now known to be inflated in \texttt{glm-5.2}'s and
+\texttt{claude-opus-4-8}'s favour by cells that were never really
+attempted: a rejected billing call costs almost nothing, so a model with
+more billing-interrupted cells looks artificially cheap per cell. What
+survives this caveat is narrower: on the cells every model was genuinely
+able to attempt, all three reach a working baseline and go on to refine
+it by a comparable multiplicative factor (Section~\ref{sec:results-rq1}).
+Whether \texttt{glm-5.2}'s cost advantage comes with a real reliability
+cost, a real reliability advantage, or no difference at all is exactly
+the question the confounded cells need to be re-run to answer.
+
+\paragraph{Deployment-specification versus code refinement.} The
+division of labour in Section~\ref{sec:results-rq2} --- code refinement
+carrying correctness-adjacent fixes with a heavy positive tail,
+deployment refinement acting as a smaller and occasionally negative
+capacity knob --- is consistent with what each lever can structurally
+see. A spec-refinement step can move replicas, resources, and database
+topology, but it cannot change what the running application \emph{does};
+if the bottleneck is a connection-handling bug (Section~\ref{sec:results-rq6}),
+no amount of deployment tuning reaches it. The reverse is not quite
+symmetric: code refinement \emph{can}, in principle, work around a
+deployment problem by changing application behaviour (for example,
+reducing per-request work), which may explain why code refinement's
+observed effect is not just larger on average but more variable in both
+directions than deployment refinement's.
+
+\paragraph{Convergence patterns.} Where a trajectory has enough successful
+iterations to work with, Section~\ref{sec:results-rq5}'s
+\textsc{ClickCount} case shows deployment parameters moving in a
+consistent, workload-appropriate direction across several iterations
+rather than oscillating --- once the agent identifies that horizontal
+fan-out beats per-pod headroom for a near-stateless workload, later spec
+iterations continue in that direction rather than re-deriving it from
+scratch, which is the behaviour the append-only conversational memory of
+Section~\ref{sec:methods-workflow} is designed to support. The backfire
+case in the same section is the counter-example: convergence toward a
+\emph{locally} reasonable decision is not the same as convergence toward
+a good one, particularly when one refinement step is free to change
+several spec fields whose interaction it cannot fully anticipate.
+
+
+% ----- §6.2 Limitations -----
+\section{Limitations}
+\label{sec:discussion-limitations}
+
+\paragraph{Scenario coverage.} Four of \textsc{BaxBench}'s 28 scenarios
+were evaluated (Section~\ref{sec:setup-scenarios}), chosen to span a range
+of workload shapes rather than to be a representative sample in a
+statistical sense. All four require a database; none is compute-bound in
+the way an image-processing or cryptographic scenario would be, so the
+deployment-tuning story this thesis tells is specifically a
+\emph{database-and-network-bound} story. Whether the same code/deployment
+division of labour holds for CPU-bound workloads is untested.
+
+\paragraph{Iteration budget.} Every experiment used a fixed $N{=}10$
+refinement budget (Section~\ref{sec:setup-procedure}). Several
+trajectories in Chapter~\ref{ch:results} were still improving, or had
+just recovered from a regression, at iteration 010; a larger budget could
+change both the achieved goodput ceiling and the RQ2 code-vs-spec split,
+since which lever a decision stage reaches for next may depend on how
+many refinement rounds it has already spent recovering from earlier
+failures.
+
+\paragraph{Sample count.} Every cell is $n=1$ (Section~\ref{sec:setup-procedure}).
+A single code-generation seed can be unusually lucky or unlucky, and
+Chapter~\ref{ch:results} already flags several ratios (Section~\ref{sec:results-rq1})
+that rest on two-to-eight healthy-baseline cells per model. Every
+comparative number in this thesis should be read as a single-draw
+estimate, not a distribution; nothing here has been significance-tested
+against sampling variance, because there is no repeated-sample data to
+test it against.
+
+\paragraph{Benchmark methodology.} Sustained goodput
+(Section~\ref{sec:methods-load-profile}) is a single scalar chosen to make
+iterations comparable without per-scenario rate tuning. It necessarily
+discards information a multi-metric evaluation would keep --- tail
+latency distribution shape, resource-utilisation efficiency, cost per
+served request --- some of which is already collected as diagnostics
+(Section~\ref{sec:methods-outcome}) but not used as a scoring signal.
+The explore/recovery/refine load-profile mechanics
+(Section~\ref{sec:methods-load-profile}) also mean that a deployment which
+never passes its warm-up health check is scored identically (goodput
+$=0$) to one that technically starts but collapses immediately under the
+first load step; Section~\ref{sec:results-rq1} treats both as ``dead
+baselines'' without distinguishing them further.
+
+\paragraph{Stochastic LLM behaviour.} Temperature was fixed at $0.2$
+(Section~\ref{sec:setup-models}), a deliberate reduction of but not an
+elimination of run-to-run variance; combined with $n=1$ sampling, this
+thesis cannot separate ``this model is worse at this scenario'' from
+``this particular draw was unlucky.'' Provider-side model updates
+between the writing and the final submission of this thesis are a
+related, less controllable source of drift: model snapshots were pinned
+where providers exposed a dated snapshot (Section~\ref{sec:setup-models}),
+but not every provider does so.
+
+\paragraph{Data-collection interruptions.} Thirteen of the 36 cells in
+this dataset were touched by an LLM-provider billing or quota exhaustion
+event during data collection, and ten never reached a working baseline as
+a direct result (Section~\ref{sec:results-rq3}). This is not a property
+of the framework or the models under test; it is an operational
+limitation of running a compute- and API-budget-intensive evaluation on
+finite accounts, and it currently makes this thesis's model-comparison
+and framework-comparison claims (RQ3, RQ4) substantially weaker than a
+first read of the completion funnel would suggest. It is listed here as
+its own limitation, separate from stochastic LLM behaviour above, because
+it is not sampling noise: it is missing data that a re-run with a
+sufficiently funded account would recover deterministically, not average
+away.
+
+\paragraph{Infrastructure constraints.} All results come from one cluster
+topology and one hardware profile (Section~\ref{sec:setup-infrastructure}).
+``Fixed infrastructure constraints'' in the thesis research question
+(Section~\ref{sec:intro-missing}) is therefore fixed to \emph{one}
+specific capacity envelope; whether the same deployment decisions
+(e.g.\ the replica-count/CPU-request trade-off of Section~\ref{sec:results-rq5})
+would be reachable, or would be the right decisions, on a cluster an
+order of magnitude larger or smaller is untested.
+
+
+% ----- §6.3 Practical Implications -----
+\section{Practical Implications}
+\label{sec:discussion-implications}
+
+\paragraph{For agentic software optimisation.} The clearest transferable
+result is the code/deployment division of labour itself
+(Section~\ref{sec:results-rq2}): when an agent can act on two levers that
+address different failure classes, keeping them mutually exclusive per
+step (Section~\ref{sec:methods-workflow}) is what makes it possible to
+attribute a measured change to a cause at all, and this thesis's data
+suggests the two levers really do specialise in practice, not just by
+construction. Systems that let an agent freely mix implementation and
+configuration changes in one step should expect the attribution problem
+Section~\ref{sec:results-rq6}'s backfire case illustrates \emph{within} a
+single lever, only worse.
+
+\paragraph{For Kubernetes deployment optimisation.} The
+\textsc{ClickCount} trajectory (Section~\ref{sec:results-rq5}) is a small
+existence proof that an LLM agent, given only a schema and raw load-test
+feedback, can rediscover a standard scaling heuristic (favour horizontal
+fan-out over per-pod headroom for CPU-light, network-bound workloads)
+without being told it. That is a meaningfully lower bar than fully
+autonomous production capacity planning, but it is a higher bar than
+today's reactive autoscalers (Section~\ref{sec:rw-cluster}) clear, since
+HPA/VPA-style mechanisms do not reason about database topology or
+placement at all.
+
+\paragraph{For LLM-guided performance tuning more broadly.} The
+recurring finding that correctness bugs dominate the failure budget
+(Section~\ref{sec:results-synthesis}) is a caution against evaluating
+performance-tuning agents purely on their tuning behaviour in isolation:
+in this dataset, the single largest lever on final goodput was not a
+tuning decision at all, but whether the code was correct enough to
+deploy under load in the first place --- a class of bug that, as
+Section~\ref{sec:results-rq6}'s pooling case study shows, a
+single-container functional-test suite cannot even see.

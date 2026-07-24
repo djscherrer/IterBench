@@ -1,0 +1,272 @@
+
+% =============================================================
+%  Chapter 1 — Introduction
+% =============================================================
+\chapter{Introduction}
+\label{ch:introduction}
+
+% ----- §1.1  Broad context: LLMs generating code -----
+\section{LLM-Based Code Generation}
+\label{sec:intro-context}
+
+Large language models have advanced rapidly from completing individual
+functions~\cite{chen2021humaneval} to resolving real-world software engineering
+issues across entire repositories~\cite{jimenez2024swebench}. Today, models
+routinely generate multi-file backend applications that span frameworks,
+databases, and authentication layers. \textsc{BaxBench}~\cite{vero2025baxbench},
+the benchmark this thesis extends, evaluates this capability directly: given a
+fixed backend task, it checks whether a model's generated application is both
+functionally correct and free of exploitable vulnerabilities
+(Section~\ref{sec:background-codegen} details its structure). Even the
+best-performing models reach only around 62\% functional correctness, and
+roughly half of the implementations that do pass remain exploitable, so code
+generation is far from a solved problem at the level of a complete
+application.
+
+\textsc{BaxBench}, like the function- and repository-level benchmarks that
+precede it, shares a fundamental limitation in evaluation methodology: it
+executes each generated application in an isolated, single-machine container
+and measures only whether the code passes functional and security tests. No
+assessment is made of how the application would \emph{perform} under
+realistic deployment conditions.
+
+
+% ----- §1.2  Narrow the gap: performance under deployment -----
+\section{Beyond Correctness: Performance Under Real Deployment}
+\label{sec:intro-gap}
+
+In production, backend applications do not run in isolation. They are
+deployed on container orchestration platforms such as
+Kubernetes~\cite{burns2016borg,kubernetes} (Chapter~\ref{ch:background}
+introduces the relevant concepts), where multiple replicas share finite CPU,
+memory, and network resources across a cluster of worker nodes. Achieving
+high throughput under these conditions requires careful \emph{deployment
+configuration}: decisions about replica counts, resource allocation, pod
+placement, and database topology
+(Section~\ref{sec:background-deployment-levers}).
+
+A functionally correct application can still fail to serve production traffic
+if these parameters are poorly chosen. Today, they are tuned manually by
+operations engineers or handled by reactive autoscaling mechanisms such as the
+Kubernetes Horizontal and Vertical Pod Autoscalers~\cite{kubernetes-hpa},
+neither of which reasons proactively about the interaction between
+application behaviour and infrastructure layout, and neither of which can fix
+a bug in the application code itself.
+
+Generating correct code is therefore a necessary but insufficient condition
+for production readiness. \emph{Deployment configuration is a critical and
+largely unexamined dimension of LLM-based software generation, and it does
+not act in isolation from code correctness}: as this thesis's own results
+later show (Chapter~\ref{ch:results}), some of the most consequential
+deployment failures are in fact latent code bugs that only surface once an
+application is deployed behind real cluster infrastructure. No existing
+benchmark evaluates whether LLMs can reason about, and iteratively improve,
+the deployment of the applications they generate, jointly with the code
+those deployments run.
+
+
+% ----- §1.3  The gap stated explicitly -----
+\section{The Research Gap: Deployment Optimisation as an Unexamined Dimension}
+\label{sec:intro-missing}
+
+Two lines of prior work come closest to this problem, and both stop short of
+it. One optimises performance at the level of source code or system
+internals: synthesising bespoke LLM serving runtimes~\cite{kamahori2025vibeserve},
+entire key-value stores~\cite{liu2025jitsystems}, or repository-scale
+performance patches~\cite{he2025sweperf}. All three iterate, correctness-gate,
+and measure, but none touches how a fixed application is configured,
+replicated, and placed on a cluster. The other targets deployment directly,
+but not performance: Glia~\cite{hamadanian2025glia} combines LLM reasoning
+with measured feedback to design GPU-cluster scheduling and routing
+mechanisms, the closest prior system to this thesis's setting, but for
+inference-serving mechanism design rather than arbitrary backend deployment;
+\textsc{IaCGen}~\cite{zhang2026iacgen} and TerraFormer~\cite{jana2026terraformer}
+iteratively regenerate infrastructure-as-code from deployment feedback, but
+stop at \emph{deployability}, a binary signal, rather than the throughput or
+latency the provisioned system can sustain under load; and learned
+cluster-management systems such as Autopilot~\cite{rzadca2020autopilot},
+FIRM~\cite{qiu2020firm}, and Decima~\cite{mao2019decima} optimise
+resource-management policy from data, but hold the application and its
+deployment manifest fixed and are not driven by an LLM.
+Chapter~\ref{ch:related-work} surveys this space in full; the point for now
+is that no existing system combines an LLM-controlled deployment
+specification, an LLM-controlled application, and a runtime performance
+objective in one iterative loop.
+
+This gap leaves a fundamental question unanswered:
+%
+\begin{quote}
+  \emph{Can an LLM agent iteratively optimise the deployment configuration of
+  a backend application on a Kubernetes cluster, guided by runtime performance
+  feedback, to maximise sustainable throughput under fixed infrastructure
+  constraints?}
+\end{quote}
+
+
+% ----- §1.4  This work -----
+\section{This Work}
+\label{sec:intro-thiswork}
+
+In this thesis, we extend \textsc{BaxBench} with a Kubernetes-based iterative
+benchmarking framework that addresses this question.  Given a
+\textsc{BaxBench} scenario and a target Kubernetes cluster, the framework
+orchestrates a multi-phase refinement loop:
+%
+\begin{enumerate}
+  \item A \textbf{baseline phase} in which the LLM agent generates both
+        application code and an initial deployment specification, which are
+        validated, deployed, and benchmarked under adaptive load.
+  \item An \textbf{iterative refinement phase} in which the agent receives
+        structured performance feedback, load-test statistics, per-endpoint
+        latency distributions, resource utilisation diagnostics, and the
+        previous deployment's goodput, and decides whether to improve the
+        application code \emph{or} the deployment configuration, exclusively,
+        before repeating the deploy--benchmark cycle.
+\end{enumerate}
+%
+The deployment specification is expressed as a constrained YAML schema
+(\texttt{spec.yaml}) that gives the agent control over the deployment levers
+introduced in Section~\ref{sec:background-deployment-levers}, replica count,
+resource allocation, placement, and database topology, while the framework
+handles manifest rendering, Kubernetes resource management, and
+orchestration.
+
+Performance is measured using an adaptive load profile
+(\texttt{k8s-explore-refine}) that automatically discovers the sustainable
+throughput of each deployment.  Rather than fixing the request rate a priori,
+the load controller ramps concurrent virtual users in steps until
+\emph{goodput} (Section~\ref{sec:background-goodput}) stops growing
+meaningfully.  This makes iteration scores directly comparable across
+applications, deployment sizes, and refinement rounds without per-scenario
+tuning.  Every LLM call is logged against its measured cost, so that model
+comparisons in Chapter~\ref{ch:results} can be read alongside capability
+rather than in place of it.
+
+
+% ----- §1.5  Research questions -----
+\section{Research Questions}
+\label{sec:intro-rqs}
+
+The central question above is broad enough that answering it in aggregate
+would hide more than it reveals: whether refinement helps, which lever drives
+that help, whether it depends on the model, and where it breaks down are
+separate empirical claims. Chapter~\ref{ch:results} therefore decomposes it
+into six questions, asked of the same 36-cell dataset (three models, four
+\textsc{BaxBench} scenarios, up to three frameworks; Chapter~\ref{ch:setup}):
+%
+\begin{description}
+  \item[RQ1] Does iterative refinement improve sustained goodput
+    (Section~\ref{sec:results-rq1})?
+  \item[RQ2] Which refinement lever, code or deployment, contributes more,
+    and do the two specialise on different failure classes
+    (Section~\ref{sec:results-rq2})?
+  \item[RQ3] How do the evaluated models compare, in refinement outcome and
+    in cost (Section~\ref{sec:results-rq3})?
+  \item[RQ4] Does application-framework choice affect achievable goodput
+    independently of refinement (Section~\ref{sec:results-rq4})?
+  \item[RQ5] What deployment parameters does the agent converge to, and do
+    they track the workload's actual characteristics
+    (Section~\ref{sec:results-rq5})?
+  \item[RQ6] What are the dominant failure modes, and what do individual
+    trajectories reveal that aggregate statistics do not
+    (Section~\ref{sec:results-rq6})?
+\end{description}
+%
+Chapter~\ref{ch:discussion} interprets the six answers together, and
+Chapter~\ref{ch:conclusion} returns to the overarching question directly.
+
+
+% ----- §1.6  Contributions -----
+\section{Contributions}
+\label{sec:intro-contributions}
+
+This thesis makes the following contributions:
+%
+\begin{enumerate}
+  \item \textbf{An iterative benchmark framework} that extends
+        \textsc{BaxBench} with Kubernetes deployment, adaptive load testing,
+        and a multi-phase refinement loop, decision, then \emph{either} code
+        \emph{or} spec regeneration, then deploy, then bench, then feedback,
+        enabling the evaluation of LLM-driven deployment optimisation
+        alongside code generation. A failure taxonomy and deterministic
+        routing scheme (Section~\ref{sec:methods-failure}) keeps a single
+        failed iteration from silently corrupting the next one, which is what
+        makes the empirical results below attributable to a specific cause
+        rather than an unexplained end-to-end number.
+
+  \item \textbf{A constrained deployment specification} (\texttt{spec.yaml})
+        that exposes a structured search space for the LLM agent, covering
+        replica count, resource requests and limits, database topology, and pod
+        placement, while the framework enforces cluster-capacity validation
+        and deterministic manifest rendering.
+
+  \item \textbf{An adaptive load profile} (\texttt{k8s-explore-refine}) that
+        automatically finds the sustainable throughput of any deployment
+        without per-application rate tuning, ramping load through an
+        explore phase to locate an approximate overload boundary, then a
+        refine phase that searches near it in efficiency-scaled steps,
+        with overload and stall detection based on failure rate, tail
+        latency, and goodput collapse thresholds.
+
+  \item \textbf{An experimental evaluation} across three frontier-tier
+        LLMs, four \textsc{BaxBench} scenarios, and up to three
+        application frameworks (36 scenario$\times$framework cells in
+        total), tracking LLM cost as a first-class quantity alongside
+        goodput. The evaluation shows that iterative refinement improves
+        sustained goodput in essentially every cell that becomes
+        benchmarkable (gains from just over $1\times$ to more than
+        $75\times$ depending on the baseline), in several cases converting a
+        non-functional deployment into a working one; that code and
+        deployment refinement specialise in practice on different failure
+        classes, with code refinement carrying the largest single-step
+        recoveries and deployment refinement acting as a smaller, more
+        consistent capacity knob; and that model capability shows up mainly
+        as \emph{whether} a working baseline is reached at all, and at what
+        cost, rather than in refinement quality once one exists
+        (Chapter~\ref{ch:results}). Taken together, these findings identify
+        entanglement with code correctness, not the deployment-reasoning
+        task itself, as the largest current limitation of LLM-guided
+        deployment optimisation.
+\end{enumerate}
+
+
+% ----- §1.7  Thesis outline -----
+\section{Thesis Outline}
+\label{sec:intro-outline}
+
+The remainder of this thesis is organised as follows.
+%
+\begin{description}
+  \item[Chapter~\ref{ch:background}] introduces the technical background this
+    thesis assumes: \textsc{BaxBench} and the limits of single-container
+    evaluation, Kubernetes and the deployment levers it exposes, and the
+    vocabulary, correctness versus performance, throughput, latency, and
+    goodput, used to evaluate deployments in later chapters.
+
+  \item[Chapter~\ref{ch:related-work}] surveys related work on LLM code
+    generation and evaluation, iterative self-refinement and agentic coding,
+    verification-gated generation, deployment configuration and learned
+    cluster management, and LLM-driven performance optimisation, and
+    positions this thesis against it.
+
+  \item[Chapter~\ref{ch:methods}] describes the system architecture, the
+    iterative experiment loop and its individual phases, the adaptive load
+    profile and goodput metric, failure handling, and the constrained
+    deployment specification.
+
+  \item[Chapter~\ref{ch:setup}] details the experimental setup, including
+    cluster configuration, selected models, scenarios, and hyperparameters.
+
+  \item[Chapter~\ref{ch:results}] presents the experimental results, organised
+    around the six research questions of Section~\ref{sec:intro-rqs}, closing
+    with a synthesis that connects them back to the overarching question of
+    Section~\ref{sec:intro-missing}.
+
+  \item[Chapter~\ref{ch:discussion}] interprets those results, discusses their
+    limitations and threats to validity, and draws out practical implications
+    for agentic software optimisation and Kubernetes deployment tuning.
+
+  \item[Chapter~\ref{ch:conclusion}] answers the overarching research question
+    directly, summarises what worked and what did not, and outlines
+    directions for future work.
+\end{description}

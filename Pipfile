@@ -30,9 +30,19 @@ openhands-ai = "*"
 imageio = "*"
 pdfplumber = "*"
 fastapi = "*"
+beautifulsoup4 = "*"
+psutil = "*"
+pyperclip = "*"
+natsort = "*"
+black = "*"
+isort = "*"
+seaborn = "*"
+openapi-spec-validator = "*"
 
 [dev-packages]
 mypy = "*"
+black = "*"
+isort = "*"
 
 [requires]
 python_version = "3.12"

@@ -1,30 +1,52 @@
+from __future__ import annotations
+
 import io
 import logging
 import os
 import pathlib
+import re
 import tarfile
 import uuid
 from dataclasses import dataclass
 from typing import Any, Callable, cast
 
-import docker
-import docker.errors
-from docker.models.containers import Container
+_docker_client: Any = None
 
-_docker_client: docker.DockerClient | None = None
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+_BUILD_DIAGNOSTIC_LINE_RE = re.compile(
+    r"(error\[E\d+\]|^error:|warning:|could not compile|"
+    r"Some errors have|For more information|"
+    r"^\s*-->|^\s*\d+\s*\||^\s*\||^\s*\^|^\s*=\s*(note|help):)",
+    re.IGNORECASE,
+)
 
 
-def _get_docker_client() -> docker.DockerClient:
+def _strip_ansi(text: str) -> str:
+    return _ANSI_RE.sub("", text)
+
+
+def _filter_build_diagnostics(lines: list[str], *, max_lines: int = 40) -> list[str]:
+    """Keep only compiler warnings/errors from docker build output."""
+    kept: list[str] = []
+    for line in lines:
+        clean = _strip_ansi(line).strip()
+        if clean and _BUILD_DIAGNOSTIC_LINE_RE.search(clean):
+            kept.append(clean)
+    return kept[-max_lines:]
+
+
+def _get_docker_client() -> Any:
     """
     Lazily create the Docker client.
 
-    Plotting and other read-only modes import `env` but do not require Docker.
-    Initializing the Docker client at import time breaks these workflows when the
-    Docker socket is unavailable (e.g. rootless docker not running, or in restricted
-    environments).
+    Importing ``docker`` only here keeps ``env.base`` (and thus ``Env``) importable
+    without the ``docker`` package installed — e.g. ``scripts/results_overview.py``
+    only needs ``codegen_layout_errors``.
     """
     global _docker_client
     if _docker_client is None:
+        import docker
+        import docker.errors
         try:
             _docker_client = docker.from_env()
         except docker.errors.DockerException as exc:
@@ -75,7 +97,7 @@ class Env:
     port: int = 5001
 
     # How much time (in seconds) we should wait for the app in the container to start.
-    wait_to_start_time: float = 20.0
+    wait_to_start_time: float = 45.0
 
     # The name of the process to check for in the container. If None, check for the entrypoint_cmd.
     process_name: str | None = None
@@ -102,6 +124,22 @@ class Env:
             return None
         return self.stub_builder(self.port, needs_db, needs_secret)
 
+    def codegen_layout_errors(self, code_dir: pathlib.Path) -> list[str]:
+        """
+        Return human-readable problems if the primary generated source file for this Env
+        is missing under ``code_dir`` (e.g. ``app.py``, ``app.js``, ``main.rs``).
+
+        Manifests (``package.json``, ``Cargo.toml``, …) are not checked here; Docker may
+        still add them at image build time.
+        """
+        errs: list[str] = []
+        if not code_dir.is_dir():
+            return ["code directory missing or not a directory"]
+        if self.code_filename:
+            src = code_dir / self.code_filename
+            if not src.is_file():
+                errs.append(f"missing required entry source {self.code_filename}")
+        return errs
     def build_only_docker_image_file(
         self,
         additional_docker_commands: list[str],
@@ -119,7 +157,6 @@ class Env:
         files: dict[pathlib.Path, str],
         additional_docker_commands: list[str],
         logger: logging.Logger,
-        no_cache: bool,
     ) -> str:
         logger.info("building the Docker image")
         tar_stream = io.BytesIO()
@@ -136,8 +173,7 @@ class Env:
                 tarinfo = tarfile.TarInfo(name=path)
                 tarinfo.size = len(file_data.getvalue())
                 tar.addfile(tarinfo, fileobj=file_data)
-                logger.info("copying file: %s\n%s", path, content)
-                logger.info("-" * 100)
+                logger.info("copying file: %s (%d bytes)", path, len(content))
 
             add_file("Dockerfile", final_dockerfile)
             for file_path, content in files.items():
@@ -149,29 +185,67 @@ class Env:
         # Build the Docker image using the tar file.
         lang, frw = self.language.replace("-", "_"), self.framework.replace("-", "_")
         tag = f"baxbench_{lang}_{frw}".lower()
-        logger.info("Files copied, building the image")
-        logger.info("-" * 100)
-        client = _get_docker_client()
-        build_kwargs: dict[str, Any] = {
-            "fileobj": tar_stream,
-            "nocache": no_cache,
-            "custom_context": True,
-            "tag": tag,
-            "rm": True,
-            "timeout": 600,  # 10 minutes max to build the image
-            "forcerm": True,
-            "labels": {"language": self.language, "framework": self.framework},
-        }
-        build_network = os.environ.get("BAXBENCH_DOCKER_BUILD_NETWORK")
-        if build_network:
-            build_kwargs["network_mode"] = build_network
-        r = client.images.build(**build_kwargs)
-            
-        if r[0].id is None:
-            raise Exception(f"got a None image id: {r}")
-        return r[0].id
+        logger.info("building docker image %s", tag)
+        import docker.errors
 
-    def run_docker_container(self, image_id: str, use_port: int, additional_env: dict[str, str] | None = None, link: dict[str, str] | None = None) -> Container:
+        client = _get_docker_client()
+        build_log_lines: list[str] = []
+
+        def log_build_chunk(chunk: object) -> None:
+            if not isinstance(chunk, dict):
+                return
+            if stream := chunk.get("stream"):
+                line = str(stream).rstrip("\n")
+                if line:
+                    build_log_lines.append(line)
+                    logger.debug("docker build: %s", line)
+            if err := chunk.get("error"):
+                line = str(err).strip()
+                logger.error("docker build: %s", line)
+                build_log_lines.append(line)
+
+        def log_build_tail() -> None:
+            diagnostics = _filter_build_diagnostics(build_log_lines)
+            if diagnostics:
+                logger.error(
+                    "Docker build failed. Compiler output (tail):\n%s",
+                    "\n".join(diagnostics),
+                )
+            elif build_log_lines:
+                logger.error(
+                    "Docker build failed. Build output (tail):\n%s",
+                    "\n".join(_strip_ansi(ln) for ln in build_log_lines[-20:]),
+                )
+
+        try:
+            # Do not pass decode=True: images.build() already JSON-decodes the
+            # stream internally; decode=True makes the API yield dicts that
+            # json_stream then tries to .decode(), causing AttributeError.
+            image, log_stream = client.images.build(
+                fileobj=tar_stream,
+                custom_context=True,
+                tag=tag,
+                rm=True,
+                timeout=600,  # 10 minutes max to build the image
+                forcerm=True,
+                labels={"language": self.language, "framework": self.framework},
+            )
+            for chunk in log_stream:
+                log_build_chunk(chunk)
+        except docker.errors.BuildError as exc:
+            for chunk in exc.build_log:
+                log_build_chunk(chunk)
+            log_build_tail()
+            raise
+        except Exception:
+            log_build_tail()
+            raise
+
+        if image.id is None:
+            raise Exception(f"got a None image id from docker build for {tag}")
+        return image.id
+
+    def run_docker_container(self, image_id: str, use_port: int, additional_env: dict[str, str] | None = None, link: dict[str, str] | None = None) -> Any:
         uid = uuid.uuid4()
         env_vars = {"PORT": str(self.port)}
         if additional_env:
@@ -180,7 +254,7 @@ class Env:
         
         client = _get_docker_client()
         return cast(
-            Container,
+            Any,
             client.containers.run(
                 image_id,
                 name=f"baxbench-{uid}",
@@ -196,9 +270,11 @@ class Env:
         )
 
     def process_still_running(self, container_id: str, logger: logging.Logger) -> bool:
+        import docker.errors
+
         # extract command that started container process
         client = _get_docker_client()
-        container: Container = client.containers.get(container_id)
+        container = client.containers.get(container_id)
         logger.info(f"Checking if process is still running: {self.entrypoint_cmd}")
         # log into container and check if process is still running
         try:
@@ -241,4 +317,7 @@ def hello_world():
 """
 
 # RUN commands that should be executed for all Docker images.
-COMMON_DOCKER_RUN_COMMANDS = []
+COMMON_DOCKER_RUN_COMMANDS = [
+    "apt-get update",
+    "DEBIAN_FRONTEND=noninteractive apt-get install -y postgresql-client",  # PostgreSQL client tools
+]

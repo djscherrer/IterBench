@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import Generator
 
 import docker
+from docker.errors import APIError
 from docker.models.containers import Container
 
 
@@ -44,6 +45,17 @@ class PostgresManager:
         self.logger.info(f"Starting PostgreSQL container {self.container_id} on port {self.port}")
         
         try:
+            # Ensure shared baxbench network exists (some workflows create it lazily elsewhere).
+            nets = [n for n in self._docker_client.networks.list() if n.name == "baxbench-net"]
+            if not nets:
+                try:
+                    self._docker_client.networks.create(name="baxbench-net", driver="bridge")
+                except APIError as exc:
+                    # NOTE: This can race under parallel runs (or when Docker's network list is stale).
+                    # A 409 Conflict here means "already exists" and is safe to ignore.
+                    status = getattr(getattr(exc, "response", None), "status_code", None)
+                    if status != 409:
+                        raise
             # Create volume with unique name
             self._docker_client.volumes.create(name=self.volume_name)
             self.logger.info(f"Created volume {self.volume_name}")

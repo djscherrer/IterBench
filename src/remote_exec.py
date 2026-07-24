@@ -35,12 +35,76 @@ _SSH_MULTIPLEX = os.environ.get("BAXBENCH_SSH_MULTIPLEX", "").strip().lower() in
     "yes",
     "on",
 )
-_LOG_COMMANDS = os.environ.get("BAXBENCH_LOG_COMMANDS", "1").strip().lower() in (
-    "1",
-    "true",
-    "yes",
-    "on",
+
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+_BUILD_DIAGNOSTIC_LINE_RE = re.compile(
+    r"(error\[E\d+\]|^error:|warning:|could not compile|"
+    r"Some errors have|For more information|"
+    r"^\s*-->|^\s*\d+\s*\||^\s*\||^\s*\^|^\s*=\s*(note|help):)",
+    re.IGNORECASE,
 )
+
+
+def _strip_ansi(text: str) -> str:
+    return _ANSI_RE.sub("", text)
+
+
+def _filter_build_diagnostics(lines: list[str], *, max_lines: int = 40) -> list[str]:
+    """Keep only compiler warnings/errors from docker build output."""
+    kept: list[str] = []
+    for line in lines:
+        clean = _strip_ansi(line).strip()
+        if clean and _BUILD_DIAGNOSTIC_LINE_RE.search(clean):
+            kept.append(clean)
+    return kept[-max_lines:]
+
+
+def _log_commands_enabled() -> bool:
+    return os.environ.get("BAXBENCH_LOG_COMMANDS", "1").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
+
+
+def _ssh_host_and_remote(cmd: list[str]) -> tuple[str | None, str]:
+    """Return (host, remote_command) from an ssh argv list."""
+    if not cmd or cmd[0] != "ssh":
+        return None, ""
+    i = 1
+    while i < len(cmd):
+        arg = cmd[i]
+        if arg == "-o":
+            i += 2
+            continue
+        if arg.startswith("-"):
+            i += 1
+            continue
+        host = arg
+        remote = cmd[i + 1] if i + 1 < len(cmd) else ""
+        return host, remote
+    return None, ""
+
+
+def format_command_for_log(cmd: list[str]) -> str:
+    """One-line summary for bench logs (avoids multi-line ssh/bash -lc dumps)."""
+    if cmd and cmd[0] == "ssh":
+        host, remote = _ssh_host_and_remote(cmd)
+        if host is None:
+            return " ".join(shlex.quote(x) for x in cmd)
+        if "ctr" in remote and "images pull" in remote:
+            m = re.search(r"--plain-http\s+(\S+)", remote)
+            ref = m.group(1) if m else "…"
+            short = ref.rsplit("/", 1)[-1] if len(ref) > 80 else ref
+            return f"ssh {host}: ctr pull --plain-http {short}"
+        if remote.startswith("bash"):
+            return f"ssh {host}: remote script"
+        snippet = remote.replace("\n", " ")[:100]
+        return f"ssh {host}: {snippet}{'…' if len(remote) > 100 else ''}"
+    if len(cmd) >= 1 and cmd[0] == "scp":
+        return " ".join(shlex.quote(x) for x in cmd[:6]) + (" …" if len(cmd) > 6 else "")
+    return " ".join(shlex.quote(x) for x in cmd)
 _COLLECT_DOCKER_LOGS = os.environ.get("BAXBENCH_COLLECT_DOCKER_LOGS", "1").strip().lower() in (
     "1",
     "true",
@@ -55,6 +119,26 @@ _CAPTURE_PERCPU = os.environ.get("BAXBENCH_CAPTURE_PERCPU", "0").strip().lower()
     "on",
 )
 
+_AUTO_INSTALL_REMOTE_DEPS = os.environ.get("BAXBENCH_AUTO_INSTALL_REMOTE_DEPS", "").strip().lower() in (
+    "1",
+    "true",
+    "yes",
+    "on",
+)
+
+
+def _env_bool(name: str, default: bool) -> bool:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in ("1", "true", "yes", "on")
+
+
+_REMOTE_PRUNE_IMAGES = _env_bool("BAXBENCH_REMOTE_PRUNE_IMAGES", True)
+# Volume prune is potentially destructive (contains DB/state). Default to False.
+_REMOTE_PRUNE_VOLUMES = _env_bool("BAXBENCH_REMOTE_PRUNE_VOLUMES", False)
+_REMOTE_PRUNE_BUILD_CACHE = _env_bool("BAXBENCH_REMOTE_PRUNE_BUILD_CACHE", True)
+_REMOTE_REMOVE_NETWORKS = _env_bool("BAXBENCH_REMOTE_REMOVE_DOCKER_NETWORKS", True)
 
 def ssh_control_path(host: str) -> str:
     """
@@ -99,10 +183,11 @@ def run_subprocess(
     cwd: pathlib.Path | None = None,
     timeout: int | None = None,
 ) -> subprocess.CompletedProcess:
-    if _LOG_COMMANDS:
-        logger.info("Running command: %s", " ".join(shlex.quote(x) for x in cmd))
+    summary = format_command_for_log(cmd)
+    if _log_commands_enabled():
+        logger.info("%s", summary)
     else:
-        logger.debug("Running command: %s", " ".join(shlex.quote(x) for x in cmd))
+        logger.debug("%s", summary)
     result = subprocess.run(
         cmd,
         stdout=subprocess.PIPE,
@@ -111,10 +196,10 @@ def run_subprocess(
         timeout=timeout,
         check=False,
     )
-    if _LOG_COMMANDS:
-        logger.info("Command finished with code %s", result)
+    if _log_commands_enabled():
+        logger.info("Finished (exit %s): %s", result.returncode, summary)
     else:
-        logger.debug("Command finished with code %s", result)
+        logger.debug("Finished (exit %s): %s", result.returncode, summary)
     if result.stdout:
         logger.debug("Command output:\n%s", result.stdout.decode(errors="ignore"))
     return result
@@ -176,8 +261,155 @@ def ensure_rootless_docker(host: str, logger: logging.Logger) -> None:
         ) from exc
 
 
+def ensure_docker_access(host: str, logger: logging.Logger) -> str:
+    """
+    Ensure Docker is accessible on the remote host.
+    Prefer rootful Docker via sudo; if that fails, fall back to rootless mode.
+    Returns the selected mode: "rootful" or "rootless".
+    """
+    try:
+        cmd = "set -euo pipefail; sudo -n docker info >/dev/null 2>&1"
+        out = ssh(host, f"bash -lc {shlex.quote(cmd)}", logger)
+        out.check_returncode()
+        logger.info("Docker accessible (rootful) on %s", host)
+        return "rootful"
+    except Exception:
+        try:
+            cmd = (
+                "set -euo pipefail; "
+                "if command -v loginctl >/dev/null 2>&1; then "
+                "  loginctl enable-linger \"$USER\" >/dev/null 2>&1 || true; "
+                "fi; "
+                "if command -v systemctl >/dev/null 2>&1; then "
+                "  systemctl --user is-active docker >/dev/null 2>&1 || systemctl --user start docker >/dev/null 2>&1 || true; "
+                "fi; "
+                "docker info >/dev/null 2>&1"
+            )
+            out = ssh(host, f"bash -lc {shlex.quote(cmd)}", logger)
+            out.check_returncode()
+            logger.info("Docker accessible (rootless) on %s", host)
+            return "rootless"
+        except Exception as exc:
+            diag_cmd = (
+                "set -euo pipefail; "
+                'docker_sock="/run/user/$(id -u)/docker.sock"; '
+                'echo "=== sudo check ==="; if command -v sudo >/dev/null 2>&1; then sudo -n docker info >/dev/null 2>&1 && echo "OK" || echo "FAIL"; else echo "NO_SUDO"; fi; '
+                'echo "=== rootless check ==="; if [ -S "$docker_sock" ]; then DOCKER_HOST="unix://$docker_sock" docker info >/dev/null 2>&1 && echo "OK" || echo "FAIL"; else echo "NO_SOCK"; fi; '
+            )
+            out = ssh(host, f"bash -lc {shlex.quote(diag_cmd)}", logger)
+            msg = (out.stdout or b"").decode(errors="ignore").strip()
+            raise RuntimeError(
+                f"Docker not available on host {host}; attempted rootful then rootless. Details:\n{msg}"
+            ) from exc
+
+
+def cleanup_remote_docker_host(
+    host: str,
+    logger: logging.Logger,
+    *,
+    prune_images: bool = _REMOTE_PRUNE_IMAGES,
+    prune_volumes: bool = _REMOTE_PRUNE_VOLUMES,
+    prune_build_cache: bool = _REMOTE_PRUNE_BUILD_CACHE,
+    remove_networks: bool = _REMOTE_REMOVE_NETWORKS,
+) -> None:
+    threshold = 80
+    script = f"""
+    set -euo pipefail
+    docker_sock="/run/user/$(id -u)/docker.sock"
+    if [[ -z "${{DOCKER_HOST:-}}" && -S "$docker_sock" ]]; then export DOCKER_HOST="unix://$docker_sock"; fi
+    command -v docker >/dev/null 2>&1 || (echo "ERROR: docker missing" >&2; exit 51)
+    docker info >/dev/null 2>&1
+    ids=$(docker ps -aq || true)
+    if [[ -n "${{ids}}" ]]; then docker rm -f ${{ids}} >/dev/null; fi
+
+    docker_root=$(docker info --format '{{{{.DockerRootDir}}}}' 2>/dev/null || echo /var/lib/docker)
+    usage_pct=$(df -P "$docker_root" | awk 'NR==2 {{gsub("%","",$5); print int($5)}}' || echo 0)
+    build_cache_left=skipped
+    images_left=skipped
+    volumes_left=skipped
+    networks_left=skipped
+    echo "cleanup: docker root $docker_root disk usage ${{usage_pct}}% (build-cache threshold {threshold}%)"
+
+    if [ "{str(prune_images).lower()}" = "true" ]; then
+        docker image prune -af >/dev/null || true
+    fi
+    if [ "{str(prune_volumes).lower()}" = "true" ]; then
+        docker volume prune -f >/dev/null 2>&1 || true
+        bax_vols=$(docker volume ls -q | grep -E '^baxbench-' || true)
+        if [[ -n "${{bax_vols}}" ]]; then
+          docker volume rm -f ${{bax_vols}} >/dev/null 2>&1 || true
+        fi
+    fi
+    if [ "{str(remove_networks).lower()}" = "true" ]; then
+        nets=$(docker network ls --filter type=custom -q || true)
+        if [[ -n "${{nets}}" ]]; then docker network rm ${{nets}} >/dev/null; fi
+    fi
+
+    if [ "$usage_pct" -ge {threshold} ]; then
+    echo "cleanup: disk usage $usage_pct% >= {threshold}%, pruning build cache"
+    if [ "{str(prune_build_cache).lower()}" = "true" ]; then
+        if docker builder prune -af >/dev/null 2>&1; then :; elif docker buildx prune -af >/dev/null 2>&1; then :; else echo 'WARN: build cache prune unsupported'; fi
+        build_cache_left=unknown
+        if docker builder du >/tmp/baxbench-builder-du.$$ 2>/dev/null; then
+        build_cache_left=$(awk 'NR > 1 && NF {{count += 1}} END {{print count + 0}}' /tmp/baxbench-builder-du.$$)
+        elif docker buildx du >/tmp/baxbench-builder-du.$$ 2>/dev/null; then
+        build_cache_left=$(awk 'NR > 1 && NF {{count += 1}} END {{print count + 0}}' /tmp/baxbench-builder-du.$$)
+        fi
+        rm -f /tmp/baxbench-builder-du.$$ >/dev/null 2>&1 || true
+    fi
+    else
+    echo "cleanup: disk usage $usage_pct% < {threshold}%, skipping build-cache prune"
+    fi
+
+    containers_left=$(docker ps -aq | wc -l | tr -d ' ')
+    networks_left=$(docker network ls --filter type=custom -q | wc -l | tr -d ' ' || true)
+    images_left=$(docker image ls -aq | wc -l | tr -d ' ' || true)
+    volumes_left=$(docker volume ls -q | grep -E '^baxbench-' | wc -l | tr -d ' ' || true)
+    echo "cleanup-summary host=$(hostname) containers_left=${{containers_left}} networks_left=${{networks_left}} images_left=${{images_left}} volumes_left=${{volumes_left}} build_cache_left=${{build_cache_left}}"
+    if [ "${{containers_left}}" != "0" ]; then echo "ERROR: containers remain after cleanup" >&2; exit 61; fi
+    if [ "{str(remove_networks).lower()}" = "true" ] && [ "${{networks_left}}" != "0" ]; then echo "ERROR: docker networks remain after cleanup" >&2; exit 62; fi
+    if [ "{str(prune_images).lower()}" = "true" ] && [ "${{images_left}}" != "0" ]; then echo "ERROR: docker images remain after cleanup" >&2; exit 63; fi
+    if [ "{str(prune_volumes).lower()}" = "true" ] && [ "${{volumes_left}}" != "0" ]; then echo "ERROR: baxbench docker volumes remain after cleanup" >&2; exit 64; fi
+    """
+    out = ssh(host, f"bash -lc {shlex.quote(script)}", logger)
+    try:
+        out.check_returncode()
+    except Exception as exc:
+        msg = (out.stdout or b"").decode(errors="ignore").strip()
+        if not msg:
+            msg = f"exit {out.returncode}"
+        raise RuntimeError(f"Failed to clean Docker state on host {host}.\n{msg}") from exc
+    summary = (out.stdout or b"").decode(errors="ignore").strip()
+    if summary:
+        logger.info("%s", summary)
+
+
 def scp_to_remote(local_path: pathlib.Path, host: str, remote_path: str, logger: logging.Logger) -> None:
     scp_cmd = scp_base_cmd(host) + [str(local_path), f"{host}:{remote_path}"]
+    run_subprocess(scp_cmd, logger).check_returncode()
+
+
+def scp_tree_to_remote(
+    local_dir: pathlib.Path,
+    host: str,
+    remote_dir: str,
+    logger: logging.Logger,
+) -> None:
+    """Recursively copy a local directory to ``host:remote_dir`` (replaces remote)."""
+    if not local_dir.is_dir():
+        raise FileNotFoundError(f"scp_tree_to_remote: not a directory: {local_dir}")
+    remote_parent = str(pathlib.PurePosixPath(remote_dir).parent)
+    remote_name = pathlib.PurePosixPath(remote_dir).name
+    if local_dir.name != remote_name:
+        raise ValueError(
+            f"scp_tree_to_remote expects local basename {remote_name!r}, got {local_dir.name!r}"
+        )
+    ssh(
+        host,
+        f"rm -rf {shlex.quote(remote_dir)} && mkdir -p {shlex.quote(remote_parent)}",
+        logger,
+    ).check_returncode()
+    scp_cmd = scp_base_cmd(host) + ["-r", str(local_dir), f"{host}:{remote_parent}/"]
     run_subprocess(scp_cmd, logger).check_returncode()
 
 
@@ -248,9 +480,13 @@ def ensure_remote_python_env(load_host: str, remote_env_dir: str, logger: loggin
     setup_cmd = (
         "set -euo pipefail; "
         f"{mkdir_parent}"
+        "python3 -c 'import venv' >/dev/null 2>&1 || (echo 'ERROR: python3-venv missing' >&2; exit 42); "
         f"if [ ! -d {shlex.quote(str(env_path))} ]; then "
         f"python3 -m venv {shlex.quote(str(env_path))}; "
         "fi; "
+        f"({shlex.quote(venv_python)} -m pip --version >/dev/null 2>&1) "
+        f"|| ({shlex.quote(venv_python)} -m ensurepip --upgrade >/dev/null 2>&1) "
+        f"|| (echo 'ERROR: pip missing in venv (install python3-pip / ensurepip)' >&2; exit 43); "
         f"if [ ! -f {shlex.quote(marker)} ]; then "
         f"{shlex.quote(venv_python)} -m pip install --upgrade pip; "
         f"{shlex.quote(venv_python)} -m pip install {requirements}; "
@@ -258,10 +494,70 @@ def ensure_remote_python_env(load_host: str, remote_env_dir: str, logger: loggin
         "fi"
     )
 
-    ssh(load_host, f"bash -lc {shlex.quote(setup_cmd)}", logger)
+    out = ssh(load_host, f"bash -lc {shlex.quote(setup_cmd)}", logger)
+    try:
+        out.check_returncode()
+    except subprocess.CalledProcessError as exc:
+        msg = (out.stdout or b"").decode(errors="ignore").strip()
+        if not msg:
+            msg = f"exit {out.returncode}"
+        if _AUTO_INSTALL_REMOTE_DEPS and ("No module named pip" in msg or "pip missing in venv" in msg):
+            ensure_remote_python_tooling(load_host, logger)
+            ssh(load_host, f"bash -lc {shlex.quote(setup_cmd)}", logger).check_returncode()
+            return locust_bin
+        raise RuntimeError(
+            f"Failed to set up remote python env on {load_host} at {remote_env_dir}. "
+            f"Ensure python3, python3-venv, and pip are available.\n{msg}"
+        ) from exc
     return locust_bin
 
 
+def ensure_remote_python_tooling(host: str, logger: logging.Logger) -> None:
+    """
+    Ensure the remote host can create venvs and install Python packages.
+
+    Required on distributed load generator hosts (Locust master/workers).
+    """
+    check_cmd = (
+        "set -euo pipefail; "
+        "command -v python3 >/dev/null 2>&1 || (echo 'ERROR: python3 missing' >&2; exit 11); "
+        "python3 -c 'import venv' >/dev/null 2>&1 || (echo 'ERROR: python3-venv missing' >&2; exit 12); "
+        "python3 -m pip --version >/dev/null 2>&1 || (echo 'ERROR: pip missing for python3' >&2; exit 13); "
+        "echo OK"
+    )
+    out = ssh(host, f"bash -lc {shlex.quote(check_cmd)}", logger)
+    if out.returncode == 0:
+        return
+
+    msg = (out.stdout or b"").decode(errors="ignore").strip()
+    if not _AUTO_INSTALL_REMOTE_DEPS:
+        raise RuntimeError(
+            f"Remote host {host} is missing Python tooling required for distributed load generation.\n"
+            f"{msg}\n"
+            "Either install prerequisites on that host (python3, python3-venv, python3-pip), "
+            "or rerun with BAXBENCH_AUTO_INSTALL_REMOTE_DEPS=1 (requires sudo on the remote host)."
+        )
+
+    install_cmd = (
+        "set -euo pipefail; "
+        "if command -v sudo >/dev/null 2>&1; then SUDO='sudo -n'; else SUDO=''; fi; "
+        "if [ -z \"$SUDO\" ]; then echo 'ERROR: sudo not available for auto-install' >&2; exit 21; fi; "
+        "if command -v apt-get >/dev/null 2>&1; then "
+        "  $SUDO apt-get update -y >/dev/null; "
+        "  $SUDO apt-get install -y python3 python3-venv python3-pip >/dev/null; "
+        "elif command -v dnf >/dev/null 2>&1; then "
+        "  $SUDO dnf install -y python3 python3-pip python3-virtualenv >/dev/null || true; "
+        "elif command -v yum >/dev/null 2>&1; then "
+        "  $SUDO yum install -y python3 python3-pip python3-virtualenv >/dev/null || true; "
+        "else "
+        "  echo 'ERROR: no supported package manager (apt/dnf/yum) found for auto-install' >&2; exit 22; "
+        "fi; "
+        "python3 -c 'import venv' >/dev/null 2>&1 || (echo 'ERROR: python3-venv still missing after install' >&2; exit 23); "
+        "python3 -m pip --version >/dev/null 2>&1 || (echo 'ERROR: pip still missing after install' >&2; exit 24); "
+        "echo OK"
+    )
+    out2 = ssh(host, f"bash -lc {shlex.quote(install_cmd)}", logger)
+    out2.check_returncode()
 def save_image_tar(image_id: str, out_dir: pathlib.Path, logger: logging.Logger) -> pathlib.Path:
     tar_path = out_dir / f"{image_id[7:][:12]}.tar"
     if tar_path.exists():
@@ -319,46 +615,43 @@ def resolve_remote_primary_ipv4(host: str, logger: logging.Logger) -> str:
     return ip
 
 
-def _is_preferred_ipv4(ip: str, preferred_prefixes: tuple[str, ...]) -> bool:
-    return any(ip.startswith(pfx) for pfx in preferred_prefixes)
-
-
-def resolve_remote_preferred_ipv4(
-    host: str,
-    logger: logging.Logger,
-    *,
-    preferred_prefixes: tuple[str, ...] = ("10.233.",),
-) -> str:
+def resolve_remote_preferred_ipv4(host: str, logger: logging.Logger) -> str:
     """
-    Resolve an IPv4 address *on the remote host*.
+    Resolve an IPv4 for inter-node lab traffic.
 
-    Policy:
-    - Query all global IPv4 addresses on the remote host.
-    - Prefer the first address matching any prefix in preferred_prefixes (default: 10.233.*).
-    - Otherwise fall back to the first non-loopback global IPv4.
-    - Otherwise fall back to the primary route source IP.
+    On CloudLab/Emulab, short names in ``/etc/hosts`` map to the experiment LAN
+    (``10.x``). FQDNs and the default route use the shared control network.
     """
+    short = (host or "").strip().split("@")[-1].split(".")[0]
+    if short:
+        cmd = (
+            "set -euo pipefail; "
+            f"getent ahostsv4 {shlex.quote(short)} 2>/dev/null | awk '{{print $1; exit}}' || true"
+        )
+        out = ssh(host, f"bash -lc {shlex.quote(cmd)}", logger)
+        if out.returncode == 0:
+            text = (out.stdout or b"").decode(errors="ignore")
+            for ip in re.findall(r"\b(?:\d{1,3}\.){3}\d{1,3}\b", text):
+                if ip.startswith("10.") and not ip.startswith("127."):
+                    return ip
+
     cmd = (
         "set -euo pipefail; "
-        # List all non-loopback global IPv4 addresses (no CIDR), one per line.
         "ip -4 -o addr show scope global | awk '{print $4}' | cut -d/ -f1 || true"
     )
     out = ssh(host, f"bash -lc {shlex.quote(cmd)}", logger)
     out.check_returncode()
     text = (out.stdout or b"").decode(errors="ignore")
-    ips = re.findall(r"\b(?:\d{1,3}\.){3}\d{1,3}\b", text)
-    ips = [ip for ip in ips if ip and not ip.startswith("127.")]
-    preferred = [ip for ip in ips if _is_preferred_ipv4(ip, preferred_prefixes)]
-    if preferred:
-        return preferred[0]
-    if ips:
-        return ips[0]
+    for ip in re.findall(r"\b(?:\d{1,3}\.){3}\d{1,3}\b", text):
+        if ip.startswith("10.") and not ip.startswith("127."):
+            return ip
+
     return resolve_remote_primary_ipv4(host, logger)
 
 
 def get_cpu_times(connection: Connection) -> tuple[int, int, int, int, int, int, int, int]:
     cmd = "cat /proc/stat | grep '^cpu '"
-    out = connection.run(cmd, hide=True, in_stream=False)
+    out = connection.run(cmd, hide=True)
     if not out.ok:
         return (-1, -1, -1, -1, -1, -1, -1, -1)
     parts = out.stdout.split()
@@ -371,7 +664,7 @@ def get_cpu_times_percpu(connection: Connection) -> dict[str, tuple[int, int, in
     """
     Return per-CPU times from /proc/stat for cpu0, cpu1, ...
     """
-    out = connection.run("cat /proc/stat | grep '^cpu[0-9]'", hide=True, warn=True, in_stream=False)
+    out = connection.run("cat /proc/stat | grep '^cpu[0-9]'", hide=True, warn=True)
     if not getattr(out, "ok", False):
         return {}
     rows: dict[str, tuple[int, int, int, int, int, int, int, int]] = {}
@@ -390,7 +683,7 @@ def get_cpu_times_percpu(connection: Connection) -> dict[str, tuple[int, int, in
 
 
 def get_loadavg(connection: Connection) -> tuple[float, float, float]:
-    out = connection.run("cat /proc/loadavg", hide=True, in_stream=False)
+    out = connection.run("cat /proc/loadavg", hide=True)
     if not out.ok:
         return (-1.0, -1.0, -1.0)
     parts = out.stdout.strip().split()
@@ -402,7 +695,7 @@ def get_loadavg(connection: Connection) -> tuple[float, float, float]:
 
 def get_memory_usage(connection: Connection) -> Tuple[float, float, float]:
     cmd = "cat /proc/meminfo"
-    out = connection.run(cmd, hide=True, in_stream=False)
+    out = connection.run(cmd, hide=True)
     if not out.ok:
         return -1, -1, -1
     meminfo = {}
@@ -425,7 +718,7 @@ def get_memory_usage(connection: Connection) -> Tuple[float, float, float]:
 
 
 def get_swap_usage(connection: Connection) -> Tuple[float, float, float]:
-    out = connection.run("cat /proc/meminfo", hide=True, in_stream=False)
+    out = connection.run("cat /proc/meminfo", hide=True)
     if not out.ok:
         return (-1.0, -1.0, -1.0)
     meminfo: dict[str, int] = {}
@@ -449,7 +742,7 @@ def get_swap_usage(connection: Connection) -> Tuple[float, float, float]:
 
 def get_disk_usage(connection: Connection, disk: str = "sda") -> Tuple[int, int]:
     cmd = f"cat /proc/diskstats | awk '$3==\"{disk}\" {{print $6, $10}}'"
-    out = connection.run(cmd, hide=True, in_stream=False)
+    out = connection.run(cmd, hide=True)
     if not out.ok:
         return -1, -1
     parts = out.stdout.split()
@@ -460,7 +753,7 @@ def get_disk_usage(connection: Connection, disk: str = "sda") -> Tuple[int, int]
 
 def get_network_usage(connection: Connection) -> Tuple[int, int]:
     cmd = "cat /proc/net/dev"
-    out = connection.run(cmd, hide=True, in_stream=False)
+    out = connection.run(cmd, hide=True)
     if not out.ok:
         return -1, -1
     lines = out.stdout.strip().splitlines()
@@ -485,7 +778,7 @@ def get_docker_stats_cpu_pct(connection: Connection, container: str) -> float | 
         return None
     quoted = shlex.quote(name)
     cmd = f"docker stats {quoted} --no-stream --format '{{{{.CPUPerc}}}}' 2>/dev/null"
-    result = connection.run(cmd, hide=True, warn=True, in_stream=False)
+    result = connection.run(cmd, hide=True, warn=True)
     if not getattr(result, "ok", False):
         return None
     txt = (result.stdout or "").strip().replace("%", "")
@@ -550,13 +843,8 @@ def capture_host_performance(
             if dt > 0:
                 didle = (cpu_stats[3] + cpu_stats[4]) - (last_cpu_stats[3] + last_cpu_stats[4])
                 cpu_usage = 1.0 - (didle / dt)
-                cpu_user = (
-                    (cpu_stats[0] + cpu_stats[1]) - (last_cpu_stats[0] + last_cpu_stats[1])
-                ) / dt
-                cpu_system = (
-                    (cpu_stats[2] + cpu_stats[5] + cpu_stats[6])
-                    - (last_cpu_stats[2] + last_cpu_stats[5] + last_cpu_stats[6])
-                ) / dt
+                cpu_user = ((cpu_stats[0] + cpu_stats[1]) - (last_cpu_stats[0] + last_cpu_stats[1])) / dt
+                cpu_system = ((cpu_stats[2] + cpu_stats[5] + cpu_stats[6]) - (last_cpu_stats[2] + last_cpu_stats[5] + last_cpu_stats[6])) / dt
                 cpu_iowait = (cpu_stats[4] - last_cpu_stats[4]) / dt
                 cpu_steal = (cpu_stats[7] - last_cpu_stats[7]) / dt
 
@@ -623,65 +911,6 @@ def capture_host_performance(
     connection.close()
 
 
-def capture_host_cpu_performance(
-    sample_dir: pathlib.Path,
-    host: str,
-    logger: logging.Logger,
-    stop_event,
-    interval: float = 1.0,
-    out_csv: pathlib.Path | None = None,
-) -> None:
-    """
-    Capture a lightweight host-wide CPU series from /proc/stat.
-
-    This intentionally avoids the heavier host sampler work (meminfo, diskstats,
-    netdev, loadavg, docker stats) so 1s CPU sampling adds minimal benchmark noise.
-    """
-    filename = out_csv or (sample_dir / "host_cpu.csv")
-    with open(filename, "w") as f:
-        f.write(
-            "ts_epoch_s,ts,cpu_usage_ratio,cpu_user_ratio,cpu_system_ratio,"
-            "cpu_iowait_ratio,cpu_steal_ratio\n"
-        )
-
-    connection = Connection(host)
-    last_cpu_stats = None
-    while not stop_event.is_set():
-        loop_start = time.time()
-        cpu_stats = get_cpu_times(connection)
-
-        cpu_usage = 0.0
-        cpu_user = 0.0
-        cpu_system = 0.0
-        cpu_iowait = 0.0
-        cpu_steal = 0.0
-        if last_cpu_stats is not None:
-            # cpu_stats: user,nice,system,idle,iowait,irq,softirq,steal
-            dt = sum(cpu_stats) - sum(last_cpu_stats)
-            if dt > 0:
-                didle = (cpu_stats[3] + cpu_stats[4]) - (last_cpu_stats[3] + last_cpu_stats[4])
-                cpu_usage = 1.0 - (didle / dt)
-                cpu_user = ((cpu_stats[0] + cpu_stats[1]) - (last_cpu_stats[0] + last_cpu_stats[1])) / dt
-                cpu_system = ((cpu_stats[2] + cpu_stats[5] + cpu_stats[6]) - (last_cpu_stats[2] + last_cpu_stats[5] + last_cpu_stats[6])) / dt
-                cpu_iowait = (cpu_stats[4] - last_cpu_stats[4]) / dt
-                cpu_steal = (cpu_stats[7] - last_cpu_stats[7]) / dt
-
-        with open(filename, "a") as f:
-            ts_epoch = time.time()
-            ts = time.strftime("%Y-%m-%d %H:%M:%S")
-            f.write(
-                f"{ts_epoch:.3f},{ts},{cpu_usage},{cpu_user},{cpu_system},"
-                f"{cpu_iowait},{cpu_steal}\n"
-            )
-
-        last_cpu_stats = cpu_stats
-        time_to_sleep = interval - (time.time() - loop_start)
-        if time_to_sleep > 0:
-            time.sleep(time_to_sleep)
-
-    connection.close()
-
-
 def capture_socket_queues(
     sample_dir: pathlib.Path,
     host: str,
@@ -712,7 +941,7 @@ def capture_socket_queues(
             send_q = -1
             try:
                 # Example output columns: State Recv-Q Send-Q Local:Port Peer:Port
-                out = connection.run(f"ss -ltnH 'sport = :{int(port)}' || true", hide=True, warn=True, in_stream=False)
+                out = connection.run(f"ss -ltnH 'sport = :{int(port)}' || true", hide=True, warn=True)
                 line = out.stdout.strip().splitlines()[0] if out.stdout.strip() else ""
                 if line:
                     parts = line.split()
@@ -736,6 +965,7 @@ __all__ = [
     "RemoteConfig",
     "_COLLECT_DOCKER_LOGS",
     "collect_docker_logs_bundle",
+    "cleanup_remote_docker_host",
     "ensure_remote_python_env",
     "ensure_rootless_docker",
     "resolve_remote_primary_ipv4",
@@ -746,7 +976,6 @@ __all__ = [
     "ssh",
     "ssh_warmup",
     "wait_for_remote_http",
-    "capture_host_cpu_performance",
     "capture_host_performance",
     "capture_socket_queues",
     "get_cpu_times",

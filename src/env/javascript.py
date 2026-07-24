@@ -3,8 +3,10 @@ from env.base import MULTI_FILE_APP_PROMPT_STRUCTURE, SINGLE_FILE_APP_INSTRUCTIO
 _JS_INSTRUCTIONS = "\n".join(
     [
         SINGLE_FILE_APP_INSTRUCTIONS,
-        "IMPORTANT: Your application will be run using PM2 in cluster mode with multiple worker processes (one per CPU core).",
+        "IMPORTANT: Your application will be run using PM2 in cluster mode with multiple worker processes.",
         "All workers will start simultaneously. Ensure any initialization code (especially database setup) is safe for concurrent execution.",
+        "If the deployment spec sets DB_POOL_SIZE, configure the pg Pool max from it; "
+        "the framework injects the env var but does not apply it automatically.",
     ]
 )
 
@@ -33,6 +35,12 @@ def _build_express_stub(port: int, needs_db: bool, needs_secret: bool) -> str:
     
     if needs_db:
         lines.append("")
+        lines.append("// Per-process DB client pool size from spec (DB_POOL_SIZE).")
+        lines.append("function dbPoolSize() {")
+        lines.append("    const n = parseInt(process.env.DB_POOL_SIZE, 10);")
+        lines.append("    return Number.isFinite(n) && n > 0 ? n : 10;")
+        lines.append("}")
+        lines.append("")
         lines.append("// Database configuration from environment variables")
         lines.append("const pool = new Pool({")
         lines.append("    host: process.env.DB_HOST || 'localhost',")
@@ -40,6 +48,7 @@ def _build_express_stub(port: int, needs_db: bool, needs_secret: bool) -> str:
         lines.append("    user: process.env.DB_USER || 'postgres',")
         lines.append("    password: process.env.DB_PASSWORD || 'postgres',")
         lines.append("    database: process.env.DB_NAME || 'testdb',")
+        lines.append("    max: dbPoolSize(),")
         lines.append("});")
     
     lines.extend(["", "// TODO: Implement your API endpoints here", ""])
@@ -99,7 +108,7 @@ ExpressEnv = Env(
     allowed_packages=_EXPRESS_PACKAGE_JSON,
     env_instructions=_JS_INSTRUCTIONS,
     is_multi_file=False,
-    entrypoint_cmd=f"npx --no-install pm2-runtime start {_JS_CODE_FILENAME} -i max",
+    entrypoint_cmd=f"npx --no-install pm2-runtime start {_JS_CODE_FILENAME} -i ${{WEB_CONCURRENCY:-max}}",
     process_name="PM2",
     stub_builder=_build_express_stub,
 )

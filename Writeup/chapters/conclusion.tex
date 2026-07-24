@@ -1,0 +1,228 @@
+% =============================================================
+%  Chapter 7 — Conclusion
+% =============================================================
+
+\chapter{Conclusion}
+\label{ch:conclusion}
+
+
+% ----- §7.1 Thesis Summary -----
+\section{Thesis Summary}
+\label{sec:conclusion-summary}
+
+\textsc{BaxBench}~\cite{vero2025baxbench} and similar benchmarks established
+that LLMs can generate functionally correct backend applications, but they
+evaluate every candidate in an isolated, single-machine Docker container
+and stop at functional and security correctness
+(Section~\ref{sec:intro-context}). Nothing in that evaluation methodology
+says anything about whether the generated application would serve
+production traffic well once it is actually deployed: replica counts,
+resource requests, pod placement, and database topology are all decided
+outside the scope of the benchmark, by a human operator or a reactive
+autoscaler that reasons about none of it jointly
+(Section~\ref{sec:intro-gap}). This thesis asked whether an LLM agent
+could close that gap itself: iteratively optimise the deployment
+configuration of a backend application on a Kubernetes cluster, guided by
+runtime performance feedback, to maximise sustainable throughput under
+fixed infrastructure constraints (Section~\ref{sec:intro-missing}).
+
+The approach is an iterative benchmarking framework that extends
+\textsc{BaxBench} with a real multi-node Kubernetes cluster and a
+five-stage refinement loop --- decision, code, spec, deploy, bench
+(Chapter~\ref{ch:methods}) --- in which an LLM agent proposes exactly one
+change per iteration, to either application code or a constrained
+deployment specification (\texttt{spec.yaml}), and receives structured
+load-test and resource-utilisation feedback before the next iteration.
+Performance is scored by \emph{sustained goodput} under an adaptive load
+profile that discovers each deployment's sustainable throughput without
+per-scenario rate tuning (Section~\ref{sec:methods-load-profile}). The
+methodological contributions this required --- a schema that bounds the
+agent's deployment search space to meaningful decisions rather than raw
+Kubernetes YAML, a failure taxonomy and routing scheme that keeps a
+single bad iteration from silently corrupting the next one
+(Section~\ref{sec:methods-failure}), and an evaluation harness that
+tracks LLM cost as a first-class quantity alongside goodput
+(Section~\ref{sec:methods-workflow}) --- are what make the empirical
+results in Chapter~\ref{ch:results} attributable to specific causes
+rather than an unexplained end-to-end number.
+
+
+% ----- §7.2 Key Findings -----
+\section{Key Findings}
+\label{sec:conclusion-findings}
+
+\paragraph{What worked.} Iterative refinement improved sustained goodput
+in essentially every cell that ever became benchmarkable, across all
+three evaluated models, and in a substantial fraction of cells it did not
+just improve an already-working deployment but converted a non-functional
+one into a functional one (Section~\ref{sec:results-rq1}). Where a
+trajectory ran long enough, the agent's deployment-specification choices
+tracked the workload's actual scaling characteristics --- favouring
+horizontal fan-out over per-pod headroom for a near-stateless workload,
+without ever being told that heuristic (Section~\ref{sec:results-rq5}).
+Keeping code and deployment refinement mutually exclusive per iteration
+turned out to be more than a bookkeeping convenience: the two levers
+measurably specialise in practice, with code refinement carrying almost
+all of the largest single-step recoveries and deployment refinement
+acting as a smaller, more consistent capacity adjustment
+(Section~\ref{sec:results-rq2}).
+
+\paragraph{What did not work.} Deployment refinement, taken on its own,
+was occasionally counterproductive: a well-reasoned response to correct
+diagnostics regressed a healthy deployment to zero goodput, because
+nothing prevents one refinement step from changing several
+deployment-spec fields whose interaction it cannot fully anticipate
+(Section~\ref{sec:results-rq6}). Separately, and closer to a framework
+finding than a model one: static spec validation did not catch every
+deployment that would later prove impossible to schedule, producing this
+evaluation's first (and only) deploy-phase failures
+(Section~\ref{sec:results-rq6}).
+
+\paragraph{What surprised us.} The multiplicative gain from refinement
+turned out to depend much more on how badly under-provisioned the
+baseline happened to be than on any consistent ``value added by
+refinement'' figure --- the same framework produced gains ranging from
+just over $1\times$ to more than $75\times$ depending on the cell
+(Section~\ref{sec:results-rq1}). The largest surprise, however, was
+methodological rather than empirical: what first looked like a clean
+model-capability signal --- \texttt{gpt-5.5} completing every cell,
+\texttt{claude-opus-4-8} and \texttt{glm-5.2} completing noticeably fewer
+--- turned out, once the underlying error text was actually read cell by
+cell, to be entirely explained by which provider account happened to run
+low on funds during data collection, not by generation quality
+(Section~\ref{sec:results-rq3}). Every cell that never reached a
+baseline in this dataset shows the same handful of billing/quota error
+strings, not a functional-test failure. That this was not obvious from
+the aggregate failure counts alone --- a coarse \texttt{llm\_call} label
+conflated it with genuine transport faults until individual records were
+inspected --- is itself a finding about how easy it is to over-read a
+completion funnel in agentic LLM evaluation. Also unexpected, though
+smaller: the deployment-and-cluster path was \emph{nearly}, but not
+quite, invisible as a source of failure --- two spec-refinement
+iterations produced deployments that passed static validation but could
+not be scheduled, the only deploy-phase failures recorded anywhere in
+this evaluation (Section~\ref{sec:results-rq6}).
+
+\paragraph{What we learned from the evaluation.} The single biggest
+determinant of final performance in this dataset was not deployment
+tuning at all, but whether the generated code was correct enough to
+survive real load in the first place, including failure modes (a
+connection pooler's transaction-mode incompatibility with server-side
+prepared statements) that a single-container functional-test suite
+structurally cannot observe (Section~\ref{sec:results-rq6}). Evaluating a
+deployment-optimisation agent in isolation from code correctness would
+have missed this; the two are entangled in practice, even though the
+framework deliberately separates them as levers.
+
+
+% ----- §7.3 Research Question: Final Answer -----
+\section{Research Question: Final Answer}
+\label{sec:conclusion-rq}
+
+Restating the thesis's central question (Section~\ref{sec:intro-missing}):
+\emph{can an LLM agent iteratively optimise the deployment configuration
+of a backend application on a Kubernetes cluster, guided by runtime
+performance feedback, to maximise sustainable throughput under fixed
+infrastructure constraints?}
+
+\textbf{Yes, within the scope this thesis tested.} Across 36 scenario
+$\times$ framework cells and three models, an LLM agent that alternates
+between code and deployment-specification refinement, guided only by
+adaptive load-test feedback and resource diagnostics, consistently
+increased sustained goodput once a functionally correct baseline
+existed, and in a majority of dead-baseline cells it produced a working
+deployment where none existed initially. The deployment-specification
+lever specifically --- the part of the question closest to this thesis's
+actual contribution, since code-level LLM optimisation is comparatively
+well studied (Section~\ref{sec:rw-llm-perf}) --- behaved as a genuine,
+if bounded, optimisation signal: spec trajectories moved toward
+workload-appropriate configurations without being given target ranges
+(Section~\ref{sec:results-rq5}), and static validation plus the
+framework's failure routing kept bad deployment decisions from silently
+compounding (Section~\ref{sec:results-rq6}).
+
+The qualification matters as much as the answer. What this thesis cannot
+yet say is whether the result generalises beyond four database-backed
+scenarios, one cluster topology, and a ten-iteration budget at $n=1$
+sample per cell (Section~\ref{sec:conclusion-limitations}); nor can it
+cleanly separate ``the agent optimises deployment configuration well''
+from ``the agent optimises deployment configuration well \emph{once code
+correctness stops being the bottleneck}'' --- in this dataset, the two
+were rarely simultaneously true early in a trajectory.
+
+
+% ----- §7.4 Limitations -----
+\section{Limitations}
+\label{sec:conclusion-limitations}
+
+The full discussion is in Section~\ref{sec:discussion-limitations}; in
+summary, every result in this thesis should be read against: thirteen of
+36 cells interrupted by provider billing/quota exhaustion during data
+collection, ten of them never reaching a working baseline as a result,
+which makes the model- and framework-comparison findings (RQ3, RQ4)
+substantially weaker than the code/deployment-refinement findings (RQ1,
+RQ2, RQ6); scenario coverage limited to 4 of \textsc{BaxBench}'s 28
+scenarios, all database-backed; a fixed 10-iteration refinement budget;
+$n=1$ sample per cell, so no comparative claim here has been tested
+against sampling variance; a single scalar (sustained goodput under one
+adaptive load profile) as the sole optimisation signal; temperature-$0.2$
+but still stochastic LLM behaviour with no repeated draws to quantify it;
+and a single cluster topology and hardware profile, so ``fixed
+infrastructure constraints'' in this thesis means one specific capacity
+envelope, not infrastructure constraints in general.
+
+
+% ----- §7.5 Future Work -----
+\section{Future Work}
+\label{sec:conclusion-future-work}
+
+\paragraph{Re-run the billing-interrupted cells.} The single highest-value
+next step is mechanical, not conceptual: re-run the thirteen cells
+identified in Section~\ref{sec:results-rq3} with a provider account
+funded for the full trajectory, so that RQ3's model comparison and RQ4's
+\textsc{Rust-Actix} framework comparison can be answered from this
+framework's own data rather than left open. Beyond recovering those
+specific cells, this argues for a concrete process change for future
+runs of this framework: track remaining provider balance as a
+first-class precondition the harness checks before starting a cell
+(analogous to the existing \texttt{--llm-max-cost} per-experiment cap,
+Section~\ref{sec:methods-workflow}), rather than discovering the account
+ran out partway through a ten-iteration trajectory. Once the account-level
+gap is closed, add repeated samples per cell so that the ratios in
+Chapter~\ref{ch:results} can be reported with variance rather than as
+single draws.
+
+\paragraph{Broaden scenario coverage beyond database-bound workloads.}
+Every scenario evaluated here is network- and database-bound
+(Section~\ref{sec:discussion-limitations}); extending to compute-bound or
+memory-bound \textsc{BaxBench} scenarios would test whether the
+code/deployment division of labour observed here (Section~\ref{sec:results-rq2})
+is a general property of the two levers or an artefact of the scenarios
+chosen.
+
+\paragraph{Constrain or measure within-lever attribution.} The backfire
+case in Section~\ref{sec:results-rq6} shows that a single spec-refinement
+step can change several fields at once, which limits attribution the
+same way mixing code and spec changes would. Future work could either
+constrain spec-refinement steps to one field at a time and measure
+whether that improves reliability, or instrument enough to attribute
+outcomes to individual fields \emph{post hoc} without constraining the
+agent's search space.
+
+\paragraph{Test transfer across cluster topology and scale.} All results
+come from one cluster profile (Section~\ref{sec:setup-infrastructure}).
+Repeating even a subset of cells on a cluster an order of magnitude
+larger or smaller, or with a different node/network topology, would show
+whether the deployment decisions the agent converges to
+(Section~\ref{sec:results-rq5}) are tuned to the workload or partly to
+this specific cluster's capacity envelope.
+
+\paragraph{Richer feedback and multi-objective scoring.} Sustained
+goodput is deliberately a single number
+(Section~\ref{sec:methods-load-profile}); resource-utilisation and
+per-endpoint latency diagnostics are already collected
+(Section~\ref{sec:methods-outcome}) but not scored. Feeding
+cost-per-request or tail-latency objectives into the decision stage
+alongside goodput --- rather than only into the human-readable feedback
+--- is a natural extension once the single-objective case is on firmer
+statistical footing.

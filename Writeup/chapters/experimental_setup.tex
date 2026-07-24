@@ -1,0 +1,218 @@
+% =============================================================
+%  Chapter 4 — Experimental Setup
+% =============================================================
+%  Describes what was evaluated (models, scenarios, infrastructure,
+%  procedure) so the Evaluation chapter can focus on findings rather
+%  than re-explaining what was run. Mechanism (why the pipeline is
+%  built the way it is) lives in Chapter~\ref{ch:methods}; this
+%  chapter is deliberately just the concrete instantiation of it.
+% =============================================================
+
+\chapter{Experimental Setup}
+\label{ch:setup}
+
+This chapter fixes the concrete instantiation of the framework described in
+Chapter~\ref{ch:methods}: which models, scenarios, frameworks, and cluster
+were used, and how the resulting cells, samples, experiments, and iterations
+(Section~\ref{sec:methods-workflow}) were budgeted. Chapter~\ref{ch:results}
+assumes this setup and focuses on findings.
+
+
+% ----- §4.1 Models -----
+\section{Models}
+\label{sec:setup-models}
+
+Three frontier-tier LLMs were evaluated, one per major provider family
+available at the time of experimentation: \textbf{\texttt{claude-opus-4-8}}
+(Anthropic), \textbf{\texttt{gpt-5.5}} (OpenAI, snapshot
+\texttt{gpt-5.5-2026-04-23}), and \textbf{\texttt{glm-5.2}} (Z.ai). All three
+are called through the same conversational, cache-aware harness
+(Section~\ref{sec:methods-workflow}) with the same model configuration
+otherwise held fixed: temperature $0.2$, \texttt{openapi} spec type, and the
+\texttt{high\_performance} safety-prompt variant (Section~\ref{sec:methods-spec}).
+Holding provider-specific quirks (context window, tool-call format, native
+prompt-caching support) aside, this lets differences in outcome be
+attributed to model capability and cost rather than to a different
+generation configuration per model.
+
+\paragraph{Why these three.} The selection targets provider diversity at a
+comparable capability tier rather than an exhaustive model sweep: exactly
+one iterative refinement trajectory already costs several dollars in LLM
+spend (Table~\ref{tab:setup-model-cost}), so the achievable sweep is in the
+low single digits of models, not dozens. A fourth model,
+\texttt{deepseek-v3.2}, was evaluated in early exploratory runs but is
+excluded from this thesis: the majority of its cells did not reach a
+working baseline at $n=1$ sample, so its inclusion would not have supported
+a fair comparison at the sample sizes used here.
+
+\paragraph{Relevant differences.} The three models differ substantially in
+measured cost per cell (Table~\ref{tab:setup-model-cost}) despite
+comparable per-cell iteration budgets, which the Evaluation chapter treats
+as a variable worth comparing in its own right (Section~\ref{sec:results-rq3}
+onward), not just a nuisance parameter.
+
+\begin{table}[htbp]
+  \centering
+  \caption{Measured LLM spend per model (see Section~\ref{sec:results-rq3}
+    for why the per-cell figure is \emph{not} a clean cost-efficiency
+    ranking).}
+  \label{tab:setup-model-cost}
+  \small
+  \begin{tabular}{@{}lrr@{}}
+    \toprule
+    \textbf{Model} & \textbf{Total spend} & \textbf{Spend / cell} \\
+    \midrule
+    \texttt{gpt-5.5}         & \$84.96 & \$7.08 \\
+    \texttt{claude-opus-4-8} & \$47.11 & \$3.93 \\
+    \texttt{glm-5.2}         & \$10.37 & \$0.86 \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+All three models now have full $4$-scenario$\times$$3$-framework coverage
+(12 cells each, 36 total). \textbf{A significant fraction of cells were
+not, however, given a genuinely clean run}: thirteen cells (four of
+\texttt{claude-opus-4-8}'s, six of \texttt{glm-5.2}'s, and three that
+eventually recovered) hit an LLM-provider billing or quota exhaustion
+error during baseline code generation, and ten of those thirteen never
+reached a working baseline at all as a direct result --- an artefact of
+when these runs happened to execute relative to account funding, not a
+capability or framework finding. Section~\ref{sec:results-rq3} gives the
+full accounting; the ``Spend / cell'' column above is itself pulled down
+by cells that were never really attempted, since a rejected billing call
+accrues negligible cost. \textbf{TODO: re-run the thirteen affected
+cells (Section~\ref{sec:results-rq3} lists them) with a funded provider
+account before treating any completion-rate or cost comparison in
+Chapter~\ref{ch:results} as final.}
+
+
+% ----- §4.2 Scenarios -----
+\section{Scenarios}
+\label{sec:setup-scenarios}
+
+Four \textsc{BaxBench} scenarios were evaluated, chosen to span a range of
+workload shapes rather than to be an exhaustive sample of the full BaxBench
+suite (28 scenarios; Section~\ref{sec:rw-benchmarks}). All four require a
+backing database, so database topology and connection handling
+(Section~\ref{sec:methods-spec}) are relevant to every cell; they differ
+mainly in API surface size and statefulness, which is what varies the
+achievable goodput ceiling and the shape of the deployment-tuning problem.
+
+\begin{table}[htbp]
+  \centering
+  \caption{Evaluated scenarios and their workload characteristics.}
+  \label{tab:setup-scenarios}
+  \small
+  \begin{tabular}{@{}lp{0.32\linewidth}rrl@{}}
+    \toprule
+    \textbf{Scenario} & \textbf{Workload} & \textbf{Endpoints} & \textbf{FTs} & \textbf{Notes} \\
+    \midrule
+    \textsc{ClickCount} &
+      Register/retrieve per-user click counts &
+      2 & 1 &
+      near-stateless counter; smallest surface, secret-auth \\
+    \textsc{Recipes} &
+      Upload, comment on, and rate recipes &
+      5 & 1 &
+      moderate read/write mix \\
+    \textsc{BranchWeave} &
+      Build and traverse branching narrative graphs; deterministic
+      playthrough simulation, HTML export &
+      5 & 5 &
+      graph-shaped data, more functional-test surface \\
+    \textsc{Petstore} &
+      Manage pets, orders, and users &
+      8 & 3 &
+      largest API surface, multi-resource CRUD \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\textsc{ClickCount} is the scenario where the deployment-tuning signal is
+cleanest to read (Section~\ref{sec:results-rq5}): a near-stateless counter
+increment has negligible per-request CPU cost, so the ``correct'' scaling
+direction (favour replica fan-out over per-pod headroom) is unambiguous and
+lets us check whether the agent's \texttt{spec.yaml} trajectory tracks it.
+\textsc{Petstore}, at the other end, has the largest API surface and the
+most opportunities for a single missed endpoint or validation rule to fail
+a functional test, which shows up in Section~\ref{sec:results-rq6}'s
+failure taxonomy.
+
+Each scenario is combined with up to three application frameworks
+(\textsc{Go-net-http}, \textsc{Python-Flask}, \textsc{Rust-Actix}), spanning
+a compiled natively-concurrent runtime, an interpreted WSGI stack, and a
+compiled async runtime respectively --- three points on the
+throughput-ceiling spectrum that Section~\ref{sec:results-rq4} uses to
+separate framework effects from refinement effects.
+
+
+% ----- §4.3 Infrastructure -----
+\section{Infrastructure}
+\label{sec:setup-infrastructure}
+
+Experiments run on a dedicated multi-node cluster (Emulab-hosted;
+profile \texttt{baxbench-emulab} in
+\texttt{k8s\_bench/cluster/profiles.py}), matching the architecture
+motivated in Section~\ref{sec:methods-architecture}:
+
+\begin{itemize}
+  \item \textbf{Control plane / orchestrator / registry (1 host).} A single
+        node runs the Kubernetes control plane, the BaxBench orchestrator,
+        and the private image registry, collocated for operational
+        simplicity as noted in Section~\ref{sec:methods-architecture}.
+  \item \textbf{Kubernetes workers (4 hosts).} Candidate deployments
+        (application pods, databases, poolers, caches) are scheduled only
+        onto these nodes.
+  \item \textbf{Locust load generation (separate hosts).} A master process
+        coordinates load; workers run on hosts disjoint from the Kubernetes
+        workers, so measured goodput is not confounded by load-generation
+        CPU contention (Section~\ref{sec:methods-architecture}).
+\end{itemize}
+
+Cluster capacity (allocatable CPU/memory per worker) is what the spec-schema
+static validation (Section~\ref{sec:methods-spec}) checks candidate
+deployments against; it is fixed for the whole evaluation, which is what
+makes ``fixed infrastructure constraints'' in the thesis research question
+concrete rather than rhetorical. \textbf{TODO: insert the per-node hardware
+table here (vCPU / memory / disk per control and worker node) --- not
+recorded in the codebase itself (only SSH topology is), needs to come from
+the Emulab experiment profile.}
+
+
+% ----- §4.4 Evaluation Procedure -----
+\section{Evaluation Procedure}
+\label{sec:setup-procedure}
+
+The unit hierarchy (cell $\to$ sample $\to$ experiment $\to$ iteration) is
+defined in Section~\ref{sec:methods-workflow}; this section states the
+concrete budget values used throughout Chapter~\ref{ch:results}.
+
+\begin{itemize}
+  \item \textbf{Cells.} Every combination of the 4 scenarios
+        (Section~\ref{sec:setup-scenarios}) and up to 3 frameworks that a
+        model was run on; 36 cells total across the 3 models
+        (Section~\ref{sec:results-overview}).
+  \item \textbf{Samples.} One sample per cell ($n=1$). This is a budget
+        constraint, not a methodological preference: at
+        \textasciitilde\$3--7 per cell in LLM spend alone
+        (Table~\ref{tab:setup-model-cost}), repeated sampling across 28
+        cells was not affordable within this thesis's compute budget. Its
+        consequence for how results are read is stated explicitly in
+        Section~\ref{sec:methods-metrics} and repeated where it matters in
+        Chapter~\ref{ch:results}.
+  \item \textbf{Experiments.} One experiment per sample, i.e.\ one
+        refinement trajectory per cell; no re-runs under different
+        budgets/profiles were kept for the cells reported here.
+  \item \textbf{Iteration budget.} $N{=}10$ refinement iterations
+        (iterations \texttt{000}--\texttt{010}) per experiment, plus the
+        baseline retry allowances of Section~\ref{sec:methods-code}
+        (\texttt{baseline\_code\_max\_attempts}, \texttt{baseline\_spec\_max\_attempts}).
+  \item \textbf{Load profile.} \texttt{k8s-explore-refine}
+        (Section~\ref{sec:methods-load-profile}) for every bench.
+  \item \textbf{Cost tracking.} LLM spend is logged per experiment
+        (Section~\ref{sec:methods-workflow}) and reported alongside
+        capability in Chapter~\ref{ch:results}, since --- as
+        Table~\ref{tab:setup-model-cost} already shows --- the cheapest and
+        most expensive model in this evaluation differ by close to an
+        order of magnitude per cell.
+\end{itemize}

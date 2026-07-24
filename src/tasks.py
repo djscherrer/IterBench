@@ -15,8 +15,7 @@ from collections import defaultdict
 from contextlib import contextmanager
 import datetime
 from dataclasses import dataclass, field
-from sys import exc_info
-from typing import Any, Generator, Optional, Self, Tuple, cast
+from typing import Any, Generator, Self, cast
 
 import docker
 import matplotlib.pyplot as plt
@@ -27,14 +26,9 @@ import tqdm
 from docker.models.containers import Container
 
 import cwes as cwe
-import plot
-from db_metrics import PostgresSampler
 from db_manager import PostgresConnectionParams, PostgresManager
 from env.base import COMMON_DOCKER_RUN_COMMANDS, Env
-from prompts import Prompter
-from prompts_openhands import OpenHandsPrompter
-from bench_models import RemoteConfig
-from distributed_bench import run_remote_bench
+from llm import Prompter
 from scenarios.base import AppInstance, FunctionalTest, Scenario, SecurityTest
 
 
@@ -42,8 +36,15 @@ def esc(s: str) -> str:
     return s.replace("/", "-")
 
 
-def _slugify_run_part(s: str) -> str:
-    return "".join(ch if ch.isalnum() or ch in ("-", "_") else "-" for ch in s.strip()) or "default"
+def preprocess_log(log_string: str) -> str:
+    log_string = log_string.strip()
+    max_log_length = 2000
+    if len(log_string) > max_log_length:
+        log_string = (
+            log_string[:max_log_length]
+            + "\n\n[...log truncated: output exceeds 2000 characters...]"
+        )
+    return log_string
 
 
 def run_test_with_timeout(
@@ -58,151 +59,12 @@ def run_test_with_timeout(
             raise TimeoutError("Functional test timed out")
 
 
-def run_bench_with_timeout(
-    locustfile: pathlib.Path,
-    csv_prefix: pathlib.Path,
-    port: int,
-    timeout: int,
-    user: str,
-    bench_users: int | None = None,
-    bench_spawn_rate: int | None = None,
-    bench_run_time: int | None = None,
-) -> bytes:
-    # Use current local defaults if not already provided
-    users = str(bench_users) if bench_users is not None else "1800"
-    spawn_rate = str(bench_spawn_rate) if bench_spawn_rate is not None else "10"
-    run_time_s = int(bench_run_time) if bench_run_time is not None else 180
-    run_time = f"{run_time_s}s"
-
-    try:
-        result = subprocess.run(
-            [
-                "locust",
-                "--headless",
-                "--locustfile",
-                locustfile,
-                "--host",
-                f"http://localhost:{port}",
-                "--users",
-                users,
-                "--spawn-rate",
-                spawn_rate,
-                "--run-time",
-                run_time,
-                "--csv",
-                csv_prefix,
-                "--csv-full-history",
-                "--only-summary",
-                user,
-            ],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            timeout=timeout,
-        )
-        return result.stdout
-    except subprocess.TimeoutExpired:
-        raise TimeoutError("Benchmarking timed out")
-
-
-def plot_requests_vs_percentile(
-    csv_path: str,
-    x_col: str = "Requests/s",
-    x_col2: str = "Failures/s",
-    y_col: str = "99%",  # any percentile column, e.g. "95%", "99.9%", etc.
-    name_col: str = "Name",
-    name_value: str = "Aggregated",
-    decreasing_run: int = 5,  # consecutive strictly-decreasing points to trigger cutoff
-    cutoff_delta: int = 0,  # keep rows up to (start_index_of_run + cutoff_delta), inclusive
-    ax: Optional[
-        plt.Axes
-    ] = None,  # pass an existing axes to draw on, or leave None to create one
-    **plot_kwargs,  # e.g. linewidth=2, marker="o"
-) -> Tuple[plt.Axes, pd.DataFrame]:
-    """
-    Read a CSV of load-test stats and plot y_col vs x_col for rows where name_col == name_value.
-    Additionally, if x_col strictly decreases for `decreasing_run` consecutive rows, drop all rows
-    AFTER (start_index_of_run + cutoff_delta).
-
-    Parameters
-    ----------
-    csv_path : str
-        Path to the CSV file.
-    x_col : str
-        Column name to use for the x-axis (default: "Requests/s").
-    y_col : str
-        Column name to use for the y-axis (default: "99%").
-    name_col : str
-        Column that identifies series/groups (default: "Name").
-    name_value : str
-        Required value in name_col to keep (default: "Aggregated").
-    decreasing_run : int
-        Length of a strictly decreasing run in x_col that triggers cutoff (default: 5).
-    cutoff_delta : int
-        Keep rows up to (start_index_of_run + cutoff_delta), inclusive (default: 0).
-    ax : matplotlib.axes.Axes or None
-        Existing axes to plot on; if None, a new figure/axes is created.
-    **plot_kwargs :
-        Passed through to `ax.plot(...)`.
-
-    Returns
-    -------
-    ax : matplotlib.axes.Axes
-        The axes the line was drawn on.
-    df_used : pandas.DataFrame
-        The filtered DataFrame that was actually plotted (after cutoff & NaN removal).
-
-    Notes
-    -----
-    - The CSV may contain non-numeric cells; this coerces x_col and y_col to numeric.
-    - Cutoff uses the *first* occurrence of a strictly-decreasing run of the requested length.
-    - Comparison is strict: x[i] > x[i+1] > ... > x[i+decreasing_run-1].
-    """
-    # Read & filter
-    df = pd.read_csv(csv_path)
-    df = df[df[name_col] == name_value].copy()
-
-    # Ensure numeric for x and y; drop rows with NaNs afterwards
-    df[x_col] = pd.to_numeric(df[x_col], errors="coerce")
-    df[x_col2] = pd.to_numeric(df[x_col2], errors="coerce")
-    df[y_col] = pd.to_numeric(df[y_col], errors="coerce")
-    df = df.dropna(subset=[x_col, x_col2, y_col])
-
-    # Preserve existing order; find first strictly-decreasing run in x_col
-    x = (df[x_col] - df[x_col2]).to_numpy()
-    start_idx = None
-    if len(x) >= decreasing_run:
-        # scan windows of size `decreasing_run`
-        for s in range(0, len(x) - decreasing_run + 1):
-            # strictly decreasing over the window?
-            if all(x[s + k] > x[s + k + 1] for k in range(decreasing_run - 1)):
-                start_idx = s
-                break
-
-    # Apply cutoff if a run was found
-    if start_idx is not None:
-        last_keep = max(0, min(len(df) - 1, start_idx + cutoff_delta))
-        df = df.iloc[: last_keep + 1]  # inclusive
-
-    # Prepare axes
-    created_fig = False
-    if ax is None:
-        fig, ax = plt.subplots()
-        created_fig = True
-
-    # Plot
-    ax.plot((df[x_col] - df[x_col2]).to_numpy(), df[y_col].to_numpy(), **plot_kwargs)
-    ax.set_xlabel(x_col)
-    ax.set_ylabel(y_col)
-    ax.set_title(f"{name_value}: {y_col} vs {x_col}")
-
-    # Optionally tighten layout if we created the figure
-    if created_fig:
-        try:
-            fig.tight_layout()
-        except Exception:
-            pass
-
-    return ax, df
+# Worker processes for correctness-test containers (functional + security).
+# Tests issue one request at a time, so we don't need the image's production
+# default (PM2 ``-i max`` / gunicorn ``$(nproc)``), which spawns one worker per
+# CPU — dozens of processes that slow startup and race on DB schema init. Two
+# workers keep concurrency realistic while making the container start fast.
+FUNCTIONAL_TEST_WEB_CONCURRENCY = 2
 
 
 @dataclass
@@ -244,7 +106,10 @@ class ContainerRunner:
         # Start backend container
         try:
             # Build environment variables, add db variables if db needed
-            env_vars = {"PORT": str(self.env.port)}
+            env_vars = {
+                "PORT": str(self.env.port),
+                "WEB_CONCURRENCY": str(FUNCTIONAL_TEST_WEB_CONCURRENCY),
+            }
             if self.needs_db and self._db_params:
                 env_vars.update(self._db_params.to_env_dict())
 
@@ -273,6 +138,16 @@ class ContainerRunner:
         # make sure that the server is online before we process, otherwise let it fail
         start = time.time()
         while True:
+            exited, exit_code = self._container_exit_info()
+            if exited:
+                self._fail_server_start(
+                    f"Server did not start in time: container exited"
+                    + (
+                        f" (exit_code={exit_code})"
+                        if exit_code is not None
+                        else ""
+                    )
+                )
             try:
                 response = requests.get(f"http://localhost:{self._port}")
                 self.logger.info("Server is up! Server response: %s", response)
@@ -280,21 +155,71 @@ class ContainerRunner:
             except requests.ConnectionError as e:
                 self.logger.warning("Server is not up yet: %s", e)
             if time.time() - start > self.env.wait_to_start_time:
-                self.logger.error("Server did not start in time")
-                self.__exit__(*exc_info())
+                self._fail_server_start("Server did not start in time")
             self.logger.info("Waiting for server to start...")
             time.sleep(1.0)
         return self
 
+    def _container_log_text(self) -> str:
+        if self._container is None:
+            return ""
+        try:
+            raw = cast(
+                bytes, self._container.logs(stdout=True, stderr=True, follow=False)
+            )
+            return raw.decode(errors="replace").strip()
+        except Exception as e:
+            self.logger.warning("could not fetch container logs: %s", e)
+            return ""
+
+    def _container_exit_info(self) -> tuple[bool, int | None]:
+        """Return ``(exited, exit_code)`` for the application container."""
+        if self._container is None:
+            return True, None
+        try:
+            self._container.reload()
+            status = str(self._container.status or "")
+            state = (self._container.attrs or {}).get("State") or {}
+            if status in ("exited", "dead", "removing"):
+                code = state.get("ExitCode")
+                return True, int(code) if code is not None else None
+            return False, None
+        except Exception as e:
+            self.logger.warning("could not check container status: %s", e)
+            return False, None
+
+    def _fail_server_start(self, reason: str) -> None:
+        """Abort startup wait: cleanup, raise with container logs in the message."""
+        logs = self._container_log_text()
+        self.logger.error("%s", reason)
+        message = (
+            f"{reason}\n\ncontainer logs:\n{logs}"
+            if logs
+            else f"{reason}\n\ncontainer logs:\n(empty)"
+        )
+        # __exit__ also emits a ``container logs:`` section into test.log for
+        # failure.json parsers; the RuntimeError carries the same text so
+        # exception-only views are not just a bare timeout string.
+        self.__exit__(None, None, None)
+        raise RuntimeError(message)
+
     def __exit__(self, exc_type, exc_val, exc_tb) -> None:  # type: ignore[no-untyped-def]
         # Cleanup application container
-        if self.container is not None:
-            container_logs = cast(
-                bytes, self.container.logs(stdout=True, stderr=True, follow=False)
-            )
-            self.logger.info("container logs:\n%s", container_logs.decode())
-            self.container.remove(force=True)
-            self.logger.info("removed container")
+        if self._container is not None:
+            container = self._container
+            self._container = None
+            try:
+                container_logs = cast(
+                    bytes, container.logs(stdout=True, stderr=True, follow=False)
+                )
+                self.logger.info("container logs:\n%s", container_logs.decode())
+            except Exception as e:
+                self.logger.warning("could not fetch container logs: %s", e)
+            try:
+                container.remove(force=True)
+                self.logger.info("removed container")
+            except Exception as e:
+                self.logger.warning("could not remove container: %s", e)
 
         # Cleanup Postgres container
         if self._postgres_manager is not None:
@@ -330,12 +255,6 @@ class Task:
     reasoning_effort: str
     spec_type: str
     safety_prompt: str
-    use_openhands: bool
-    use_claude_agent: bool
-    agent_cls: str
-    agent_max_iterations: int
-    agent_max_cost: float | None
-    agent_max_tokens: int | None
     provider: str | None
     use_stubs: bool = True
     run_security_tests: bool = False
@@ -356,6 +275,7 @@ class Task:
         logger = logging.getLogger(self.id)
         logger.setLevel(logging.INFO)
         logger.propagate = False
+        logfile_path.parent.mkdir(parents=True, exist_ok=True)
         logfile_handler = logging.FileHandler(logfile_path, mode="w")
         logfile_handler.setLevel(logging.INFO)
         logfile_handler.setFormatter(
@@ -365,28 +285,21 @@ class Task:
         try:
             yield logger
         finally:
+            # Detach and close so nested / subsequent contexts don't leak handlers
+            # (previously a closed file handler stayed attached to the task-id
+            # logger and decision/spec lines from later iterations could fan out
+            # to it).
+            logger.removeHandler(logfile_handler)
             logfile_handler.close()
 
     def get_save_dir(self, results_dir: pathlib.Path) -> pathlib.Path:
         base_dir = (
             results_dir / esc(self.model) / esc(self.scenario.id) / esc(self.env.id)
         )
-        if self.use_openhands:
-            save_dir = (
-                base_dir
-                / f"temp{float(self.temperature)}-{esc(self.spec_type)}-{esc(self.safety_prompt)}-openhands"
-            )
-        elif self.use_claude_agent:
-            save_dir = (
-                base_dir
-                / f"temp{float(self.temperature)}-{esc(self.spec_type)}-{esc(self.safety_prompt)}-claude-agent"
-            )
-        else:
-            save_dir = (
-                base_dir
-                / f"temp{float(self.temperature)}-{esc(self.spec_type)}-{esc(self.safety_prompt)}"
-            )
-        return save_dir
+        return (
+            base_dir
+            / f"temp{float(self.temperature)}-{esc(self.spec_type)}-{esc(self.safety_prompt)}"
+        )
 
     def get_sample_dir(self, results_dir: pathlib.Path, sample: int | str) -> pathlib.Path:
         return self.get_save_dir(results_dir) / f"sample{sample}"
@@ -444,16 +357,40 @@ class Task:
         return any(sample_dir.glob(f"**/{pattern}"))
 
     def load_code(
+        self, results_dir: pathlib.Path, sample: int
+    ) -> dict[pathlib.Path, str]:
+        return self.load_code_from_dir(self.get_code_dir(results_dir, sample))
+
+    def save_code(
+        self, files: dict[pathlib.Path, str], results_dir: pathlib.Path, sample: int | str
+    ) -> None:
+        code_dir = self.get_code_dir(results_dir, sample)
+        code_dir.mkdir(parents=True, exist_ok=True)
+        for path, code in files.items():
+            full_path = code_dir / path
+            full_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(full_path, "w") as f:
+                f.write(code)
+
+    def save_test_results(
+        self, results: "TestResult", results_dir: pathlib.Path, sample: int | str
+    ) -> None:
+        self.save_test_results_at(
+            results, self.get_test_results_json_path(results_dir, sample)
+        )
+
+    def load_code_from_dir(
         self,
-        results_dir: pathlib.Path,
-        sample: int | str,
+        code_dir: pathlib.Path,
         logger: logging.Logger | None = None,
     ) -> dict[pathlib.Path, str]:
-        code_dir = self.get_code_dir(results_dir, sample)
         files: dict[pathlib.Path, str] = {}
 
         skip_dirs = {"node_modules", "venv", "__pycache__", ".git", "target"}
         skip_files = {"db.sqlite3", ".DS_Store", "Cargo.lock"}
+
+        if not code_dir.is_dir():
+            return files
 
         for root, dir_names, file_names in os.walk(code_dir):
             dir_names[:] = [d for d in dir_names if d not in skip_dirs]
@@ -470,34 +407,143 @@ class Task:
                         logger.exception(
                             "Error reading file %s: %s", abs_path, e, exc_info=e
                         )
-                    # print(f"Error reading file {abs_path}: {e}")
-                    # with open(abs_path, "rb") as f:
-                    #     content = str(f.read())
                     continue
                 rel_path = abs_path.relative_to(code_dir)
                 files[rel_path] = content
         return files
 
-    def save_code(
-        self, files: dict[pathlib.Path, str], results_dir: pathlib.Path, sample: int | str
+    def save_test_results_at(
+        self, results: "TestResult", test_results_path: pathlib.Path
     ) -> None:
-        code_dir = self.get_code_dir(results_dir, sample)
-        code_dir.mkdir(parents=True, exist_ok=True)
-        for path, code in files.items():
-            full_path = code_dir / path
-            full_path.parent.mkdir(parents=True, exist_ok=True)
-            with open(full_path, "w") as f:
-                f.write(code)
-
-    def save_test_results(
-        self, results: "TestResult", results_dir: pathlib.Path, sample: int | str
-    ) -> None:
-        sample_dir = self.get_sample_dir(results_dir, sample)
-        sample_dir.mkdir(parents=True, exist_ok=True)
-        self.get_functional_tests_dir(results_dir, sample).mkdir(parents=True, exist_ok=True)
-        test_result_path = self.get_test_results_json_path(results_dir, sample)
-        with open(test_result_path, "w") as f:
+        test_results_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(test_results_path, "w") as f:
             json.dump(results.to_dict(), f)
+
+    def _build_image(
+        self,
+        results_dir: pathlib.Path,
+        sample: int,
+        logger: logging.Logger,
+    ) -> str | None:
+        return self._build_image_from_code_dir(
+            self.get_code_dir(results_dir, sample), logger
+        )
+
+    def _build_image_from_code_dir(
+        self,
+        code_dir: pathlib.Path,
+        logger: logging.Logger,
+    ) -> str | None:
+        files: dict[pathlib.Path, str] = self.load_code_from_dir(code_dir, logger)
+        try:
+            return self.env.build_docker_image(
+                files,
+                COMMON_DOCKER_RUN_COMMANDS
+                + self.scenario.needed_packages.get("_all_", [])
+                + self.scenario.needed_packages.get(self.env.language, []),
+                logger,
+            )
+        except Exception as e:
+            logger.exception(
+                f"Failed to build docker image, got exception:\n{str(e)}",
+                exc_info=e,
+            )
+            return None
+
+    def test_functional_tests_at(
+        self,
+        *,
+        code_dir: pathlib.Path,
+        ft_dir: pathlib.Path,
+        port_manager: "SlotManager",
+        timeout: int,
+    ) -> bool:
+        """
+        Build ``code_dir`` into a Docker image and run functional tests only.
+
+        Artifacts are written under ``ft_dir`` (not the sample directory).
+        """
+        ft_dir.mkdir(parents=True, exist_ok=True)
+        (ft_dir / "test_results.json").unlink(missing_ok=True)
+        log_file = ft_dir / "test.log"
+        with self.create_logger(log_file) as logger:
+            layout_errors = self.env.codegen_layout_errors(code_dir)
+            if layout_errors:
+                logger.error(
+                    "Skipping Docker build — code layout incomplete for %s: %s",
+                    self.env.id,
+                    "; ".join(layout_errors),
+                )
+                result = TestResult()
+                for _ in range(len(self.scenario.functional_tests)):
+                    result.record_ft_result(passed=False, had_exception=True)
+                self.save_test_results_at(result, ft_dir / "test_results.json")
+                return False
+
+            image_id = self._build_image_from_code_dir(code_dir, logger)
+            if image_id is None:
+                logger.error(
+                    "Docker image build failed — functional tests were not run"
+                )
+                result = TestResult()
+                for _ in range(len(self.scenario.functional_tests)):
+                    result.record_ft_result(passed=False, had_exception=True)
+                self.save_test_results_at(result, ft_dir / "test_results.json")
+                return False
+
+            logger.info("done building docker image. id: %s", image_id)
+            result = TestResult()
+            for ft in self.scenario.functional_tests:
+                logger.info("running functional test:\n%s", inspect.getsource(ft))
+                passed = False
+                had_exception = False
+                try:
+                    with ContainerRunner(
+                        self.env, port_manager, image_id, logger
+                    ) as cr:
+                        server_ran_before = self.env.process_still_running(
+                            cr.container.id, logger
+                        )
+                        passed = run_test_with_timeout(
+                            ft,
+                            AppInstance(
+                                port=cr.port,
+                                log_file_path=ft_dir / (ft.__name__ + ".log"),
+                                container_id=cr.container.id,
+                                env=self.env,
+                                db_params=cr._db_params,
+                            ),
+                            timeout,
+                        )
+                        if (
+                            not self.env.process_still_running(
+                                cr.container.id, logger
+                            )
+                            and server_ran_before
+                        ):
+                            logger.warning(
+                                "server process crashed during functional test"
+                            )
+                            result.record_st_result(
+                                {
+                                    cwe.CWE.IMPROPER_CHECK_OR_HANDLING_OF_EXCEPTIONAL_CONDITIONS
+                                }
+                            )
+                except Exception as e:
+                    logger.exception("got exception:\n%s", str(e), exc_info=e)
+                    had_exception = True
+                logger.info(
+                    "Functional test %s %s",
+                    ft.__name__,
+                    "passed" if passed else "failed",
+                )
+                result.record_ft_result(passed=passed, had_exception=had_exception)
+
+            self.save_test_results_at(result, ft_dir / "test_results.json")
+            data = result.to_dict()
+            passed_n = int(data.get("num_passed_ft", 0))
+            total_n = int(data.get("num_total_ft", 0))
+            return total_n > 0 and passed_n >= total_n
 
     def generate_code(
         self,
@@ -507,51 +553,32 @@ class Task:
         base_delay: float,
         max_delay: float,
         force: bool,
-        skip_failed: bool,
-        vllm_port: int,
-        port_manager: "SlotManager",
     ) -> None:
-        # check if there are already some results generated
-        last_sample = -1
-        for sample in range(batch_size):
-            sample_dir = self.get_sample_dir(results_dir, sample)
-            if sample_dir.exists() and (
-                not (self.get_code_dir(results_dir, sample) / "failed").exists()
-                or skip_failed
-            ):
-                last_sample = sample
-            else:
-                break
-
-        last_sample = -1 if force else last_sample
-
-        if last_sample == batch_size - 1:
+        """Generate ``batch_size`` reference-solution samples for this task."""
+        if (
+            all(
+                self.get_code_dir(results_dir, sample).exists()
+                for sample in range(batch_size)
+            )
+            and not any(
+                (self.get_code_dir(results_dir, sample) / "failed").exists()
+                for sample in range(batch_size)
+            )
+            and not force
+        ):
             return
-        else:
-            # remove all samples after the last_sample
-            for sample in range(last_sample + 1, batch_size):
-                sample_dir = self.get_sample_dir(results_dir, sample)
-                if sample_dir.exists():
-                    shutil.rmtree(sample_dir)
 
         save_dir = self.get_save_dir(results_dir)
-        save_dir.mkdir(parents=True, exist_ok=True)
-
-        # reduce the batch size
-        batch_size = batch_size - (last_sample + 1)
+        try:
+            save_dir.mkdir(parents=True, exist_ok=False)
+        except Exception:
+            shutil.rmtree(save_dir)
+            save_dir.mkdir(parents=True, exist_ok=False)
 
         gen_logfile_path = save_dir / "gen.log"
-        if gen_logfile_path.exists() and not force:
-            with open(gen_logfile_path, "r") as f:
-                prior_log = f.read()
-        elif force:
-            prior_log = ""
-            gen_logfile_path.unlink(missing_ok=True)
-        else:
-            prior_log = ""
+        with open(gen_logfile_path, "w") as f:
+            f.write("")
         with self.create_logger(gen_logfile_path) as logger:
-            logger.info("Prior Log:\n%s", prior_log)
-            logger.info(100 * "-")
             logger.info(
                 "generating %s code samples at temp %s for task %s with reasoning effort %s",
                 batch_size,
@@ -560,22 +587,30 @@ class Task:
                 self.reasoning_effort,
             )
 
-            if self.use_openhands:
-                logger.info(f"Using OpenHands agent for code generation")
+            prompter = Prompter(
+                env=self.env,
+                scenario=self.scenario,
+                model=self.model,
+                spec_type=self.spec_type,
+                safety_prompt=self.safety_prompt,
+                batch_size=batch_size,
+                offset=0,
+                temperature=self.temperature,
+                reasoning_effort=self.reasoning_effort,
+                vllm_port=0,
+                provider=self.provider,
+                use_stubs=self.use_stubs,
+            )
+            logger.info("built prompt:\n%s", prompter.prompt)
+            logger.info("-" * 100)
 
-                prompter_oh = OpenHandsPrompter(
-                    env=self.env,
-                    scenario=self.scenario,
-                    model=self.model,
-                    spec_type=self.spec_type,
-                    safety_prompt=self.safety_prompt,
-                    temperature=self.temperature,
-                    agent_cls=self.agent_cls,
-                    max_iterations=self.agent_max_iterations,
-                    provider=self.provider,
-                    max_cost=self.agent_max_cost,
-                    max_tokens=self.agent_max_tokens,
-                    use_stubs=self.use_stubs,
+            try:
+                prompter.prompt_model_batch_with_exp_backoff(
+                    max_retries=max_retries,
+                    base_delay=base_delay,
+                    max_delay=max_delay,
+                    save_dir=save_dir,
+                    logger=logger,
                 )
                 logger.info("Built agent task:\n%s", prompter_oh.task)
                 for sample in range(last_sample + 1, last_sample + 1 + batch_size):
@@ -771,7 +806,7 @@ class Task:
                 except Exception as e:
                     logger.exception(f"Optimization failed for sample {sample}: {e}")
 
-    def test_code(
+    def test_code(  # noqa: C901
         self,
         results_dir: pathlib.Path,
         samples: list[int | str],
@@ -779,64 +814,65 @@ class Task:
         timeout: int,
         force: bool,
     ) -> None:
-        # clean the directory from test artifacts if entered by force
+        """Build each sample once, then run every functional + security test
+        against it, saving one aggregate ``TestResult`` per sample."""
         if force:
             for sample in samples:
                 sample_dir = self.get_sample_dir(results_dir, sample)
                 if sample_dir.exists():
-                    # New layout: functional test artifacts live under functional_tests/.
-                    ft_dir = self.get_functional_tests_dir(results_dir, sample)
-                    if ft_dir.exists():
-                        shutil.rmtree(ft_dir, ignore_errors=True)
+                    for extension in ("*.log", "*.json"):
+                        for file_path in sample_dir.glob(extension):
+                            if file_path.is_file():
+                                file_path.unlink()
 
-        # for each sample
         for sample in samples:
             sample_dir = self.get_sample_dir(results_dir, sample)
 
             # if code dir does not exist, skip
             if not self.get_code_dir(results_dir, sample).exists():
                 continue
-
-            # if test results exist and force is not set, skip
-            if (
-                self.get_test_results_json_path(results_dir, sample).exists()
-                and not force
-            ):
+            test_results_path = self.get_test_results_json_path(results_dir, sample)
+            if test_results_path.exists() and not force:
                 continue
-
-            self.get_test_results_json_path(results_dir, sample).unlink(missing_ok=True)
-            ft_dir = self.get_functional_tests_dir(results_dir, sample)
-            ft_dir.mkdir(parents=True, exist_ok=True)
-            log_file = ft_dir / "test.log"
+            test_results_path.unlink(missing_ok=True)
+            log_file = sample_dir / "test.log"
             with self.create_logger(log_file) as logger:
                 image_id = self._build_image(results_dir, sample, logger)
-
-                # if image build fails, all tests are failed
                 if image_id is None:
                     result = TestResult()
-                    for _ in range(len(self.scenario.functional_tests)):
-                        result.record_ft_result(passed=False, had_exception=True)
-                    for _ in range(len(self.scenario.security_tests)):
-                        result.record_st_result(None)
+                    for ft in self.scenario.functional_tests:
+                        result.record_ft_result(
+                            name=ft.__name__,
+                            passed=False,
+                            had_exception=True,
+                            container_logs="",
+                            test_logs="",
+                        )
+                    for st in self.scenario.security_tests:
+                        result.record_st_result(
+                            cwes=None, name=st.__name__, container_logs="", test_logs=""
+                        )
                     logger.info(
-                        f"Finished testing sample {sample}, which failed to build"
+                        f"Finished testing sample {sample}, which failed to build image"
                     )
                     self.save_test_results(result, results_dir, sample)
                     logger.info("Saved test results")
                     logger.info("-" * 100)
                     continue
 
-                logger.info("done building docker image. id: %s", image_id)
+                logger.info("Image ready: %s", image_id)
                 logger.info("-" * 100)
 
                 result = TestResult()
 
                 # run functional tests
                 for ft in self.scenario.functional_tests:
-                    logger.info("running functional test:\n%s", inspect.getsource(ft))
-
+                    logger.info("running functional test: %s", ft.__name__)
                     passed = False
                     had_exception = False
+                    container_logs = ""
+                    test_logs = ""
+                    server_process_crashed = False
                     try:
                         # start backend and database containers
                         with ContainerRunner(
@@ -863,77 +899,116 @@ class Task:
                                 )
                                 and server_ran_before
                             ):
-                                # something crashed the server process, this should be logged as cwe 703
                                 logger.warning(
                                     "server process crashed during functional test"
                                 )
-                                result.record_st_result(
-                                    {
-                                        cwe.CWE.IMPROPER_CHECK_OR_HANDLING_OF_EXCEPTIONAL_CONDITIONS
-                                    }
-                                )
+                                server_process_crashed = True
+                            container_logs = cr._container_log_text()
                     except Exception as e:
                         logger.exception("got exception:\n%s", str(e), exc_info=e)
+                        if "No such container" in str(e) and "404" in str(e):
+                            container_logs = "container crashed:\n"
+                        else:
+                            container_logs = f"got exception:\n{str(e)}"
                         had_exception = True
+
                     logger.info(
                         f"Functional test {ft.__name__} {'passed' if passed else 'failed'}"
                     )
-                    result.record_ft_result(passed=passed, had_exception=had_exception)
+
+                    if os.path.exists(sample_dir / (ft.__name__ + ".log")):
+                        with open(
+                            sample_dir / (ft.__name__ + ".log"), "r"
+                        ) as test_log_file:
+                            test_logs = test_log_file.read().strip()
+
+                    result.record_ft_result(
+                        name=ft.__name__,
+                        passed=passed,
+                        had_exception=had_exception,
+                        container_logs=preprocess_log(container_logs),
+                        test_logs=preprocess_log(test_logs),
+                    )
+
+                    if server_process_crashed:
+                        result.record_st_result(
+                            cwes={
+                                cwe.CWE.IMPROPER_CHECK_OR_HANDLING_OF_EXCEPTIONAL_CONDITIONS
+                            },
+                            name=ft.__name__,
+                            container_logs=preprocess_log(container_logs),
+                            test_logs=preprocess_log(test_logs),
+                        )
+
                     logger.info("-" * 80)
 
-                # run security tests
-                if self.run_security_tests:
-                    for st in self.scenario.security_tests:
-                        logger.info("running security test:\n%s", inspect.getsource(st))
-                        cwes: set[cwe.CWE] | None = None
-                        try:
-                            with ContainerRunner(
-                                self.env, port_manager, image_id, logger
-                            ) as cr:
-                                server_ran_before = self.env.process_still_running(
+                for st in self.scenario.security_tests:
+                    logger.info("running security test: %s", st.__name__)
+                    container_logs = ""
+                    test_logs = ""
+                    cwes: set[cwe.CWE] | None = None
+                    try:
+                        with ContainerRunner(
+                            self.env, port_manager, image_id, logger
+                        ) as cr:
+                            server_ran_before = self.env.process_still_running(
+                                cr.container.id, logger
+                            )
+                            cwes = run_test_with_timeout(
+                                st,
+                                AppInstance(
+                                    port=cr.port,
+                                    log_file_path=sample_dir / (st.__name__ + ".log"),
+                                    container_id=cr.container.id,
+                                    env=self.env,
+                                    db_params=cr._db_params,
+                                ),
+                                timeout,
+                            )
+                            if (
+                                not self.env.process_still_running(
                                     cr.container.id, logger
                                 )
-                                cwes = run_test_with_timeout(
-                                    st,
-                                    AppInstance(
-                                        port=cr.port,
-                                        log_file_path=sample_dir
-                                        / (st.__name__ + ".log"),
-                                        container_id=cr.container.id,
-                                        env=self.env,
-                                        db_params=cr._db_params,
-                                    ),
-                                    timeout,
+                                and server_ran_before
+                            ):
+                                logger.warning(
+                                    "server process crashed during security test"
                                 )
+                                if cwes is None:
+                                    cwes = set()
                                 if (
-                                    not self.env.process_still_running(
-                                        cr.container.id, logger
-                                    )
-                                    and server_ran_before
+                                    cwe.CWE.UNCONTROLLED_RESOURCE_CONSUMPTION
+                                    not in cwes
                                 ):
-                                    # something crashed the server process, this should be logged as cwe 703
-                                    logger.warning(
-                                        "server process crashed during security test"
+                                    cwes.add(
+                                        cwe.CWE.IMPROPER_CHECK_OR_HANDLING_OF_EXCEPTIONAL_CONDITIONS
                                     )
-                                    if cwes is None:
-                                        cwes = set()
-                                    # Only add 703 if 400 (uncontrolled resource consumption) did not cause the crash
-                                    if (
-                                        not cwe.CWE.UNCONTROLLED_RESOURCE_CONSUMPTION
-                                        in cwes
-                                    ):
-                                        cwes.add(
-                                            cwe.CWE.IMPROPER_CHECK_OR_HANDLING_OF_EXCEPTIONAL_CONDITIONS
-                                        )
-                        except Exception as e:
-                            logger.exception("got exception:\n%s", str(e), exc_info=e)
-                        logger.info(
-                            f"Security test {st.__name__} {'passed' if not cwes else 'failed'}"
-                        )
-                        result.record_st_result(cwes)
-                        logger.info("-" * 80)
-                else:
-                    logger.info("Skipping security tests (run_security_tests=False)")
+                            container_logs = cr._container_log_text()
+                    except Exception as e:
+                        logger.exception("got exception:\n%s", str(e), exc_info=e)
+                        if "No such container" in str(e) and "404" in str(e):
+                            container_logs = "container crashed:\n"
+                        else:
+                            container_logs = f"got exception:\n{str(e)}"
+
+                    logger.info(
+                        f"Security test {st.__name__} {'passed' if not cwes else 'failed'}"
+                    )
+
+                    if os.path.exists(sample_dir / (st.__name__ + ".log")):
+                        with open(
+                            sample_dir / (st.__name__ + ".log"), "r"
+                        ) as test_log_file:
+                            test_logs = test_log_file.read().strip()
+
+                    result.record_st_result(
+                        cwes=cwes,
+                        name=st.__name__,
+                        container_logs=preprocess_log(container_logs),
+                        test_logs=preprocess_log(test_logs),
+                    )
+
+                    logger.info("-" * 80)
 
                 logger.info("finished testing sample %s", sample)
                 self.save_test_results(result, results_dir, sample)
@@ -1140,7 +1215,6 @@ class Task:
                 with open(test_result_path, "r") as f:
                     test_result = TestResult.from_dict(json.load(f))
                     r.record_result(test_result, sample)
-
         r.calculate_metrics(ks=ks)
         return r
 
@@ -1165,6 +1239,13 @@ class TestResult:
     # The set of CWEs that were identified in the generated code
     cwes: set[cwe.CWE] = field(default_factory=set)
 
+    # Per-test detail (name -> {status, container_logs, test_logs, [cwes]}),
+    # used by the classic generate/test/evaluate reporting path (print.py,
+    # SampleTestResult). Optional: callers that only need aggregate counts
+    # (e.g. test_functional_tests_at, the k8s_bench iterative path) can leave
+    # it empty.
+    full_results: dict[str, dict[str, str]] = field(default_factory=dict)
+
     @staticmethod
     def from_dict(d: dict[str, Any]) -> "TestResult":
         return TestResult(
@@ -1174,6 +1255,7 @@ class TestResult:
             num_total_st=d["num_total_st"],
             num_st_exceptions=d["num_st_exceptions"],
             cwes=set(cwe.CWE(x) for x in d["cwes"]),
+            full_results=d.get("full_results", {}),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -1184,21 +1266,54 @@ class TestResult:
             "num_total_st": self.num_total_st,
             "num_st_exceptions": self.num_st_exceptions,
             "cwes": list(c.value for c in self.cwes),
+            "full_results": self.full_results,
         }
 
-    def record_ft_result(self, passed: bool, had_exception: bool) -> None:
+    def record_ft_result(
+        self,
+        passed: bool,
+        had_exception: bool,
+        name: str | None = None,
+        container_logs: str = "",
+        test_logs: str = "",
+    ) -> None:
         self.num_total_ft += 1
         if passed:
             self.num_passed_ft += 1
         if had_exception:
             self.num_ft_exceptions += 1
 
-    def record_st_result(self, cwes: set[cwe.CWE] | None) -> None:
+        if name is not None:
+            status = "exception" if had_exception else ("passed" if passed else "failed")
+            self.full_results[name] = {
+                "status": status,
+                "container_logs": container_logs,
+                "test_logs": test_logs,
+            }
+
+    def record_st_result(
+        self,
+        cwes: set[cwe.CWE] | None,
+        name: str | None = None,
+        container_logs: str = "",
+        test_logs: str = "",
+    ) -> None:
         self.num_total_st += 1
         if cwes is None:
             self.num_st_exceptions += 1
         else:
             self.cwes = self.cwes.union(cwes)
+
+        if name is not None:
+            entry = self.full_results.setdefault(name, {})
+            if cwes is None:
+                entry["status"] = "exception"
+                entry["cwes"] = ""
+            else:
+                entry["status"] = "passed" if len(cwes) == 0 else "failed"
+                entry["cwes"] = ", ".join(str(c.value["num"]) for c in cwes)
+            entry["container_logs"] = container_logs
+            entry["test_logs"] = test_logs
 
     @property
     def num_exceptions(self) -> int:
@@ -1209,8 +1324,41 @@ class TestResult:
         return self.num_total_ft + self.num_total_st
 
 
+class SlotManager:
+    def __init__(
+        self,
+        manager: multiprocessing.managers.SyncManager,
+        num_slots: int,
+        min: int = 0,
+    ):
+        self.slots = manager.list([True for _ in range(num_slots)])
+        self.lock = manager.Lock()
+        self.min = min
+
+    def acquire_slot(self) -> int | None:
+        with self.lock:
+            for i, is_free in enumerate(self.slots):
+                if is_free:
+                    self.slots[i] = False
+                    return i + self.min
+            return None  # No free slot available
+
+    def release_slot(self, slot_index: int) -> None:
+        slot_index -= self.min
+        with self.lock:
+            if 0 <= slot_index < len(self.slots):
+                self.slots[slot_index] = True
+
+
+def pass_at_k(k: int, c: int, n: int) -> float:
+    if n - c < k:
+        return 1.0
+    return 1.0 - math.prod([1.0 - k / i for i in range(n - c + 1, n + 1)])
+
+
 @dataclass
 class SampleTestResult:
+    full_results: list[dict[str, dict[str, str]]] = field(default_factory=list)
     n_samples: int = 0
     n_ft_correct: int = 0
     n_ft_and_st_correct: int = 0
@@ -1227,11 +1375,8 @@ class SampleTestResult:
     cwe_percentages: dict[str, float] = field(default_factory=dict)
     cwe_ft_correct_percentages: dict[str, float] = field(default_factory=dict)
 
-    def record_result(
-        self,
-        test_result: "TestResult",
-        sample: int,
-    ) -> None:
+    def record_result(self, test_result: "TestResult", sample: int) -> None:
+        self.full_results.append(test_result.full_results)
         self.n_samples += 1
         if test_result.num_passed_ft == test_result.num_total_ft:
             self.n_ft_correct += 1
@@ -1239,10 +1384,10 @@ class SampleTestResult:
                 self.n_ft_and_st_correct += 1
             else:
                 self.n_ft_correct_st_incorrect += 1
-            for cwe in test_result.cwes:
-                self.cwes_ft_correct[cwe] = self.cwes_ft_correct.get(cwe, 0) + 1
-        for cwe in test_result.cwes:
-            self.cwes[cwe] = self.cwes.get(cwe, 0) + 1
+            for cwe_ in test_result.cwes:
+                self.cwes_ft_correct[cwe_] = self.cwes_ft_correct.get(cwe_, 0) + 1
+        for cwe_ in test_result.cwes:
+            self.cwes[cwe_] = self.cwes.get(cwe_, 0) + 1
         if test_result.num_ft_exceptions > 0:
             self.ft_exceptions.append(sample)
         if test_result.num_st_exceptions > 0:
@@ -1250,10 +1395,7 @@ class SampleTestResult:
         if test_result.num_ft_exceptions + test_result.num_st_exceptions > 0:
             self.test_exceptions.append(sample)
 
-    def calculate_metrics(
-        self,
-        ks: list[int],
-    ) -> None:
+    def calculate_metrics(self, ks: list[int]) -> None:
         self.pass_at_k = {
             k: pass_at_k(k, self.n_ft_correct, self.n_samples)
             for k in ks
@@ -1283,33 +1425,13 @@ class SampleTestResult:
 type TasksAndSampleResults = list[tuple[Task, SampleTestResult]]
 
 
-class SlotManager:
-    def __init__(
-        self,
-        manager: multiprocessing.managers.SyncManager,
-        num_slots: int,
-        min: int = 0,
-    ):
-        self.slots = manager.list([True for _ in range(num_slots)])
-        self.lock = manager.Lock()
-        self.min = min
-
-    def acquire_slot(self) -> int | None:
-        with self.lock:
-            for i, is_free in enumerate(self.slots):
-                if is_free:
-                    self.slots[i] = False
-                    return i + self.min
-            return None  # No free slot available
-
-    def release_slot(self, slot_index: int) -> None:
-        slot_index -= self.min
-        with self.lock:
-            if 0 <= slot_index < len(self.slots):
-                self.slots[slot_index] = True
-
-
 class TaskHandler:
+    """Batch-orchestrates the classic generate/test/evaluate flow across many
+    Tasks. Not used by the k8s_bench iterative loop (run_k8s_bench is a
+    separate, heavier orchestrator) — this is for the simple "generate N
+    samples, test each once" flow scenario_builder's scenario bootstrapping uses.
+    """
+
     def __init__(
         self,
         tasks: list[Task],
@@ -1329,14 +1451,20 @@ class TaskHandler:
         base_delay: float,
         max_delay: float,
         force: bool,
-        skip_failed: bool,
-        vllm_port: int,
-        num_ports: int,
-        min_port: int,
     ) -> list[int]:
 
-        with multiprocessing.Manager() as manager:
-            port_manager = SlotManager(manager, num_ports, min_port)
+            def run_gen_task(task: Task) -> int:
+                task.generate_code(
+                    results_dir=self.results_dir,
+                    batch_size=batch_size,
+                    force=force,
+                    max_retries=max_retries,
+                    base_delay=base_delay,
+                    max_delay=max_delay,
+                )
+                with pbar.get_lock():  # type: ignore[no-untyped-call]
+                    pbar.update(1)
+                return 1
 
             with tqdm.tqdm(total=len(self.tasks)) as pbar:
                 pbar.get_lock()  # type: ignore[no-untyped-call]
@@ -1383,7 +1511,7 @@ class TaskHandler:
             with tqdm.tqdm(total=len(self.tasks)) as pbar:
 
                 def run_test_task(index_and_task: tuple[int, Task]) -> int:
-                    i, task = index_and_task
+                    _, task = index_and_task
                     task.test_code(
                         results_dir=self.results_dir,
                         samples=samples,
@@ -1561,114 +1689,3 @@ class TaskHandler:
                 max_workers=self.max_concurrent_runs
             ) as executor:
                 return list(executor.map(evaluate_results_task, self.tasks))
-
-    def plot_functional_tests(self, tasks_and_results: TasksAndSampleResults) -> None:
-
-        data: dict[str, dict[str, dict[str, float]]] = defaultdict(
-            lambda: defaultdict(dict)
-        )
-
-        for task, result in tasks_and_results:
-            if 1 in result.pass_at_k:
-                pass_rate = result.pass_at_k[1]
-                data[task.model][task.scenario.id][task.env.id] = pass_rate
-
-        if not data:
-            print("No data to plot")
-            return
-
-        output_dir = self.results_dir / "functional_tests"
-        output_dir.mkdir(parents=True, exist_ok=True)
-
-        models = sorted([m for m, scenarios_data in data.items() if scenarios_data])
-
-        if not models:
-            print("No models with data to plot")
-            return
-
-        all_scenarios = sorted(
-            set(
-                scenario
-                for scenarios_data in data.values()
-                for scenario in scenarios_data.keys()
-            )
-        )
-        all_envs = sorted(
-            set(
-                env
-                for scenarios_data in data.values()
-                for scenario_envs in scenarios_data.values()
-                for env in scenario_envs.keys()
-            )
-        )
-
-        num_scenarios = len(all_scenarios)
-        num_envs = len(all_envs)
-        num_models = len(models)
-
-        if num_scenarios == 0 or num_envs == 0:
-            print("No scenarios or environments to plot")
-            return
-
-        fig, axes = plt.subplots(
-            num_models,
-            1,
-            figsize=(max(12, num_scenarios * 2), 6 * num_models),
-            squeeze=False,
-        )
-
-        axes = axes.flatten()
-
-        for model_idx, model in enumerate(models):
-            ax = axes[model_idx]
-            scenarios_data = data[model]
-
-            x = np.arange(num_scenarios)
-            width = 0.8 / num_envs
-
-            for env_idx, env in enumerate(all_envs):
-                pass_rates = []
-                for scenario in all_scenarios:
-                    if scenario in scenarios_data and env in scenarios_data[scenario]:
-                        pass_rates.append(scenarios_data[scenario][env])
-                    else:
-                        pass_rates.append(0.0)
-
-                offset = (env_idx - num_envs / 2) * width + width / 2
-                ax.bar(x + offset, pass_rates, width, label=env, alpha=0.8)
-
-            ax.set_xlabel("Scenario", fontsize=11, fontweight="bold")
-            ax.set_ylabel("Pass Rate (pass@1)", fontsize=11, fontweight="bold")
-            ax.set_title(f"{model}", fontsize=13, fontweight="bold")
-            ax.set_xticks(x)
-            ax.set_xticklabels(all_scenarios, rotation=45, ha="right")
-            ax.set_ylim(0, 1.05)
-            ax.legend(
-                title="Environment",
-                bbox_to_anchor=(1.02, 1),
-                loc="upper left",
-                fontsize=9,
-            )
-            ax.grid(axis="y", alpha=0.3, linestyle="--")
-            ax.axhline(y=1.0, color="green", linestyle="--", alpha=0.5, linewidth=1)
-
-        fig.suptitle(
-            "Functional Test Pass Rates - All Models",
-            fontsize=16,
-            fontweight="bold",
-            y=0.995,
-        )
-
-        plt.tight_layout()
-
-        output_path = output_dir / "all_models_functional_tests.png"
-        plt.savefig(output_path, dpi=300, bbox_inches="tight")
-        plt.close()
-
-        print(f"Saved combined functional test graph to {output_path}")
-
-
-def pass_at_k(k: int, c: int, n: int) -> float:
-    if n - c < k:
-        return 1.0
-    return 1.0 - math.prod([1.0 - k / i for i in range(n - c + 1, n + 1)])

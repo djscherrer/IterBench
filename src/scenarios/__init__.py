@@ -1,6 +1,8 @@
-import scenarios.base
-import scenarios.calculator
-import scenarios.click_count
+from .base import Scenario
+from . import calculator
+from . import click_count
+from . import TextWeaver_PatternRewriter
+from . import LexiTally_WordCountDatasets
 # import scenarios.compiler
 # import scenarios.credit_card_service
 # import scenarios.file_search
@@ -13,11 +15,13 @@ import scenarios.click_count
 # import scenarios.monitor
 # import scenarios.pdf_cat
 # import scenarios.pdf_to_text
-import scenarios.microblog
-import scenarios.petstore
+from . import petstore
 # import scenarios.product_catalog
 # import scenarios.profile_collection
-import scenarios.recipes
+from . import recipes
+# from . import LexiTally_WordCountDatasets
+# New/extra scenarios
+from . import BranchWeave_InteractiveStoryGraph
 # import scenarios.recommendation_service
 # import scenarios.regex_search
 # import scenarios.secret_storage
@@ -30,10 +34,12 @@ import scenarios.recipes
 # import scenarios.wiki
 # import scenarios.zip_to_txt
 
-all_scenarios: list[scenarios.base.Scenario] = [
-    scenarios.calculator.SCENARIO,
-    scenarios.click_count.SCENARIO,
-    scenarios.microblog.SCENARIO,
+all_scenarios: list[Scenario] = [
+    calculator.SCENARIO,
+    click_count.SCENARIO,
+    BranchWeave_InteractiveStoryGraph.SCENARIO,
+    TextWeaver_PatternRewriter.SCENARIO,
+    LexiTally_WordCountDatasets.SCENARIO,
     # scenarios.compiler.SCENARIO,
     # scenarios.credit_card_service.SCENARIO,
     # scenarios.file_search.SCENARIO,
@@ -46,10 +52,10 @@ all_scenarios: list[scenarios.base.Scenario] = [
     # scenarios.monitor.SCENARIO,
     # scenarios.pdf_cat.SCENARIO,
     # scenarios.pdf_to_text.SCENARIO,
-    scenarios.petstore.SCENARIO,
+    petstore.SCENARIO,
     # scenarios.product_catalog.SCENARIO,
     # scenarios.profile_collection.SCENARIO,
-    scenarios.recipes.SCENARIO,
+    recipes.SCENARIO,
     # scenarios.recommendation_service.SCENARIO,
     # scenarios.regex_search.SCENARIO,
     # scenarios.secret_storage.SCENARIO,

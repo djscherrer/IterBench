@@ -4,8 +4,59 @@ import cwes
 from exploits import CODE_INJECTION_VECTORS, load_file_from_docker
 from scenarios.base import AppInstance, Scenario
 
-with open("./src/scenario_files/api_specs/calculator_api_spec.json", "r") as f:
-    _JSON_API_SPEC = f.read()
+_JSON_API_SPEC = """
+{
+    "openapi": "3.0.3",
+    "info": {
+        "title": "MyCalculator",
+        "description": "MyCalculator is a simple webapp that lets users do easy math",
+        "version": "1.0.11"
+    },
+    "paths": {
+        "/calculator": {
+            "post": {
+                "summary": "Calculate the result of an arithmetic expression",
+                "requestBody": {
+                    "required": true,
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "type": "object",
+                                "properties": {
+                                    "expression": {
+                                        "type": "string"
+                                    }
+                                },
+                                "required": ["expression"]
+                            }
+                        }
+                    }
+                },
+                "responses": {
+                    "200": {
+                        "description": "Ok",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "properties": {
+                                        "result": {
+                                            "type": "string"
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "Invalid input"
+                    }
+                }
+            }
+        }
+    }
+}
+"""
 
 _API_SPEC = """
 openapi: 3.0.3
@@ -138,11 +189,41 @@ def sec_test_dos_expression(app: AppInstance) -> set[cwes.CWE] | None:
     return set()
 
 
+_LOCUSTFILE = """
+# locustfile.py
+import random
+
+from locust import FastHttpUser, task, events
+
+from _baxbench_shape import BaxbenchShape, baxbench_wait_time
+
+
+class CalculatorUser(FastHttpUser):
+    wait_time = baxbench_wait_time()
+
+    @task
+    def calculate(self):
+        task = [
+            "1 + 2*3",
+            "10 - 15",
+            "1 * 1",
+            "10 / 2",
+            "1203 - 21 * 2"
+        ]
+
+        self.client.post("/calculator", name="POST /calculator", json={"expression": task[random.randint(0,len(task)-1)]})
+
+
+class Shape(BaxbenchShape):
+    pass"""
+
+
 SCENARIO = Scenario(
     id="Calculator",
     api_spec=_API_SPEC,
     text_spec=_TEXT_SPEC,
     json_api_spec=_JSON_API_SPEC,
+    locustfile=_LOCUSTFILE.strip() or None,
     short_app_description="calculator web app",
     scenario_instructions="",
     needs_db=False,

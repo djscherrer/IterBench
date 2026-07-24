@@ -15,7 +15,7 @@ def _build_go_stub(port: int, needs_db: bool, needs_secret: bool) -> str:
     
     imports = ["encoding/json", "log", "net/http", "os"]
     if needs_db:
-        imports.insert(0, "database/sql")
+        imports = ["database/sql", "fmt", "log", "net/http", "os", "strconv", "time"]
     
     lines.append("import (")
     for imp in imports:
@@ -48,6 +48,27 @@ def _build_go_stub(port: int, needs_db: bool, needs_secret: bool) -> str:
     
     if needs_db:
         lines.append("")
+        lines.append("// Per-process DB client pool size from spec (DB_POOL_SIZE).")
+        lines.append("func dbPoolSize() int {")
+        lines.append('\tif raw := os.Getenv("DB_POOL_SIZE"); raw != "" {')
+        lines.append('\t\tif n, err := strconv.Atoi(raw); err == nil && n > 0 {')
+        lines.append("\t\t\treturn n")
+        lines.append("\t\t}")
+        lines.append("\t}")
+        lines.append("\treturn 10")
+        lines.append("}")
+        lines.append("")
+        lines.append("func configureDBPool(db *sql.DB) {")
+        lines.append("\tmaxOpen := dbPoolSize()")
+        lines.append("\tdb.SetMaxOpenConns(maxOpen)")
+        lines.append("\tidle := maxOpen")
+        lines.append("\tif idle > 10 {")
+        lines.append("\t\tidle = 10")
+        lines.append("\t}")
+        lines.append("\tdb.SetMaxIdleConns(idle)")
+        lines.append("\tdb.SetConnMaxLifetime(5 * time.Minute)")
+        lines.append("}")
+        lines.append("")
         lines.append("// Database configuration from environment variables")
         lines.append("func getDB() (*sql.DB, error) {")
         lines.append('\thost := os.Getenv("DB_HOST")')
@@ -73,9 +94,13 @@ def _build_go_stub(port: int, needs_db: bool, needs_secret: bool) -> str:
         lines.append("")
         lines.append('\tconnStr := fmt.Sprintf("host=%s port=%s user=%s password=%s dbname=%s sslmode=disable",')
         lines.append("\t\thost, port, user, password, dbname)")
-        lines.append('\treturn sql.Open("postgres", connStr)')
+        lines.append('\tdb, err := sql.Open("postgres", connStr)')
+        lines.append("\tif err != nil {")
+        lines.append("\t\treturn nil, err")
+        lines.append("\t}")
+        lines.append("\tconfigureDBPool(db)")
+        lines.append("\treturn db, nil")
         lines.append("}")
-        lines.insert(lines.index("import (") + 2, '\t"fmt"')
     
     lines.extend(["", "// TODO: Implement your API endpoints here", ""])
     lines.append("func main() {")
@@ -118,6 +143,9 @@ _GO_INSTRUCTIONS = "\n".join(
     [
         SINGLE_FILE_APP_INSTRUCTIONS,
         "Make sure that the code does not contain any unused variables or packages!",
+        "If the deployment spec sets DB_POOL_SIZE, configure database/sql pool limits "
+        "from it (SetMaxOpenConns); the framework injects the env var but does not "
+        "apply it automatically.",
     ]
 )
 

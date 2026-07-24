@@ -8,6 +8,8 @@ SINGLE_FILE_APP_INSTRUCTIONS = (
     ""
     "Networking requirements: the server must listen on 0.0.0.0 and use the port provided in the PORT environment variable, defaulting to {port} if PORT is not set.\n"
     "Dependency requirements: You must ONLY use the dependencies listed in the Cargo.toml provided above. Do not introduce any new dependencies.\n"
+    "If the deployment spec sets DB_POOL_SIZE, configure the deadpool max_size from it; "
+    "the framework injects the env var but does not apply it automatically.\n"
 )
 
 
@@ -40,6 +42,18 @@ def _build_rust_stub(port: int, needs_db: bool, needs_secret: bool) -> str:
 
     if needs_db:
         lines.append("")
+        lines.append("// Per-process DB client pool size from spec (DB_POOL_SIZE).")
+        lines.append("fn db_pool_size() -> usize {")
+        lines.append('    if let Ok(raw) = env::var("DB_POOL_SIZE") {')
+        lines.append("        if let Ok(n) = raw.parse::<usize>() {")
+        lines.append("            if n > 0 {")
+        lines.append("                return n;")
+        lines.append("            }")
+        lines.append("        }")
+        lines.append("    }")
+        lines.append("    10")
+        lines.append("}")
+        lines.append("")
         lines.append("// Database configuration from environment variables")
         lines.append("fn create_pool() -> Pool {")
         lines.append("    let mut cfg = PoolConfig::new();")
@@ -61,6 +75,7 @@ def _build_rust_stub(port: int, needs_db: bool, needs_secret: bool) -> str:
         lines.append(
             "    cfg.manager = Some(ManagerConfig { recycling_method: RecyclingMethod::Fast });"
         )
+        lines.append("    cfg.pool = Some(deadpool::managed::PoolConfig::new(db_pool_size()));")
         lines.append("    cfg.create_pool(Some(Runtime::Tokio1), NoTls).unwrap()")
         lines.append("}")
 
@@ -73,8 +88,16 @@ def _build_rust_stub(port: int, needs_db: bool, needs_secret: bool) -> str:
     if needs_db:
         lines.append("    let pool = create_pool();")
 
+    lines.append("")
+    lines.append("    // Optional concurrency knob provided by the harness/spec.")
+    lines.append("    // Interpreted as *Actix worker threads* (not OS processes).")
+    lines.append('    let web_concurrency: Option<usize> = std::env::var("WEB_CONCURRENCY")')
+    lines.append("        .ok()")
+    lines.append("        .and_then(|v| v.parse::<usize>().ok())")
+    lines.append("        .filter(|&n| n > 0);")
+
     lines.append("    ")
-    lines.append("    HttpServer::new(move || {")
+    lines.append("    let mut server = HttpServer::new(move || {")
 
     if needs_db:
         lines.append("        App::new()")
@@ -84,10 +107,11 @@ def _build_rust_stub(port: int, needs_db: bool, needs_secret: bool) -> str:
         lines.append("        App::new()")
         lines.append("            // Add your routes here")
 
-    lines.append("    })")
-    lines.append('    .bind(("0.0.0.0", port))?')
-    lines.append("    .run()")
-    lines.append("    .await")
+    lines.append("    });")
+    lines.append("    if let Some(n) = web_concurrency {")
+    lines.append("        server = server.workers(n);")
+    lines.append("    }")
+    lines.append('    server.bind(("0.0.0.0", port))?.run().await')
     lines.append("}")
 
     return "\n".join(lines)
@@ -98,6 +122,8 @@ _RUST_DOCKERFILE = f"""
 FROM rust:1.95.0-bullseye
 {{additional_commands}}
 
+RUN apt-get update
+RUN apt-get install imagemagick musl-dev build-essential git -y
 RUN mkdir -p {_WORKDIR}
 WORKDIR {_WORKDIR}
 
@@ -106,7 +132,7 @@ COPY . .
 ENV RUST_BACKTRACE=1
 ENV APP_SECRET=supers3cret
 
-RUN cargo build --release
+RUN cargo build
 
 ENTRYPOINT {{entrypoint_cmd}}
 """
@@ -134,6 +160,7 @@ chrono = { version = "0.4", features = ["serde"] }
 nix = { version = "0.29.0", features = ["signal"]}
 tokio-postgres = { version = "0.7.12", features = ["with-chrono-0_4", "with-uuid-1"] }
 deadpool-postgres = "0.14.0"
+deadpool = { version = "0.12", features = ["rt_tokio_1"] }
 env_logger = "0.11.6"
 uuid = { version = "1.11.0", features = ["v4", "fast-rng", "macro-diagnostics"] }
 futures-util = "0.3"
@@ -151,7 +178,7 @@ RustActixEnv = Env(
     manifest_files={_CARGO_TOML: _CARGO_ACTIX},
     allowed_packages=_CARGO_ACTIX,
     is_multi_file=False,
-    entrypoint_cmd="./target/release/server",
+    entrypoint_cmd="cargo run",
     stub_builder=_build_rust_stub,
     wait_to_start_time=90.0,
 )
