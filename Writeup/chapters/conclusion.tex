@@ -81,27 +81,37 @@ evaluation's first (and only) deploy-phase failures
 \paragraph{What surprised us.} The multiplicative gain from refinement
 turned out to depend much more on how badly under-provisioned the
 baseline happened to be than on any consistent ``value added by
-refinement'' figure --- the same framework produced gains ranging from
+refinement'' figure: the same framework produced gains ranging from
 just over $1\times$ to more than $75\times$ depending on the cell
 (Section~\ref{sec:results-rq1}). The largest surprise, however, was
 methodological rather than empirical: what first looked like a clean
-model-capability signal --- \texttt{gpt-5.5} completing every cell,
-\texttt{claude-opus-4-8} and \texttt{glm-5.2} completing noticeably fewer
---- turned out, once the underlying error text was actually read cell by
-cell, to be entirely explained by which provider account happened to run
-low on funds during data collection, not by generation quality
-(Section~\ref{sec:results-rq3}). Every cell that never reached a
-baseline in this dataset shows the same handful of billing/quota error
-strings, not a functional-test failure. That this was not obvious from
-the aggregate failure counts alone --- a coarse \texttt{llm\_call} label
+model-capability signal (\texttt{gpt-5.5} completing every cell,
+\texttt{claude-opus-4-8} completing noticeably fewer) turned out, once
+the underlying error text was actually read cell by cell, to be entirely
+explained by one provider account running low on funds during data
+collection, not by generation quality (Section~\ref{sec:results-rq3}).
+Every cell that never reached a baseline in this dataset shows the same
+handful of billing/quota error strings, not a functional-test failure,
+and every one of them belongs to \texttt{claude-opus-4-8}: re-tracing the
+same check against \texttt{glm-5.2}, which had looked similarly affected
+in an earlier pass over an earlier snapshot of this dataset, found its
+completion rate fully recovered (12/12, matching \texttt{gpt-5.5}) once
+that snapshot was re-aggregated, with zero billing-kind failures
+remaining anywhere in its data. That this was not obvious from the
+aggregate failure counts alone, since a coarse \texttt{llm\_call} label
 conflated it with genuine transport faults until individual records were
-inspected --- is itself a finding about how easy it is to over-read a
-completion funnel in agentic LLM evaluation. Also unexpected, though
-smaller: the deployment-and-cluster path was \emph{nearly}, but not
-quite, invisible as a source of failure --- two spec-refinement
-iterations produced deployments that passed static validation but could
-not be scheduled, the only deploy-phase failures recorded anywhere in
-this evaluation (Section~\ref{sec:results-rq6}).
+inspected, cell by cell, snapshot by snapshot, is itself a finding
+about how easy it is to over-read a completion funnel in agentic LLM
+evaluation. Also unexpected, though smaller: the deployment-and-cluster
+path was \emph{nearly}, but not quite, invisible as a source of failure.
+Four spec-refinement iterations, on two cells from two different
+models, produced deployments that passed static validation but could not
+be deployed as intended, the only deploy-phase failures recorded anywhere
+in this evaluation (Section~\ref{sec:results-rq6}); a further, entirely
+new, framework-specific correctness signal (\texttt{glm-5.2}'s repeated
+\textsc{Rust-Actix} compile failures) only became visible once its cells
+were no longer cut short by the billing confound
+(Section~\ref{sec:results-rq4}).
 
 \paragraph{What we learned from the evaluation.} The single biggest
 determinant of final performance in this dataset was not deployment
@@ -156,12 +166,15 @@ were rarely simultaneously true early in a trajectory.
 \label{sec:conclusion-limitations}
 
 The full discussion is in Section~\ref{sec:discussion-limitations}; in
-summary, every result in this thesis should be read against: thirteen of
-36 cells interrupted by provider billing/quota exhaustion during data
-collection, ten of them never reaching a working baseline as a result,
+summary, every result in this thesis should be read against: six of 36
+cells interrupted by provider billing/quota exhaustion during data
+collection, four of them never reaching a working baseline as a result,
+all six attributable to \texttt{claude-opus-4-8} or \texttt{gpt-5.5},
 which makes the model- and framework-comparison findings (RQ3, RQ4)
-substantially weaker than the code/deployment-refinement findings (RQ1,
-RQ2, RQ6); scenario coverage limited to 4 of \textsc{BaxBench}'s 28
+weaker specifically where \texttt{claude-opus-4-8}'s \textsc{Rust-Actix}
+cells are involved, while leaving the \texttt{gpt-5.5}-vs-\texttt{glm-5.2}
+comparison and the code/deployment-refinement findings (RQ1, RQ2, RQ6)
+largely unaffected; scenario coverage limited to 4 of \textsc{BaxBench}'s 28
 scenarios, all database-backed; a fixed 10-iteration refinement budget;
 $n=1$ sample per cell, so no comparative claim here has been tested
 against sampling variance; a single scalar (sustained goodput under one
@@ -176,14 +189,21 @@ envelope, not infrastructure constraints in general.
 \section{Future Work}
 \label{sec:conclusion-future-work}
 
-\paragraph{Re-run the billing-interrupted cells.} The single highest-value
-next step is mechanical, not conceptual: re-run the thirteen cells
-identified in Section~\ref{sec:results-rq3} with a provider account
-funded for the full trajectory, so that RQ3's model comparison and RQ4's
-\textsc{Rust-Actix} framework comparison can be answered from this
-framework's own data rather than left open. Beyond recovering those
-specific cells, this argues for a concrete process change for future
-runs of this framework: track remaining provider balance as a
+\paragraph{Re-run the remaining billing-interrupted cells.} A previous
+pass over an earlier snapshot of this dataset identified thirteen cells
+across all three models needing a re-run; re-aggregating against a newer
+snapshot for this thesis shows \texttt{glm-5.2}'s six are now fully
+resolved (12/12 completion, zero billing-kind failures), narrowing the
+open item to \texttt{claude-opus-4-8}. The single highest-value next step
+is mechanical, not conceptual: re-run \texttt{claude-opus-4-8}'s four
+non-baseline \textsc{Rust-Actix} cells, and ideally its one truncated
+\textsc{Recipes}$\times$\textsc{Python-Flask} cell and \texttt{gpt-5.5}'s
+one truncated \textsc{Recipes}$\times$\textsc{Rust-Actix} cell, with a
+provider account funded for the full trajectory, so that RQ3's model
+comparison and RQ4's \textsc{Rust-Actix} framework comparison can include
+\texttt{claude-opus-4-8} rather than leaving it open. Beyond recovering
+those specific cells, this argues for a concrete process change for
+future runs of this framework: track remaining provider balance as a
 first-class precondition the harness checks before starting a cell
 (analogous to the existing \texttt{--llm-max-cost} per-experiment cap,
 Section~\ref{sec:methods-workflow}), rather than discovering the account

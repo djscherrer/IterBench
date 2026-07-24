@@ -32,10 +32,12 @@ recoveries, dominated by correctness bugs invisible to single-container
 testing; deployment refinement is a smaller, more consistent capacity
 knob that tracks workload characteristics without being given target
 ranges. All three models reach comparable multiplicative gains once a
-baseline is genuinely attempted; roughly a third of cells were instead
-interrupted by LLM-provider billing or quota exhaustion during data
-collection, a confound this thesis identifies and accounts for rather
-than one current results can fully resolve. LLM-guided deployment
+baseline is genuinely attempted; a smaller fraction of cells (six of 36,
+nearly all attributable to a single provider account running low on
+funds) were instead interrupted by LLM-provider billing or quota
+exhaustion during data collection, a confound this thesis identifies,
+traces to its source, and accounts for rather than one current results
+can fully resolve. LLM-guided deployment
 optimisation is a viable, practically bounded complement to code-level
 optimisation, whose largest current limitation is entanglement with code
 correctness rather than the deployment-reasoning task itself.

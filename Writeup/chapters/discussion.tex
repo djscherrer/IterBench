@@ -35,18 +35,25 @@ framework's own configured cost ceiling
 the model.
 
 \paragraph{What can and cannot be said about cost.} \texttt{glm-5.2} is
-still roughly an order of magnitude cheaper per cell than
-\texttt{gpt-5.5} or \texttt{claude-opus-4-8} (Section~\ref{sec:results-rq3}),
-but that figure is now known to be inflated in \texttt{glm-5.2}'s and
-\texttt{claude-opus-4-8}'s favour by cells that were never really
-attempted: a rejected billing call costs almost nothing, so a model with
-more billing-interrupted cells looks artificially cheap per cell. What
-survives this caveat is narrower: on the cells every model was genuinely
-able to attempt, all three reach a working baseline and go on to refine
-it by a comparable multiplicative factor (Section~\ref{sec:results-rq1}).
-Whether \texttt{glm-5.2}'s cost advantage comes with a real reliability
-cost, a real reliability advantage, or no difference at all is exactly
-the question the confounded cells need to be re-run to answer.
+roughly an order of magnitude cheaper per cell than \texttt{gpt-5.5} or
+\texttt{claude-opus-4-8} (Section~\ref{sec:results-rq3}). Unlike in an
+earlier pass over this chapter, that figure is no longer inflated by
+cells that were never really attempted: \texttt{glm-5.2}'s twelve cells
+were all genuinely billed, so its cost advantage is now directly
+comparable to \texttt{gpt-5.5}'s (also twelve genuinely billed cells).
+\texttt{claude-opus-4-8}'s per-cell figure is the one that still needs the
+caveat: four of its twelve cells accrued exactly \$0 because the
+provider rejected every call before it could be billed, so its naive
+per-cell average is pulled down by cells that were never attempted rather
+than attempted cheaply (Section~\ref{sec:results-rq3} reports the
+figure over billed cells only). What can now be said with more confidence
+than before: \texttt{glm-5.2}'s cost advantage does \emph{not} come with
+an observable reliability cost, since it completes 12/12 cells, the same
+rate as \texttt{gpt-5.5} and better than the billing-affected
+\texttt{claude-opus-4-8}, though \texttt{glm-5.2}'s own
+\textsc{Rust-Actix} compile-failure signal (Section~\ref{sec:results-rq4})
+shows its reliability profile is not uniformly stronger, just cheaper and,
+on this evidence, not billing-constrained.
 
 \paragraph{Deployment-specification versus code refinement.} The
 division of labour in Section~\ref{sec:results-rq2} --- code refinement
@@ -133,19 +140,25 @@ related, less controllable source of drift: model snapshots were pinned
 where providers exposed a dated snapshot (Section~\ref{sec:setup-models}),
 but not every provider does so.
 
-\paragraph{Data-collection interruptions.} Thirteen of the 36 cells in
-this dataset were touched by an LLM-provider billing or quota exhaustion
-event during data collection, and ten never reached a working baseline as
-a direct result (Section~\ref{sec:results-rq3}). This is not a property
-of the framework or the models under test; it is an operational
-limitation of running a compute- and API-budget-intensive evaluation on
-finite accounts, and it currently makes this thesis's model-comparison
-and framework-comparison claims (RQ3, RQ4) substantially weaker than a
-first read of the completion funnel would suggest. It is listed here as
-its own limitation, separate from stochastic LLM behaviour above, because
-it is not sampling noise: it is missing data that a re-run with a
-sufficiently funded account would recover deterministically, not average
-away.
+\paragraph{Data-collection interruptions.} Six of the 36 cells in this
+dataset were touched by an LLM-provider billing or quota exhaustion event
+during data collection, and four never reached a working baseline as a
+direct result (Section~\ref{sec:results-rq3}). All six trace to
+\texttt{claude-opus-4-8} or, in one case, \texttt{gpt-5.5}; a previous
+pass over an earlier snapshot of this same dataset found this touching
+thirteen cells across all three models, including six of
+\texttt{glm-5.2}'s, all of which are fully resolved in the snapshot this
+thesis now reports on. This is not a property of the framework or the
+models under test; it is an operational limitation of running a
+compute- and API-budget-intensive evaluation on finite accounts, and it
+currently makes this thesis's model- and framework-comparison claims
+(RQ3, RQ4) weaker specifically where they involve
+\texttt{claude-opus-4-8}'s \textsc{Rust-Actix} cells, while leaving the
+\texttt{gpt-5.5}-vs-\texttt{glm-5.2} comparison largely unaffected. It is
+listed here as its own limitation, separate from stochastic LLM behaviour
+above, because it is not sampling noise: it is missing data that a
+re-run with a sufficiently funded account would recover deterministically,
+not average away.
 
 \paragraph{Infrastructure constraints.} All results come from one cluster
 topology and one hardware profile (Section~\ref{sec:setup-infrastructure}).

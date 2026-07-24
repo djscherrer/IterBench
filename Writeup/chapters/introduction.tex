@@ -64,6 +64,11 @@ benchmark evaluates whether LLMs can reason about, and iteratively improve,
 the deployment of the applications they generate, jointly with the code
 those deployments run.
 
+Evaluating this problem therefore requires more than executing an application
+in an isolated container. Candidates must be observed on a multi-node
+Kubernetes cluster, where replica placement, shared resource capacity, and
+database topology can affect the performance that the benchmark measures.
+
 
 % ----- §1.3  The gap stated explicitly -----
 \section{The Research Gap: Deployment Optimisation as an Unexamined Dimension}

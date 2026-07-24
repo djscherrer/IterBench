@@ -9,87 +9,97 @@
 \label{ch:methods}
 
 
-% ----- §3.1  Overview -----
-\section{Introduction to the Evaluation Setup}
+% ----- §3.1  Method overview -----
+\section{Method Overview and Evaluation Objective}
 \label{sec:methods-overview}
 
-This chapter specifies how we evaluate LLM-driven deployment optimisation in
-practice.  Where earlier chapters motivate the problem and survey related work,
-Methods defines the concrete evaluation machinery: the cluster components on
-which candidates run, the iterative loop that generates and refines them, and
-the metrics by which we compare iterations.
+This chapter describes the methodology of our iterative agentic benchmark
+setup. It defines the concrete evaluation machinery: the offline construction
+of scenarios and workloads, the cluster components on which candidates run,
+the iterative workflow that generates and refines them, and the measures by
+which we compare iterations.
 
 \paragraph{Research question.}
 We ask whether an LLM agent can, for a fixed \textsc{BaxBench} backend scenario
 and a Kubernetes cluster with \textbf{fixed capacity}, iteratively improve
 \textbf{sustained goodput} by refining either application code or deployment
-configuration.  Each experiment encompasses a \emph{scenario} (the workload and
-API to implement), a \emph{framework} (the language and library stack on which
-the application runs), and a \emph{model configuration} (the LLM and generation
-settings used to propose application code and cluster specifications).
-Successive iterations produce candidate (code, Kubernetes deployment
-specification) pairs.  After validation and a successful deploy on the cluster,
-each candidate undergoes a performance test that measures its maximal sustained
-goodput.
+configuration. Each experiment encompasses a \emph{scenario} (the workload
+and API to implement), a \emph{framework} (the language and library stack on
+which the application runs), and a \emph{model configuration} (the LLM and
+generation settings used to propose application code and cluster
+specifications). Successive iterations produce candidate pairs consisting of
+application code and a Kubernetes deployment specification. After validation
+and a successful deploy on the cluster, each candidate undergoes a performance
+test that measures its maximal sustained goodput.
 
 \paragraph{What we optimise.}
 The primary objective is \textbf{sustained goodput}: the rate of
 \emph{successful} HTTP responses under an adaptive Locust load profile that
-raises or lowers offered load from live load-test statistics---failure rate,
-latency (e.g.\ p95), and goodput itself---until the system approaches
-saturation (Section~\ref{sec:methods-bench}).  We compare iterations by their
-maximal sustained goodput on that test.
+raises or lowers offered load using live failure-rate, latency, and goodput
+statistics until the system approaches saturation
+(Section~\ref{sec:methods-bench}). We compare iterations by the maximal
+sustained goodput reached on that test, rather than by raw request rate at an
+arbitrarily chosen load.
 
 \paragraph{Road map.}
-Section~\ref{sec:methods-scenario-gen} describes how the scenarios and
-load-test scripts used throughout the thesis are themselves generated, an
-extension of the \textsc{AutoBaxBuilder} pipeline introduced in
-Section~\ref{sec:background-codegen}.
-Section~\ref{sec:methods-architecture} motivates the multi-node cluster setup
-and describes the system components.
-Section~\ref{sec:methods-workflow} defines cells, samples, experiments, and
-the iteration model: the stage sequence, how code and deployment artifacts
-persist and get reused across iterations, and the responsibility split
-between agent and framework.
-Section~\ref{sec:methods-phases} details each pipeline stage using a fixed
-template (purpose, inputs, processing, outputs, failure modes, feedback),
-preceded by a summary table for quick reference.
-Section~\ref{sec:methods-design} states design principles.
-Section~\ref{sec:methods-metrics} defines evaluation metrics.
+Section~\ref{sec:methods-scenario-gen} describes the offline construction of
+the scenario and verified workload used by the benchmark. Section
+\ref{sec:methods-architecture} describes the benchmark architecture and the
+roles of its components. Section~\ref{sec:methods-workflow} defines the
+benchmark state, experimental units, artifact lineage, failure handling,
+responsibility split, and agent context. Finally, Section~\ref{sec:methods-phases}
+specifies the iteration stages and their contracts, while Section
+\ref{sec:methods-metrics} explains the outcome measures and how the resulting
+trajectories are analysed.
 
 
-% ----- §3.2  Scenario and load-test generation -----
+% ----- §3.2  Offline scenario and workload construction -----
 \newpage
-\section{Extending AutoBaxBuilder for Scenario and Load-Test Generation}
+\section{Offline Scenario and Workload Construction}
 \label{sec:methods-scenario-gen}
 
 To evaluate how well different language models implement backend systems, we
-first need scenarios that define the application task, API contract, and
-correctness checks. As motivated by \textsc{AutoBaxBuilder}
-(Section~\ref{sec:background-codegen}), constructing such diverse,
-expert-designed scenarios manually is tedious and time-intensive. We
-therefore build on its generative approach: an LLM produces a scenario and
-its accompanying validation artifacts, which are iteratively checked before
-they are used in the benchmark.
+first need a fixed scenario and a fixed workload artifact. These inputs are
+constructed offline, before the model-evaluation experiments, so that every
+model and framework is tested against the same application task and request
+workload. The process builds on the generative approach of
+\textsc{AutoBaxBuilder}~\cite{vonarx2025autobaxbuilder}, introduced in
+Section~\ref{sec:background-codegen}.
 
-This thesis extends that setup in two ways. First, it adds a load-test
-generation phase that produces the workload artifact later exercised against
-each generated application---the essential link between scenario generation
-and the sustained-goodput evaluation of this thesis. Second, it modifies the
-authoring and repair loops with conversational context and structured failure
-records. Instead of treating retries as unrelated requests, an agent receives
-the relevant prior artifact and concise evidence about what failed, allowing
-it to make a targeted revision.
+This thesis extends that setup by adding a load-test generation and
+verification phase. It also adapts the authoring and repair loops by using
+continuing conversations and structured failure records when generating
+scenario artifacts. A retry therefore receives the relevant previous artifact
+and a concise explanation of what failed, rather than starting from an empty
+request.
 
-The following subsections describe these extensions and adaptations. For the
-remaining details of the original scenario, functional-test, and security-test
-pipeline, we refer to the \textsc{AutoBaxBuilder}
-paper~\cite{vonarx2025autobaxbuilder}. Reference implementations mentioned
-below are used only to validate the generated scenario artifacts; they are
-not inputs to the later model-evaluation experiments.
+The following subsections describe these adaptations and extensions. The
+remaining details of the inherited scenario, functional-test, and
+security-test pipeline are described in the \textsc{AutoBaxBuilder}
+paper~\cite{vonarx2025autobaxbuilder}. Reference implementations are used only
+to validate the generated artifacts; they are not candidates in the later
+model-evaluation experiments.
 
 \subsection{Overview of the Extended Pipeline}
 \label{sec:methods-scenario-gen-pipeline}
+
+\begin{figure}[htbp]
+  \centering
+  \includegraphics[width=1\linewidth]{figures/methods/offline-scenario-workload-diagram.png}
+  \caption{Offline construction and verification of scenarios and workloads.
+    A scenario author and an independent novelty verifier admit only
+    materially new candidates; a specification author then produces and
+    validates the API contract. Functional-test construction and
+    reference-implementation calibration are adapted with continuing
+    conversations and structured failure records, and a white-box judging
+    step independently adjudicates each test--implementation outcome.
+    Reference implementations calibrate these artifacts but are never passed
+    to the later model-evaluation experiments. The inherited security-test
+    stage is not elaborated here. A final phase authors and deterministically
+    verifies a Locust load-test script before the accepted scenario package
+    crosses into online candidate evaluation.}
+  \label{fig:offline-scenario-workload}
+\end{figure}
 
 The pipeline first generates and validates a scenario specification, then
 constructs functional tests and uses generated reference implementations to
@@ -132,14 +142,14 @@ retry target. Its prompt-formatted form is appended to the appropriate
 conversation as feedback. A candidate advances to the benchmark's scenario
 set only after the relevant novelty and specification checks have succeeded;
 provisional candidates remain separate from the accepted scenario artifacts.
-The cross-cutting rationale for this conversational, typed-feedback policy is
-given in Section~\ref{sec:methods-scenario-design}.
+The same principle applies in the candidate-evaluation loop, where failure
+records and agent context are described in Section~\ref{sec:methods-memory}.
 
 \subsection{Functional Tests and Reference-Implementation Repair}
 \label{sec:methods-scenario-gen-functional}
 
 The functional-test stage retains \textsc{AutoBaxBuilder}'s black-box then
-white-box structure, but changes the state carried by the agents. In the
+white-box structure, but adapts the state carried by the agents. In the
 black-box loop, every generated reference implementation is tested against
 the current functional suite. A failing implementation is assigned one
 continuing repair conversation, seeded with the scenario, API contract, and
@@ -167,9 +177,9 @@ This division gives repair agents continuity where it is useful---over their
 own source history---while keeping individual judgments independent. It also
 maximises the stable prompt prefix shared by judge calls, enabling prompt
 caching without carrying unrelated test outcomes into the decision. The
-general rationale and cost policy are given in
-Section~\ref{sec:methods-scenario-design}; the inherited black-box/white-box
-method not changed here remains described in the
+corresponding context and cost policy are described in
+Section~\ref{sec:methods-memory}; the inherited black-box/white-box
+method not adapted here remains described in the
 \textsc{AutoBaxBuilder} paper~\cite{vonarx2025autobaxbuilder}.
 
 \subsection{Load-Test Artifact Generation and Verification}
@@ -217,7 +227,7 @@ Only the former are fed back to the load-test author for a retry; the latter
 are preserved as diagnostic evidence without falsely asking the author to fix
 an unrelated problem. Invalid candidates do not advance into the usable
 scenario artifact. This follows the typed-failure and validated-artifact
-policy in Section~\ref{sec:methods-scenario-design}.
+policy used for candidate artifacts in Section~\ref{sec:methods-artifacts}.
 
 \paragraph{Export.}
 The verified load-test artifact is stored with the accepted scenario and is
@@ -227,41 +237,24 @@ remain auditable but are not substituted for the verified workload.
 
 \FloatBarrier
 
-% ----- §3.3  Architecture -----
-\section{System Architecture}
+% ----- §3.3  Benchmark architecture -----
+\section{Benchmark Architecture}
 \label{sec:methods-architecture}
 
-\subsection{Motivation for a Real Cluster}
-
-\textsc{BaxBench} evaluates generated backends in isolated Docker containers on a
-single host. In production, however, performance depends not only on application code,
-but also on orchestration under shared cluster resources: replicas compete for CPU
-and memory, pods are placed across nodes, and database topology affects connection
-pressure. This work therefore evaluates each candidate on a multi-node Kubernetes
-cluster so that measured goodput reflects performance under realistic cluster
-conditions, rather than only in a single-container environment.
-
-\subsection{System Components}
+The benchmark architecture comprises the components used to deploy, exercise,
+and observe each candidate. Candidate deployments run on Kubernetes worker
+nodes, while Locust processes run on dedicated load hosts. This separation
+prevents the load generator from competing with the candidate for the CPU and
+memory used to measure performance.
 
 \begin{figure}[htbp]
   \centering
   \includegraphics[width=1\linewidth]{figures/methods/architecture-diagram.pdf}
-  \caption{Evaluation architecture. The BaxBench orchestrator and Kubernetes
+  \caption{Benchmark architecture. The BaxBench orchestrator and Kubernetes
     control plane deploy each candidate on worker nodes; a Locust master and
     workers generate HTTP load from separate hosts.}
   \label{fig:architecture}
 \end{figure}
-
-The evaluation setup comprises several interoperating components, connected as
-shown in Figure~\ref{fig:architecture}. At a high level, it separates
-Kubernetes orchestration from load generation: candidate deployments run on
-Kubernetes worker nodes, while Locust processes run on dedicated load hosts.
-This separation ensures that measured goodput is not confounded by local CPU
-or memory contention. The BaxBench orchestrator co-resides with the Kubernetes
-control plane and image registry, while candidate deployments are generated by
-an external LLM prompted by the orchestrator. Host counts and hardware
-resources are fixed for a given experiment and are described in
-Chapter~\ref{ch:setup}; the following paragraphs detail each component's role.
 
 \paragraph{Kubernetes control plane.}
 A control-plane node runs the Kubernetes API server, scheduler, and related
@@ -277,18 +270,16 @@ is deleted after the benchmark, so each new deployment starts from a clean
 slate.
 
 \paragraph{Container registry.}
-A private registry co-located with the orchestrator and control plane stores
-the container images for candidate deployments so that Kubernetes workers can
-pull them locally.
+A private registry stores the container images for candidate deployments so
+that Kubernetes workers can pull them locally.
 
 \paragraph{BaxBench orchestrator.}
 The orchestrator is the evaluation harness. It prompts the external LLM,
 drives deployment through the control plane, launches Locust on the load
-hosts, and records experiment artifacts. Logically it is separate from the
-Kubernetes control plane, even though we collocate the two for simplicity.
+hosts, and records experiment artifacts.
 
 \paragraph{Load generation (Locust).}
-A Locust master manages each load test on direction from the orchestrator. It
+A Locust master manages each load test under direction from the orchestrator. It
 instructs one or more Locust workers to issue HTTP traffic against the
 deployed backend and aggregates request, latency, and throughput statistics.
 Workers execute the load; the master coordinates the test.
@@ -301,9 +292,9 @@ artifacts.
 
 \FloatBarrier
 
-% ----- §3.4  Workflow -----
+% ----- §3.4  Benchmark state, context, and feedback -----
 \newpage
-\section{Experimental Workflow}
+\section{Benchmark State, Context, and Feedback}
 \label{sec:methods-workflow}
 
 \subsection{Cells, Samples, Experiments, and Iterations}
@@ -311,9 +302,7 @@ artifacts.
 Four nested units recur throughout this thesis, from largest to smallest:
 the \emph{cell}, the \emph{sample}, the \emph{experiment}, and the
 \emph{iteration}, as illustrated in Figure~\ref{fig:sample-experiment-diagram}.
-The figure serves as a compact overview of their hierarchy; the iteration
-loop itself is then detailed in
-Figure~\ref{fig:pipeline} (Section~\ref{sec:methods-loop}).
+The figure provides the vocabulary used in the remainder of the chapter.
 
 \begin{figure}[htbp]
     \centering
@@ -323,182 +312,178 @@ Figure~\ref{fig:pipeline} (Section~\ref{sec:methods-loop}).
     \label{fig:sample-experiment-diagram}
 \end{figure}
 
+\paragraph{Cell.}
 A \textbf{cell} is one point in our experimental design, defined by a tuple
 of the \emph{BaxBench scenario} (the application workload and API contract
 to implement), the \emph{framework} (the implementation language and
 library stack), and the \emph{language-model configuration} (the model used
 to generate the application).
 
-\medskip
+\paragraph{Sample.}
+A \textbf{sample} is one independent execution trajectory for a given cell.
+Because LLM behaviour is stochastic, repeated samples of the same cell allow
+us to observe independent trajectories, estimate variance, and obtain a
+clearer signal about the underlying mean performance of that cell.
 
-A \textbf{sample} is one independent execution trajectory for a given
-cell. Because LLM behaviour is stochastic, repeated samples of the same
-cell allow us to observe independent trajectories, estimate variance, and
-obtain a clearer signal about the underlying mean performance of that
-cell.
-
-\medskip
-
+\paragraph{Experiment.}
 An \textbf{experiment} defines the execution and evaluation settings for a
-sample:
-\begin{itemize}
-  \item the number of refinement iterations~$N$;
-  \item maximum baseline attempts for code generation and
-        deployment-specification generation;
-  \item an optional LLM spend cap;
-  \item the cluster profile (available hardware and system configuration)
-        and the load-test profile (Section~\ref{sec:methods-bench}), plus
-        related deploy/bench timeouts.
-\end{itemize}
-LLM expenditure is also tracked at the experiment level. This supports
-budgeting and cost-aware comparison across models
-(Section~\ref{sec:methods-metrics}).
+sample. These settings include the number of refinement iterations~$N$, the
+maximum baseline attempts for code and deployment-specification generation,
+an optional LLM spend cap, the cluster and load-test profiles, and the
+associated deployment and benchmark timeouts. LLM expenditure is tracked at
+the experiment level to support budgeting and cost-aware comparison across
+models (Section~\ref{sec:methods-metrics}).
 
-\medskip
-
+\paragraph{Iteration.}
 An \textbf{iteration} is one pass through the refinement pipeline, executed
-within a single experiment. It takes the current application state (the
-current code and deployment specification) together with the previous
-iteration's outcome: either a feedback report summarising load-test results
-and system-utilisation diagnostics, or a failure report from an
-unsuccessful iteration. It then refines
-\emph{exactly one} of the two, either the application code or the
-deployment specification. Successful iterations produce a feedback report;
-failed iterations produce a failure report.
+within a single experiment. A refinement iteration receives the current
+validated container image and deployment specification together with the
+previous iteration's outcome: either a feedback report summarising load-test
+results and system-utilisation diagnostics, or a failure report from an
+unsuccessful iteration. It then regenerates exactly one of the two artifacts,
+either the container image or the deployment specification. The baseline
+iteration is the exception: it establishes both artifacts and has no previous
+iteration outcome. Successful iterations produce a feedback report; failed
+iterations produce a failure report.
 
-Having introduced this hierarchy, we now turn to the internal structure of a
-single iteration: the sequence of stages that constitute the refinement loop
-shown in Figure~\ref{fig:pipeline}.
+Iterations are therefore distinguished as either a baseline iteration or a
+refinement iteration; the distinction is detailed in the following subsection.
 
 \FloatBarrier
 
-\subsection{The Iteration Loop}
-\label{sec:methods-loop}
+\subsection{Baseline and Refinement}
+\label{sec:methods-baseline-refinement}
+
+The first iteration and later refinement iterations have different purposes.
+At iteration~0, neither a container image nor a deployment specification exists,
+so the benchmark must generate both artifacts before it can execute a
+candidate. The Decision stage is skipped. Code must pass functional testing,
+and the deployment specification must pass static validation against the
+cluster-capacity constraints. These checks establish a valid candidate, but
+they do not guarantee that the candidate will deploy successfully or achieve
+non-zero goodput.
 
 \begin{figure}[htbp]
   \centering
-  \includegraphics[width=1\linewidth]{figures/methods/iteration-workflow-diagram.png}
-  \caption{Refinement-iteration workflow. Each refinement iteration
-    progresses through a fixed sequence of decision, refinement,
-    deployment, and benchmarking stages.}
-  \label{fig:pipeline}
+  \includegraphics[width=1\linewidth]{figures/methods/baseline-vs-refinement-diagram.png}
+  \caption{Baseline and refinement paths. The baseline generates both
+    optimisation artifacts; later iterations regenerate one artifact and reuse
+    the other.}
+  \label{fig:baseline-vs-refinement}
 \end{figure}
 
-Every refinement iteration of an experiment follows the same stage order
-(Figure~\ref{fig:pipeline}). The baseline iteration differs because it must
-generate both optimisation artifacts and is explained separately in
-Section~\ref{sec:methods-baseline-refinement}.
-The stages have fixed responsibilities:
-
-\paragraph{Decision.}
-Given any available prior outcome context --- either a feedback report
-summarising load-test results and system-utilisation diagnostics, or a
-failure report --- the agent selects a refinement action: either refine the
-\textbf{application code} or refine the \textbf{deployment specification}.
-
-\paragraph{Code.}
-If the agent decides to refine the application, it is prompted to generate
-updated application code. That code must pass the scenario's functional
-tests; upon passing, the application is built into a container image for
-later deployment.
-
-\paragraph{Spec.}
-If the agent decides to refine the deployment configuration, it generates an
-updated deployment specification describing the desired Kubernetes
-deployment. The specification is then statically validated before
-deployment.
-
-\paragraph{Deploy.}
-The latest deployment specification is combined with the backend container
-image to render Kubernetes manifests, which are then applied
-within a newly created namespace. The framework then waits until the
-deployment reaches a ready state and all required service endpoints become
-available.
-
-\paragraph{Bench.}
-Once the deployment is ready, the framework executes a distributed load test
-against the application, collecting load-test results and
-system-utilisation diagnostics during execution. After a successful run, the
-framework summarises them into an iteration feedback report that serves as
-input for the next iteration (Section~\ref{sec:methods-outcome}).
-
-\medskip
-
-In refinement iterations, code regeneration and deployment-specification
-regeneration are mutually exclusive: exactly one of the two artifacts is
-regenerated per iteration, while the other is reused unchanged from the most
-recent iteration that produced it (Section~\ref{sec:methods-artifacts}).
-This choice improves attribution, since an observed performance change can
-be associated with either an application or a deployment-specification
-change, and reduces LLM cost, since each refinement iteration requires only
-a single regeneration step. It assumes that iteration feedback typically
-points towards either an application-level or a deployment-level
-bottleneck, making it sufficient to refine one artifact at a time. The
-decision stage (or a forced retry after failure;
-Section~\ref{sec:methods-failure}) selects which refinement path to follow.
+Baseline generation is more permissive than refinement. Code and
+deployment-specification generation may each retry when validation fails,
+using the preceding failure record to guide the next attempt. Once both
+artifacts are valid, later iterations are deliberately fail-fast: each
+refinement iteration regenerates exactly one artifact and reuses the other.
+This keeps attribution clear, since an observed performance change can be
+associated with either an application or a deployment-specification change,
+while also keeping the number of LLM calls bounded. If the baseline retry
+budget is exhausted, the sample is aborted because there is no executable
+application to refine.
 
 \FloatBarrier
 
-\subsection{Artifact Lineage}
+\subsection{State Across Iterations}
 \label{sec:methods-artifacts}
+\label{sec:methods-failure}
 
 An experiment is \textbf{stateful across iterations} through reusable
-artifacts, outcome reports, and the agent's conversation history.
+validated artifacts, outcome reports, failure records, and the agent's
+conversation history. These objects have related but distinct roles: the
+validated artifact lineage determines what can be deployed, while the
+diagnostic records determine what the next iteration should do.
 
-\textbf{Reusable cross-iteration artifacts.} The Code stage produces the
-current application state, and the Spec stage produces the current
-deployment specification. In each refinement iteration, exactly one of
-these two optimisation artifacts is regenerated while the other is carried
-forward unchanged from the previous validated lineage. Figure~\ref{fig:artifact-lineage}
-traces this carry-forward and shows how failures determine which artifact
-versions remain in use.
+\paragraph{Validated artifact lineage.}
+The Code stage produces a validated container image, while the Spec stage
+produces a validated deployment specification. During refinement, the
+selected artifact is regenerated and the other is carried forward from the
+most recent validated version. Only artifacts that pass their own
+stage-specific validation enter the validated artifact lineage. A failed
+code-generation or specification-validation attempt therefore cannot replace
+the corresponding validated artifact.
 
-\textbf{Decision context.} Bench, on success, produces the feedback report
-summarising load-test results and system-utilisation diagnostics for the
-next Decision. Any stage, on failure, instead produces a failure report.
-These reports are used only by the subsequent decision rather than being
-continually carried forward as lineage state. After a Code or Spec failure,
-the report forces an immediate retry of the same lever and supplies the
-specific failure to the subsequent Code or Spec stage. After a Deploy or
-Bench failure, it is returned to Decision as free-choice context
-(Section~\ref{sec:methods-failure}).
+Deploy combines the artifact regenerated in the current iteration with the
+other artifact carried forward from the current validated lineage. It creates an
+isolated namespace and returns an iteration-local deployment record containing
+the namespace, resolved target, and port. Bench uses this record to test
+exactly the candidate that passed readiness.
 
-The routing in Figure~\ref{fig:artifact-lineage} keeps invalid Code or Spec
-outputs out of the reusable lineage. By contrast, a Deploy or Bench failure
-does not by itself identify either artifact as invalid, so the latest
-validated versions remain available while the failure report returns to
-Decision.
+\paragraph{Diagnostic artifacts.}
+Every stage that stops unsuccessfully produces a structured failure record,
+usually persisted as \texttt{failure.json}. The record identifies the stage
+and failure kind, preserves concise diagnostic evidence, and states whether
+the failure is repairable by the agent or belongs to the framework,
+reference implementation, or infrastructure. A completed benchmark instead
+produces a feedback report containing the measured goodput and the diagnostics
+needed to choose a later refinement. These records are persistent experiment
+artifacts, but they are not executable candidates and do not advance the
+validated code or specification pointers. Infrastructure failures are also
+retained and reported with their diagnostic evidence, but they are not
+presented as application or specification defects for agent repair.
+
+\paragraph{Routing.}
+The next action is determined by the stage that produced the record. A failure
+while producing an artifact forces an immediate repair of that same artifact:
+code failures force Code, and specification failures force the deployment
+specification path. A failure in Decision, Deploy, or the benchmark does not
+identify one optimisation lever reliably, so the next Decision is allowed to
+choose freely between code and deployment. If baseline generation cannot
+produce both validated artifacts within its retry budget, the sample is
+aborted because no executable candidate exists.
+
+This routing keeps invalid artifacts out of later measurements while
+preserving the evidence needed to recover from a failed iteration. A failure
+record is therefore both an auditable historical artifact and a control signal
+for the next iteration. Its prompt-facing representation is described in
+Section~\ref{sec:methods-memory}.
 
 \begin{figure}[htbp]
   \centering
   \includegraphics[width=1\linewidth]{figures/methods/artifact-lineage-diagram.png}
-  \caption{Example artifact lineage through six iterations. Iteration 001
-    refines the deployment specification while reusing the baseline image.
-    The failed code refinement in 002 does not advance code lineage and
-    forces the successful code retry in 003, with the specification from
-    001 carried across both iterations. The specification produced in 004
-    remains available after deployment fails; Decision then selects code
-    refinement in 005, which reuses that specification and the image from
-    003.}
+  \caption{Example artifact lineage through six iterations. Solid links show
+    validated artifacts carried forward between iterations. The failed code
+    attempt at iteration~002 leaves the image lineage unchanged, while the
+    specification that passed static validation at iteration~004 is reused
+    after its downstream deployment failure.}
   \label{fig:artifact-lineage}
 \end{figure}
 
-\textbf{Iteration-local execution state.} Furthermore, outputs from one
-stage become inputs to later stages within an iteration. Deploy combines
-the artifact regenerated in that iteration with the artifact carried
-forward from the validated lineage to create a running deployment. It then
-hands Bench a deployment record containing the namespace, resolved target,
-and port, which Bench uses to target the service under test.
+\FloatBarrier
 
-\paragraph{Conversation history as agent context.}
-The structured lineage above is how the framework carries state across
-iterations. The agent itself also has access to prior work through the
-conversational thread of the experiment described in
-Section~\ref{sec:methods-memory}: later prompts can refer back to earlier
-\texttt{<CODE>} and \texttt{<SPEC>} proposals rather than reintroducing
-them from scratch. Lineage determines which artifacts the framework carries
-forward for execution, while the conversation thread gives the agent access
-to its earlier proposals, decisions, and feedback.
+Figure~\ref{fig:artifact-lineage} illustrates the two artifact pointers
+separately. The baseline at iteration~000 establishes both the initial image
+and specification. Iteration~001 refines the specification and reuses the
+baseline image. The code attempt at iteration~002 fails its functional tests,
+so the next iteration repeats code generation while retaining the validated
+specification. Iteration~003 succeeds and establishes a new image. Iteration
+004 then produces a specification that passes static validation but fails
+during deployment; the failure record is routed to the next decision, while
+the validated specification remains available for reuse. Iteration~005
+therefore reuses the image from iteration~003 and the specification from
+iteration~004. The example shows that artifact validation and downstream
+deployment success are separate states in the lineage.
+
+\begin{table}[htbp]
+  \centering
+  \caption{Routing after a failed stage.}
+  \label{tab:failure-routing}
+  \small
+  \begin{tabular}{@{}ll@{}}
+    \toprule
+    \textbf{Failed stage} & \textbf{Next action} \\
+    \midrule
+    Decision & LLM decides freely with failure context \\
+    Code (baseline) & Sample aborts after the baseline retry budget \\
+    Code (refinement) & Force Code \\
+    Spec (baseline) & Sample aborts after the baseline retry budget \\
+    Spec (refinement) & Force deployment-specification refinement \\
+    Deploy & LLM decides freely \\
+    Bench (harness failure) & LLM decides freely \\
+    \bottomrule
+  \end{tabular}
+\end{table}
 
 \subsection{Responsibility Split}
 \label{sec:methods-responsibility}
@@ -550,104 +535,90 @@ cluster nodes. This bounds its search space and separates optimisation
 
 \FloatBarrier
 
-\subsection{Baseline Versus Refinement Iterations}
-\label{sec:methods-baseline-refinement}
-
-The workflow differs conceptually between the baseline and later refinement
-iterations. Because neither application code nor a deployment specification
-exists at iteration~0, both artifacts must be generated and the Decision stage
-is skipped. The objective is to produce application code that passes functional
-testing and a deployment specification that passes static cluster-capacity
-validation, providing validated candidates for execution. This does not
-guarantee that deployment or benchmarking will succeed. If either stage fails,
-the iteration records a failure report and the experiment proceeds to the next
-iteration with that report as context.
-
-\begin{figure}[htbp]
-  \centering
-  \includegraphics[width=1\linewidth]{figures/methods/baseline-vs-refinement-diagram.png}
-  \caption{Baseline and refinement iteration paths. The baseline generates
-    both artifacts; subsequent iterations regenerate one and reuse the other.}
-  \label{fig:baseline-vs-refinement}
-\end{figure}
-
-Baseline generation is intentionally more permissive than later iterations.
-Since there is no prior valid artifact to fall back to, code generation and
-deployment-specification generation may each be retried when validation fails,
-allowing error information from previous attempts to inform subsequent retries.
-If no valid baseline can be established within the configured retry budget, the
-sample is aborted.
-
-Once a valid code artifact and deployment specification exist, subsequent
-iterations follow the general refinement loop described above: benchmark
-feedback from the latest outcome is fed into Decision, which selects what to
-improve next while reusing the other artifact.
-
-
-\subsection{Agent Memory Model}
+\subsection{Agent Context and Memory}
 \label{sec:methods-memory}
 
 Unlike single-shot BaxBench code generation, each Kubernetes experiment
-maintains \textbf{its own conversational thread}.  A shared prompting
-component accumulates user prompts and assistant replies across all stages
-and iterations of an experiment.
+maintains its \textbf{own conversational thread}. This conversational state is
+distinct from the framework's artifact lineage: lineage determines which
+validated artifacts are executed and which failure record is routed next,
+whereas the conversation determines what the LLM can use when making a
+decision or proposing a revision. Conversations are never shared between
+independent samples.
 
-Each stage appends a new user turn to the existing conversation rather than
-starting from an empty context.  The resulting assistant response is then
-added to the same thread.  As the experiment progresses, the model
-therefore retains access to its previous code generations,
-deployment-specification proposals, decisions, rationales, and feedback
-from earlier iterations.  This allows later refinement steps to build upon
-prior work instead of repeatedly solving the same problem from scratch.
+Each stage appends a new user turn to the experiment's existing conversation
+and adds the assistant response to the same thread. The model can therefore
+refer to earlier code generations, deployment specifications, decisions,
+rationales, benchmark feedback, and repair attempts. A failure record from
+Section~\ref{sec:methods-failure} is persisted in full for audit, but its
+relevant evidence is rendered as a compact feedback block for the next
+relevant LLM call. The record and the prompt block are thus two views of the
+same event: one authoritative and machine-readable, the other adapted to the
+agent's context.
 
 \paragraph{Prompt caching.}
 Maintaining a growing conversation history improves continuity but also
-increases token usage.  To make long-running experiments economically
-feasible, we utilise the prompt-caching mechanisms provided by the
-underlying model providers.  Because each stage extends the existing
-conversation by appending new messages while leaving previous content
-unchanged, most requests share a large stable prefix with earlier
-requests.  This structure is particularly well suited for provider-side
-prompt caching.  In practice, cached tokens are billed at a small fraction
-of the cost of newly processed tokens, substantially reducing the cost of
-long-running refinement trajectories.
+increases token usage. To make long-running experiments economically feasible,
+the prompting layer uses provider-side prompt caching. Each request extends
+the existing conversation by appending new messages, so a large prefix remains
+unchanged between calls and can be reused by the provider. Cached input is
+therefore cheaper than newly processed input, reducing the cost of a long
+refinement trajectory.
 
 \paragraph{Prompt slimming.}
 To further limit token growth, prompts follow a \textbf{slimming policy}.
-Rather than repeatedly embedding large artifacts such as source code,
-deployment specifications, or benchmark outputs, later stages refer to
-previously generated artifacts already present in the conversation
-history, and the model is instructed to consult the relevant earlier
-messages when required.  This preserves access to prior context while
-avoiding unnecessary duplication, allowing experiments to maintain longer
-conversational histories within practical context and cost limits.
+Large artifacts already present in the conversation, such as source code,
+deployment specifications, and earlier benchmark reports, are referred to
+rather than copied into every subsequent request. New turns contain only the
+new decision, result, or failure that motivates the next action. The model is
+instructed to consult the relevant earlier message when it needs the complete
+artifact. This preserves continuity while avoiding unnecessary duplication.
+
+\paragraph{Reproducible records.}
+The framework records each LLM call, generated artifact, stage outcome, and
+failure record within the experiment directory. Deployment and load-test
+configuration are supplied by the experiment profile rather than assembled
+from ad-hoc values in the prompt. This makes an individual trajectory
+inspectable after the run and keeps the execution conditions explicit.
 
 
-% ----- §3.4  Phases -----
-\section{Iteration Stages}
+% ----- §3.5  Iteration protocol and stage contracts -----
+\section{Iteration Protocol and Stage Contracts}
 \label{sec:methods-phases}
+\label{sec:methods-loop}
 
-This section describes each of the five stages in Figure~\ref{fig:pipeline}
-in terms of its role in the experimental workflow, rather than its software
-implementation.  Each stage has a clear contract: it consumes a validated
-predecessor artifact or outcome, either produces the input required by the
-next stage or records why that was not possible, and preserves enough
-evidence for the subsequent iteration.  Table~\ref{tab:stage-summary}
-provides an overview.  The detailed subsections distinguish an expected
-experimental result (for example, a low-goodput benchmark) from a stage
-failure (for example, an unavailable load generator).  Section~\ref{sec:methods-failure}
-then collects the resulting routing rules.  Representative prompts for the
-three LLM-driven stages are reproduced in Appendix~\ref{ch:appendix-prompts};
-configuration constants are deferred to Appendix~\ref{ch:appendix-config}.
+This section specifies the operational protocol of one iteration. The
+preceding section defines the persistent experiment state, artifact lineage,
+failure routing, and agent context; the present section describes how those
+objects are consumed by the individual stages. Each stage has a clear
+contract: it receives the inputs listed below, performs a defined validation
+or execution step, and either produces the output required by the next stage
+or records why it could not do so.
 
-Each stage may succeed or fail.  A failure report identifies the stage and
-its specific kind, retains the relevant evidence, and does not replace the
-last validated code or specification in the artifact lineage.  At the next
-iteration, failures in code or specification production force a repair of
-that same artifact; failures later in the workflow are returned as context
-for a new, free decision.  This makes failures observable experimental
-outcomes without allowing an invalid artifact to silently become the basis
-of later comparisons.
+The baseline skips Decision and generates both optimisation artifacts. Every
+later refinement starts with Decision and regenerates exactly one artifact,
+while the other is carried forward from the validated lineage. The stages
+validate any newly generated artifact, deploy the resulting candidate pair,
+and measure it under load. Representative prompts are reproduced in
+Appendix~\ref{ch:appendix-prompts}, and configuration constants are deferred
+to Appendix~\ref{ch:appendix-config}.
+
+The stage sequence is shown in Figure~\ref{fig:pipeline}, and the shared
+input/processing/output/failure contract underlying every stage is shown in
+Figure~\ref{fig:stage-contracts}. The protocol distinguishes an expected
+experimental outcome from a stage failure: a low goodput value is a valid
+benchmark result, whereas an unavailable load generator is a benchmark
+failure. Both are recorded, but only the latter interrupts the stage
+contract and enters failure routing.
+
+\begin{figure}[htbp]
+  \centering
+  \includegraphics[width=1\linewidth]{figures/methods/iteration-workflow-diagram.png}
+  \caption{Iteration workflow. The baseline generates both code and
+    deployment artifacts; each later iteration chooses one artifact to refine,
+    deploys the resulting pair, and measures it under load.}
+  \label{fig:pipeline}
+\end{figure}
 
 \begin{table}[htbp]
   \centering
@@ -660,72 +631,77 @@ of later comparisons.
     \textbf{Stage} & \textbf{Purpose} & \textbf{Key inputs} & \textbf{Key outputs} & \textbf{Failure boundary} \\
     \midrule
     Decision &
-      Pick the next refinement lever &
-      Prior feedback or failure; conversation history &
-      Recorded decision + rationale &
-      No usable choice from the agent \\
+      Select the next refinement lever &
+      Prior feedback or failure; current lineage; conversation context &
+      Selected lever and rationale &
+      No usable decision \\
     Code &
-      Produce a container-ready, tested application &
-      Scenario spec; prior code turn; prior test failures &
-      Docker image + source tree &
-      Invalid response, build, or functional-test failure \\
+      Generate and functionally validate code &
+      Scenario contract; current code; repair evidence &
+      Validated source tree and image &
+      Parse, build, test, or runner failure \\
     Spec &
-      Produce a validated \texttt{spec.yaml} &
-      Cluster capacity; prior spec turn; validation errors &
-      \texttt{spec.yaml} &
-      Invalid schema or infeasible resource plan \\
+      Generate and statically validate the deployment specification &
+      Cluster capacity; current spec; repair evidence &
+      Validated \texttt{spec.yaml} &
+      Parse, schema, or feasibility failure \\
     Deploy &
-      Bring the candidate up on the cluster &
-      \texttt{spec.yaml}; image reference &
-      Probe record (namespace, target) &
-      Candidate cannot become reachable and ready \\
+      Start the candidate and check readiness &
+      Validated code image and \texttt{spec.yaml} &
+      Deployment record &
+      Candidate is not reachable and ready \\
     Bench &
       Measure sustained goodput under load &
-      Probe record; load profile &
+      Deployment record; verified workload; load profile &
       Feedback report &
-      Harness/target failure; low goodput is a result, not a failure \\
+      Harness or target failure \\
     \bottomrule
   \end{tabular}
 \end{table}
 
+\begin{figure}[htbp]
+  \centering
+  \includegraphics[width=1\linewidth]{figures/methods/stage-contracts-diagram.png}
+  \caption{Stage contracts. Every stage consumes its listed inputs, performs
+    one processing step, and either returns the listed outputs or records the
+    listed failure. Code and Spec are the two alternative refinement paths
+    Decision may choose between; both converge on Deploy, and Bench runs only
+    once Deploy reports a reachable, ready candidate. A failed artifact-stage
+    attempt never replaces the last validated artifact in the lineage.}
+  \label{fig:stage-contracts}
+\end{figure}
+
+\FloatBarrier
 
 \subsection{Decision Stage}
 \label{sec:methods-decision}
 
 \paragraph{Purpose.}
-Choose which single artifact, application code or deployment specification,
-the rest of this iteration will refine, so as to raise sustained goodput. It
-runs for every refinement iteration ($\geq 1$); the baseline
-(Section~\ref{sec:methods-workflow}) skips it entirely, since baseline
-iteration~0 always regenerates both.
+Select exactly one optimisation lever---application code or deployment
+specification---for the current refinement iteration. The stage runs for
+every refinement iteration ($\geq 1$); the baseline
+(Section~\ref{sec:methods-workflow}) skips it because baseline iteration~0
+regenerates both artifacts.
 
 \paragraph{Inputs.}
-The agent receives the established conversation context, the current valid
-code and specification as references, and one outcome from iteration
-$N{-}1$: either benchmark feedback after a completed benchmark or a failure
-report when the iteration stopped earlier.  The former is the report defined
-in Section~\ref{sec:methods-bench}; it states the measured load behaviour
-and diagnostics, rather than merely a scalar score.  The two context types
-are mutually exclusive, so the decision is always grounded in the immediate
-predecessor's actual outcome.
+The agent receives the established conversation context, the current
+validated code and specification as references, and the outcome of iteration
+$N{-}1$. This outcome is either the benchmark feedback defined in
+Section~\ref{sec:methods-bench} or a failure record from the stage at which
+the iteration stopped. Benchmark feedback contains measured load behaviour
+and diagnostics rather than only a scalar score. The two outcome types are
+mutually exclusive, so the decision is grounded in the immediate
+predecessor's actual result.
 
 \paragraph{Processing.}
-The workflow first checks whether $N{-}1$ failed, and if so, at which phase:
-\begin{itemize}
-  \item a \textbf{code} failure forces \textbf{code} again, and a
-        \textbf{spec} failure forces \textbf{deployment} again (the
-        deterministic routing rules of Section~\ref{sec:methods-failure});
-        in both cases the decision LLM is skipped entirely;
-  \item a \textbf{decision}, \textbf{deploy}, or \textbf{bench} failure does
-        not force a lever, so the LLM is called and chooses freely, with the
-        failure block as its context instead of a benchmark summary;
-  \item if $N{-}1$ was itself the baseline and it failed, the sample aborts
-        before any of the above: there is no working system to refine.
-\end{itemize}
-When a free choice is permitted, the prompt requires one of the two levers
-and a short rationale.  An experiment may alternatively fix the lever as an
-ablation.  A malformed response or an unavailable model call is a Decision
-failure.  Appendix~\ref{ch:appendix-prompts} gives the corresponding prompt,
+Before the model is called, the framework applies the deterministic routing
+rule in Section~\ref{sec:methods-failure}. A code or specification failure
+therefore skips this stage and passes its evidence directly to the relevant
+repair stage. Otherwise, the prompt contains the prior feedback or failure
+record and asks the LLM to choose one permitted lever with a short rationale.
+An experiment may replace this free choice with a fixed lever for an ablation.
+A malformed response or unavailable model call is recorded as a Decision
+failure. Appendix~\ref{ch:appendix-prompts} gives the corresponding prompt,
 including the successful-iteration feedback placeholder.
 
 \paragraph{Outputs.}
@@ -744,21 +720,22 @@ for the next free decision.  On success, the decision is immediately
 consumed by the Code and Spec stages; it introduces no performance claim on
 its own.
 
-\paragraph{Why single-lever decisions.}
+\paragraph{Single-lever policy.}
 Deployment tuning and code optimisation are coupled but costly to change
-jointly: forcing exactly one lever per iteration keeps attribution clean, an
-observed goodput change can be traced to either the application or the
-deployment shape, never both at once, at the cost of assuming that a given
-round of feedback points predominantly at one or the other.
+jointly. Refining exactly one lever per iteration keeps attribution clear:
+an observed goodput change can be associated with either the application or
+the deployment shape, although the policy assumes that each round of
+feedback points predominantly at one of them.
 
 
 \subsection{Code Generation and Functional Tests}
 \label{sec:methods-code}
 
 \paragraph{Purpose.}
-Produce a container-ready, functionally passing application build, or, when
-this iteration refines the deployment specification instead, reuse the
-current one untouched.
+When code is selected, produce application code that passes the functional
+tests and can be built into a container image. When the deployment
+specification is selected, generate no new code and carry forward the latest
+validated source tree and image unchanged.
 
 \paragraph{Inputs.}
 Baseline generation receives the scenario contract and target framework.
@@ -796,16 +773,23 @@ artifact. This is the only kind of newly generated application that may be
 deployed.
 
 \paragraph{Failure Modes.}
-Classified into kinds that change what the next code (or decision) prompt
-emphasises: \textbf{functional-test} failures (one or more scenario tests
-fail; the record keeps per-test logs, a coarse failure category such as
-timeout versus server error versus wrong response, and the list of tests
-still passing, so the next attempt does not regress them); \textbf{build}
-failures (the image did not compile; tests never ran); \textbf{infrastructure}
-failures (the test harness itself could not start, explicitly labelled as
-\emph{not} an application bug); \textbf{LLM call or parse} failures; and
-\textbf{test-runner} failures (the functional-test runner process crashed,
-independent of any assertion outcome).
+Failures are classified so that the next repair prompt receives evidence
+about the relevant boundary:
+\begin{itemize}
+  \item \textbf{functional-test} failures occur when one or more scenario
+        tests fail. The record retains per-test logs, a coarse category such
+        as timeout, server error, or wrong response, and the tests that still
+        pass, so that a repair does not regress them;
+  \item \textbf{build} failures occur when the image cannot be built, before
+        tests run;
+  \item \textbf{infrastructure} failures occur when the test harness itself
+        cannot start, for example because Docker or a Postgres port cannot be
+        bound. These are explicitly not treated as application bugs;
+  \item \textbf{LLM call or parse} failures occur when no usable source tree
+        is returned; and
+  \item \textbf{test-runner} failures occur when the functional-test process
+        crashes independently of any assertion outcome.
+\end{itemize}
 
 \paragraph{Feedback.}
 A failed refinement keeps the previous passing code in the lineage and
@@ -818,6 +802,7 @@ performance feedback.
 
 \subsection{Deployment Specification}
 \label{sec:methods-spec}
+\label{sec:methods-design}
 
 \paragraph{Purpose.}
 Produce \texttt{spec.yaml}, a structured description of the desired
@@ -835,28 +820,30 @@ validation evidence.  During code refinement, the current validated
 specification is reused unchanged.
 
 \paragraph{Processing.}
-The LLM returns a \texttt{<SPEC>} YAML fragment covering \texttt{backend},
-optional \texttt{pooler}/\texttt{read\_pooler}/\texttt{cache}, and
-\texttt{database} (Table~\ref{tab:spec-schema}); the framework merges it
-onto fields it always controls itself (container image reference,
-listening port, namespace, and database connection variables are never
-agent-settable), resolves any named node-placement constraints, and runs
-static validation against the capacity snapshot above. Baseline gets a
-configured number of outer attempts (Appendix~\ref{ch:appendix-config}),
-each of which may itself re-prompt the LLM a small number of times to
-correct a parse or validation error before that outer attempt is recorded
-as failed; refinement gets exactly one outer attempt with no internal
-retry, fail-fast, matching the code stage's refinement behaviour. The
-prompt documents field semantics, hard scheduling constraints, and a short
-list of qualitative diagnostic heuristics (for instance, that idle read
-replicas alongside a saturated primary usually mean the application code
-never queries the replica); it never suggests a concrete numeric target
-such as a replica count or a CPU request, so any specific value in the
-resulting spec is the agent's own inference from capacity and prior
-feedback, not a value copied from the prompt. An example spec prompt is
-given in Appendix~\ref{ch:appendix-prompts}.
+\emph{Generation and normalisation.} The LLM returns a
+\texttt{<SPEC>} YAML fragment covering \texttt{backend}, optional
+\texttt{pooler}/\texttt{read\_pooler}/\texttt{cache}, and
+\texttt{database} (Table~\ref{tab:spec-schema}). The framework merges this
+fragment onto fields it always controls itself: the container image
+reference, listening port, namespace, and database connection variables are
+never agent-settable. It also resolves named node-placement constraints.
+Baseline generation receives a configured number of outer attempts
+(Appendix~\ref{ch:appendix-config}); each outer attempt may re-prompt the
+LLM a small number of times to correct a parse or validation error before it
+is recorded as failed. Refinement receives exactly one outer attempt with no
+internal retry, matching the code stage's fail-fast refinement behaviour.
 
-Static validation checks, run for every pod type the schema can request
+The prompt documents field semantics, hard scheduling constraints, and a
+small set of qualitative diagnostic heuristics. For example, idle read
+replicas alongside a saturated primary may indicate that the application
+does not issue reads to the replica. It does not suggest a concrete numeric
+target such as a replica count or CPU request. Specific values in the
+resulting specification must therefore be inferred from capacity and prior
+feedback rather than copied from the prompt. An example is given in
+Appendix~\ref{ch:appendix-prompts}.
+
+\emph{Static validation.} The framework validates every pod type the schema
+can request
 (backend, Postgres primary, Postgres read replicas, both poolers, and both
 Redis caches): each pod's resource \emph{requests} fit on at least one
 allowed worker; the cluster-wide sum of requests stays within advertised
@@ -870,10 +857,11 @@ one, the same client-connection estimate must instead fit the pooler's own
 \texttt{max\_client\_conn}, and symmetrically for \texttt{read\_pooler} when
 enabled (which additionally requires \texttt{database.replicas}~$>1$).
 
-Static validation is the \emph{only} check this stage performs: it never
-applies anything to the cluster. A spec that passes is guaranteed
-schedulable on paper, not yet known to actually come up, that is what the
-Deploy stage checks next (Section~\ref{sec:methods-deploy}).
+Static validation is the \emph{only} check performed by this stage before
+deployment: it never applies anything to the cluster. A specification that
+passes is schedulable on paper, but is not yet known to start or become
+reachable. That is what the Deploy stage checks next
+(Section~\ref{sec:methods-deploy}).
 
 \begin{table}[t]
   \centering
@@ -902,9 +890,9 @@ Deploy stage checks next (Section~\ref{sec:methods-deploy}).
 \end{table}
 
 \paragraph{Outputs.}
-A validated workload plan, together with its capacity assessment and any
-warnings.  On the code-refinement path, the prior validated plan is carried
-forward without modification.
+A validated deployment specification, together with its capacity assessment
+and any warnings. On the code-refinement path, the prior validated
+specification is carried forward without modification.
 
 \paragraph{Failure Modes.}
 \textbf{Validation} failures (a capacity, scheduling, or connection-budget
@@ -913,8 +901,8 @@ violation; the record keeps the explicit error and warning list) or
 
 \paragraph{Feedback.}
 A failed refinement attempt is recorded as a spec failure; the next
-iteration is \textbf{forced} onto the \textbf{deployment} lever with those
-validation errors as context (Section~\ref{sec:methods-failure}). Exhausting
+iteration is \textbf{forced} onto the deployment-specification path with
+those validation errors as context (Section~\ref{sec:methods-failure}). Exhausting
 the baseline attempt budget aborts the sample.
 
 \FloatBarrier
@@ -924,10 +912,10 @@ the baseline attempt budget aborts the sample.
 
 \paragraph{Purpose.}
 Turn a validated \texttt{spec.yaml} into a running, reachable cluster
-deployment, and answer only whether this layout comes up, deliberately
-before any load is applied (Table~\ref{tab:deploy-vs-bench}). Deploy always
-runs, for baseline and every refinement iteration alike, regardless of
-which lever was refined.
+deployment. Deploy answers only whether this candidate can be scheduled,
+started, and reached; it does not measure performance
+(Table~\ref{tab:deploy-vs-bench}). The stage runs for the baseline and every
+refinement iteration, regardless of which lever was refined.
 
 \begin{table}[t]
   \centering
@@ -945,19 +933,19 @@ which lever was refined.
 \end{table}
 
 \paragraph{Inputs.}
-This iteration's validated workload plan and tested application image,
+This iteration's validated deployment specification and tested application image,
 whether newly generated or carried forward, plus framework-owned runtime
 settings such as image wiring, service exposure, and experiment isolation.
 
 \paragraph{Processing.}
-The framework renders and applies the workload in a fresh, isolated
-deployment context; agent-controlled planning fields are kept distinct from
-runtime wiring.  It then verifies that each requested workload is ready,
-that the backend is reachable through its service, and that required
-database services expose endpoints.  Deploy is deliberately a single
-attempt in both baseline and refinement iterations: it tests whether this
-specific candidate can run, rather than masking a deployment outcome with
-unobserved retries.
+The framework renders and applies the specification in a fresh, isolated
+deployment context; agent-controlled planning fields remain distinct from
+framework-owned runtime wiring. It then verifies that each requested
+workload is ready, that the backend is reachable through its Service, and
+that required database services expose endpoints. Deploy is deliberately a
+single attempt in both baseline and refinement iterations: it tests whether
+this specific candidate can run rather than masking a deployment outcome
+with unobserved retries.
 
 \paragraph{Outputs.}
 A deployment record identifying the reachable backend target and the
@@ -1134,179 +1122,72 @@ On a harness failure, the failure record (summary plus a harness log
 excerpt) is captured, and, as with deploy failures, the next decision
 chooses freely between code and deployment. On success, the feedback report
 above becomes the input to the next Decision (Section~\ref{sec:methods-decision})
-and, because it is the newest successful outcome, advances the ``latest
-good'' lineage pointer for whichever artifact this iteration touched
-(Section~\ref{sec:methods-artifacts}). Only successful iterations advance
-lineage; a failed iteration's record is retained on disk for audit, but its
-structured failure, not a feedback report, is what becomes the next
-iteration's context.
+and marks the iteration as a successful benchmark outcome. Artifact lineage is
+controlled separately by artifact-stage validation: a code or specification
+candidate that passes its own validation remains available even if a later
+Deploy or Bench stage fails, while a failed artifact-stage attempt does not
+replace the corresponding validated artifact. All failure records remain on
+disk for audit, and the structured failure rather than a feedback report
+becomes the next iteration's context when the iteration stops unsuccessfully.
 
 
-% ----- §3.5  Failure routing (summary) -----
-\section{Failure Routing Summary}
-\label{sec:methods-failure}
+% The design constraints are stated where they are enforced: in the
+% architecture, specification, lineage, and stage-contract subsections.
 
-Every failure mode in Section~\ref{sec:methods-phases} follows the same
-shape: a \textbf{trigger} (what went wrong), \textbf{detection} (how the
-framework recognises it, from an explicit non-zero exit code to a heuristic
-match against log or diagnostic text), \textbf{captured information} (a
-structured failure record persisted to that phase's \texttt{failure.json},
-with the specific evidence, e.g.\ failing-test logs, \texttt{kubectl} wait
-output, or a Locust error excerpt), and \textbf{agent feedback} (that
-record's prompt-formatted block, injected into the next relevant LLM call,
-typically the next Decision stage unless the routing rule forces an
-immediate retry of the same lever).
-The stage subsections above already give the first three for every kind;
-this section collects only the fourth: which lever, if any, the next
-iteration is routed onto as a result.
-
-Table~\ref{tab:failure-routing} summarises the routing rule for every
-failure kind. Two patterns recur. First, a failure in the stage that
-\emph{produces} an artifact forces an immediate retry of that same lever: a
-code failure forces code, a spec failure forces deployment (deployment
-refinement's folder label is \texttt{-spec}, since it is the artifact that
-was regenerated), so the agent's very next move is a fix attempt with the
-failure detail fresh in context, rather than a free choice that might drift
-to the unrelated lever. Second, a failure \emph{downstream} of artifact
-production, at decision, deploy, or bench, does not force a lever: the next
-decision LLM chooses freely, since the cause could plausibly lie on either
-side (a deploy failure might call for a smaller spec, or, less commonly, an
-application fix; a bench failure is a harness problem unrelated to either
-artifact).
-
-\begin{table}[t]
-  \centering
-  \caption{Iteration routing after failure.}
-  \label{tab:failure-routing}
-  \small
-  \begin{tabular}{@{}ll@{}}
-    \toprule
-    \textbf{Failed stage} & \textbf{Next iteration} \\
-    \midrule
-    Decision & LLM decides freely (with decision failure context) \\
-    Code (baseline) & Sample abort (after max attempts) \\
-    Code (refinement) & Force \textbf{code} \\
-    Spec (baseline) & Sample abort (after max attempts) \\
-    Spec (refinement) & Force \textbf{deployment} \\
-    Deploy & LLM decides freely \\
-    Bench (harness failure) & LLM decides freely \\
-    \bottomrule
-  \end{tabular}
-\end{table}
-
-\FloatBarrier
-
-% ----- §3.6  Design principles -----
-\section{Design Principles and Constraints}
-\label{sec:methods-design}
-
-\paragraph{Bounded search space.}
-Raw Kubernetes YAML is vast and error-prone.  Restricting the agent to a
-structured deployment specification keeps comparisons focused on deployment
-\emph{decisions} rather than syntactic accidents.
-
-\paragraph{Framework owns infrastructure.}
-Network wiring, namespace lifecycle, manifest rendering, Locust orchestration,
-and validation rules are fixed.  The agent never executes shell commands on
-cluster nodes.
-
-\paragraph{Correctness before performance.}
-Functional tests gate all new images; deploy probes gate specs; goodput is
-measured only on correct, ready deployments.
-
-\subsection{Cross-Cutting Scenario-Builder Design}
-\label{sec:methods-scenario-design}
-
-\paragraph{Conversational context, stable prefixes, and prompt slimming.}
-Where an agent is revising an artifact it previously created, it receives an
-append-only conversation rather than a fresh prompt. The initial turn carries
-the stable scenario or artifact context; later turns add only the outcome or
-failure that motivates a revision. Large artifacts already available in the
-conversation are referenced rather than repeated. For independent judges, we
-instead use fresh decisions with the same stable context prefix and a small,
-case-specific suffix. This preserves independent judgments while allowing
-provider-side prompt caching to reuse the common prefix. In the provider
-configurations used here, cached input is typically charged at roughly one
-tenth of the ordinary input-token rate, so this structure materially reduces
-the cost of repeated generation and review.
-
-\paragraph{Typed failures and validated artifact progression.}
-Every repairable failure is represented as a structured record that states
-what failed, the evidence observed, and which agent or component can act on
-it. The record is persisted for audit and rendered as concise feedback for the
-next relevant attempt. The framework distinguishes an author-repairable
-artifact failure from a reference-implementation or infrastructure failure so
-that an agent is not asked to repair the wrong object. Provisional candidates
-do not become benchmark inputs merely because they were generated: they
-advance only after the validation appropriate to their stage has succeeded.
-This generalises the failure-routing discipline of
-Section~\ref{sec:methods-failure} to the scenario-building process.
-
-\paragraph{Learn from feedback, not from hand-tuned ranges.}
-Spec prompts omit recommended numeric values, supporting claims about autonomous
-deployment optimisation from measured signals.
-
-\paragraph{Fail-fast refinement, generous baseline.}
-Baseline retries bootstrap a working system; single-attempt refinement preserves
-a fixed iteration budget and clear per-iteration attribution.
-
-\paragraph{Reproducibility.}
-Every LLM call is logged; each iteration is a self-contained experiment
-record; cluster topology is codified in a single configuration module rather
-than ad-hoc host strings in prompts.
-
-
-% ----- §3.7  Metrics -----
-\section{Metrics and Evaluation Criteria}
+% ----- §3.6  Outcome measures and analysis -----
+\section{Outcome Measures and Analysis}
 \label{sec:methods-metrics}
 
+The adaptive benchmark produces one primary performance metric together with
+diagnostic and process measures. Keeping this distinction explicit prevents a
+high raw request rate, a transient overload point, or a low-latency but
+error-prone run from being mistaken for an improvement in the objective.
+
 \paragraph{Primary metric.}
-\textbf{Sustained goodput} (successful RPS under the adaptive profile), compared
-across iterations and scenarios.
+The primary metric is \textbf{sustained goodput}: the best settled rate of
+successful HTTP responses reached in the refine phase of the adaptive load
+profile. A run that stops during warm-up or recovery before reaching refine
+records sustained goodput as exactly $0$, as described in
+Section~\ref{sec:methods-bench}.
+Peak step goodput is retained for describing the ramp trajectory, but it is
+not the primary cross-iteration score because it may be transient or occur at
+an unhealthy failure rate.
 
-\paragraph{Secondary metrics.}
-\begin{itemize}
-  \item p50 and p95 latency per endpoint;
-  \item failure rate during benchmark;
-  \item peak step goodput and adaptive-ramp trajectory;
-  \item CPU and memory utilisation from \texttt{kubectl top};
-  \item deployment-specification parameters (replicas, requests, placement);
-  \item iteration outcome labels and agent decision rationales;
-  \item estimated LLM cost per experiment.
-\end{itemize}
+\paragraph{Diagnostic measures.}
+The benchmark also records endpoint-level latency and failure statistics,
+including p50, p95, p99, request counts, and failure rates. Cluster diagnostics
+include CPU and memory utilisation, pod health, database and pooler activity,
+replication state, cache statistics when enabled, and relevant cluster events.
+These measurements do not replace sustained goodput; they explain why a
+candidate reached its score and provide the evidence used by the next agent
+decision.
 
-\paragraph{Sample size and statistical treatment.}
-Repeated sampling of the same cell (Section~\ref{sec:methods-workflow}) is
-useful in principle for estimating generation variance, but the cost of a
-full $N$-iteration refinement trajectory makes it impractical to repeat
-across every cell within the available budget: each scenario$\times$framework
-cell in this thesis is therefore run as a single sample. Comparisons across
-cells, models, and frameworks in Chapter~\ref{ch:results} are consequently
-\emph{descriptive}---medians and individual data points, not
-significance-tested differences---and should be read as indicative of
-direction and magnitude rather than as statistically established effects.
+\paragraph{Trajectory and process measures.}
+For each experiment, the recorded trajectory includes the baseline score,
+the score after every iteration, the selected refinement lever, the resulting
+artifact versions, the iteration outcome, and any failure records. We also
+track deployment-specification parameters and LLM expenditure. Together,
+these data support the questions of whether refinement helps, which lever was
+used, how deployment choices changed, where the workflow failed, and what
+cost was incurred to obtain the result.
 
-\paragraph{Baselines and ablations (Results chapter).}
-Examples for comparison:
-\begin{itemize}
-  \item baseline deployment only (iteration~0 goodput, no refinement);
-  \item forced deployment-only vs.\ code-only vs.\ free (agent-chosen)
-        refinement lever;
-  \item single-shot deploy without iterative feedback.
-\end{itemize}
+\paragraph{Comparisons.}
+The main comparison is between the baseline and the best subsequent sustained
+goodput within the same experiment. Iteration-level comparisons preserve the
+order of decisions and failures rather than reducing a trajectory to one
+final number. Where results compare code-only, deployment-only, and
+agent-selected refinement, the same benchmark and scoring rule are used; only
+the permitted decision policy changes.
 
+\paragraph{Statistical treatment.}
+Repeated samples of a cell would be needed to estimate variation caused by
+stochastic generation and execution. The experiments reported here use one
+sample per cell because a complete refinement trajectory is costly. Results
+are therefore descriptive: they show individual trajectories, changes from
+baseline, and aggregate summaries where appropriate, but they do not support
+significance-tested claims about population-level differences.
 
-% ----- §3.8  Implementation -----
-\section{Implementation Summary}
-\label{sec:methods-implementation}
-
-The evaluation harness is implemented as an extension to BaxBench, adding
-three components around the single-shot codegen pipeline: an orchestration
-layer that drives the iteration pipeline, validates deployment
-specifications, and records failures; a distributed load-generation layer
-built on Locust; and a diagnostics layer that collects telemetry during
-benchmarking.
-
-Detailed module-level documentation, parameter tables, and prompt templates
-are deferred to the appendix and repository documentation to keep this
-chapter focused on experimental methodology.
+Concrete models, scenarios, iteration budgets, cluster settings, and sample
+counts are specified in Chapter~\ref{ch:setup}. Prompt templates and detailed
+configuration constants are provided in Appendices~\ref{ch:appendix-prompts}
+and~\ref{ch:appendix-config}.

@@ -64,26 +64,34 @@ onward), not just a nuisance parameter.
     \midrule
     \texttt{gpt-5.5}         & \$84.96 & \$7.08 \\
     \texttt{claude-opus-4-8} & \$47.11 & \$3.93 \\
-    \texttt{glm-5.2}         & \$10.37 & \$0.86 \\
+    \texttt{glm-5.2}         & \$13.79 & \$1.15 \\
     \bottomrule
   \end{tabular}
 \end{table}
 
 All three models now have full $4$-scenario$\times$$3$-framework coverage
-(12 cells each, 36 total). \textbf{A significant fraction of cells were
-not, however, given a genuinely clean run}: thirteen cells (four of
-\texttt{claude-opus-4-8}'s, six of \texttt{glm-5.2}'s, and three that
-eventually recovered) hit an LLM-provider billing or quota exhaustion
-error during baseline code generation, and ten of those thirteen never
-reached a working baseline at all as a direct result --- an artefact of
-when these runs happened to execute relative to account funding, not a
-capability or framework finding. Section~\ref{sec:results-rq3} gives the
-full accounting; the ``Spend / cell'' column above is itself pulled down
-by cells that were never really attempted, since a rejected billing call
-accrues negligible cost. \textbf{TODO: re-run the thirteen affected
-cells (Section~\ref{sec:results-rq3} lists them) with a funded provider
-account before treating any completion-rate or cost comparison in
-Chapter~\ref{ch:results} as final.}
+(12 cells each, 36 total). \textbf{A small fraction of cells were not,
+however, given a genuinely clean run}: six cells, four of
+\texttt{claude-opus-4-8}'s (all \textsc{Rust-Actix}) plus one further
+\texttt{claude-opus-4-8} cell and one \texttt{gpt-5.5} cell that each
+recovered only partway through their refinement budget, hit an
+LLM-provider billing or quota exhaustion error during baseline code
+generation, and the four \texttt{claude-opus-4-8} \textsc{Rust-Actix}
+cells never reached a working baseline at all as a direct result. This is
+an artefact of when these runs happened to execute relative to account
+funding, not a capability or framework finding. \texttt{glm-5.2}'s six
+previously-affected cells are fully resolved in this snapshot: zero
+billing-kind failures anywhere in its data. Section~\ref{sec:results-rq3}
+gives the full accounting; the ``Spend / cell'' figure above is itself
+pulled down for \texttt{claude-opus-4-8} by cells that were never really
+attempted (four of its twelve cells accrued exactly \$0, since a rejected
+billing call is never billed); Section~\ref{sec:results-rq3} reports
+the corresponding figure over only the cells that were actually billed
+anything. \textbf{Re-running \texttt{claude-opus-4-8}'s four
+\textsc{Rust-Actix} cells (and, ideally, its one truncated
+\textsc{Recipes}$\times$\textsc{Python-Flask} cell) with a funded provider
+account remains the single open item before treating the completion-rate
+or cost comparison in Chapter~\ref{ch:results} as final for that model.}
 
 
 % ----- §4.2 Scenarios -----
@@ -152,14 +160,14 @@ separate framework effects from refinement effects.
 
 Experiments run on a dedicated multi-node cluster (Emulab-hosted;
 profile \texttt{baxbench-emulab} in
-\texttt{k8s\_bench/cluster/profiles.py}), matching the architecture
-motivated in Section~\ref{sec:methods-architecture}:
+\texttt{k8s\_bench/cluster/profiles.py}), following the architecture
+described in Section~\ref{sec:methods-architecture}:
 
 \begin{itemize}
   \item \textbf{Control plane / orchestrator / registry (1 host).} A single
         node runs the Kubernetes control plane, the BaxBench orchestrator,
         and the private image registry, collocated for operational
-        simplicity as noted in Section~\ref{sec:methods-architecture}.
+        simplicity.
   \item \textbf{Kubernetes workers (4 hosts).} Candidate deployments
         (application pods, databases, poolers, caches) are scheduled only
         onto these nodes.

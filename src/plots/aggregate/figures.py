@@ -465,7 +465,7 @@ def plot_failure_taxonomy(
 
 def generate_all_figures(data, out_dir: Path) -> list[Path]:
     """Best-effort: generate every figure, skipping ones with insufficient data."""
-    from .aggregate import AggregateData
+    from .tables import AggregateData
 
     assert isinstance(data, AggregateData)
     created: list[Path] = []
