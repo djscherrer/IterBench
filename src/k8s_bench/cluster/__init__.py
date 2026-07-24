@@ -21,7 +21,12 @@ from .profiles import (
     selected_cluster_profile,
     selected_cluster_profile_name,
 )
-from .registry import run_registry_setup_from_args
+from .prune import (
+    image_prune_enabled,
+    prune_unused_images_for_cluster,
+    prune_unused_images_on_hosts,
+)
+from .registry import run_registry_setup_from_args, wipe_local_registry
 from .setup import run_setup_from_args
 
 __all__ = [
@@ -35,7 +40,10 @@ __all__ = [
     "collect_cluster_capacity",
     "collect_deploy_failure_diagnostics",
     "delete_iteration_namespace",
+    "image_prune_enabled",
     "list_baxbench_namespaces",
+    "prune_unused_images_for_cluster",
+    "prune_unused_images_on_hosts",
     "resolve_k8s_cleanup_mode",
     "deploy_iteration",
     "ensure_k8s_cluster_ready",
@@ -46,4 +54,5 @@ __all__ = [
     "run_preflight_from_args",
     "run_registry_setup_from_args",
     "run_setup_from_args",
+    "wipe_local_registry",
 ]

@@ -64,6 +64,15 @@ OPENAI_TOGETHER_CONTEXT_LENGTHS: dict[str, int] = {
     "gpt-5.4-mini": 400000,
     "openai/gpt-5.4-mini": 400000,
     "gpt-5.4-nano": 128000,
+    # GPT-5.5 / Claude Opus OpenRouter ids (must match --models exactly)
+    "gpt-5.5-2026-04-23": 1_050_000,
+    "openai/gpt-5.5-2026-04-23": 1_050_000,
+    "anthropic/claude-opus-4-8": 1_000_000,
+    "anthropic/claude-opus-4-7": 1_000_000,
+    "anthropic/claude-opus-4-6": 1_000_000,
+    "claude-opus-4-8": 1_000_000,
+    "claude-opus-4-7": 1_000_000,
+    "claude-opus-4-6": 1_000_000,
 }
 
 ANTHROPIC_THINKING_LENGTHS: dict[str, int] = {
@@ -102,6 +111,7 @@ OPENAI_MAX_COMPLETION_TOKENS: dict[str, int] = {
     "gpt-5.4": 128000,
     "gpt-5.4-2026-03-05": 128000,
     "gpt-5.5-2026-04-23": 128000,
+    "openai/gpt-5.5-2026-04-23": 128000,
     "gpt-5.4-mini": 128000,
     "gpt-5.4-nano": 128000,
 }
