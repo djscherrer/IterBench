@@ -290,27 +290,38 @@ def run_weighted_load(
                         spawn_rate=spawn_rate,
                     )
 
-                    if proc.returncode != 0:
-                        logger.warning(
-                            "Locust returned non-zero exit code: %s", proc.returncode
-                        )
-                        logger.warning(proc.stderr)
-                        return WeightedLoadResult(
-                            ok=False,
-                            kind="locust_runtime",
-                            summary="Locust exited with a non-zero status.",
-                            diagnostic_excerpt=f"{proc.stderr}\n{proc.stdout}",
-                        )
-
+                    # Locust's CLI intentionally exits non-zero whenever the run
+                    # recorded any failed request (its --exit-code-on-error
+                    # convention) -- routine here, since surfacing failures is
+                    # this stage's whole job, not a sign the harness itself
+                    # broke. The only reliable "did this run actually
+                    # complete" signal is whether it produced usable stats, so
+                    # check that before treating the exit code as meaningful.
                     csv_summary, stats_error = _read_locust_stats(
                         temp_dir / "result_stats.csv"
                     )
                     if stats_error:
+                        logger.warning(
+                            "Weighted load pass produced no usable stats "
+                            "(exit code %s): %s",
+                            proc.returncode,
+                            stats_error,
+                        )
                         return WeightedLoadResult(
                             ok=False,
                             kind="stats_missing_or_invalid",
                             summary="Weighted load pass did not produce usable stats.",
-                            diagnostic_excerpt=stats_error,
+                            diagnostic_excerpt=(
+                                f"{stats_error}\n\n{proc.stderr}\n{proc.stdout}"
+                            ),
+                        )
+
+                    if proc.returncode != 0:
+                        logger.info(
+                            "Locust exited with status %s but produced valid "
+                            "stats; treating as a completed run (Locust exits "
+                            "non-zero whenever it recorded failures).",
+                            proc.returncode,
                         )
 
                     return WeightedLoadResult(

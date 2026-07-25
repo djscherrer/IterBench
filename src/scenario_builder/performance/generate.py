@@ -59,6 +59,36 @@ def uses_fast_http_user(locust_code: str) -> bool:
     )
 
 
+def _prompt_with_rollback(
+    conversation: Conversation, prompt: str, *, purpose: str, on_response=None
+) -> Response:
+    """Adds a user turn, persists it, and calls the model -- rolling the
+    turn back out (and re-persisting) if the call raises, instead of
+    leaving a dangling user message with no reply on disk. Left in place,
+    that dangling turn would make the *next* attempt's ``conversation.responses``
+    non-empty and wrongly treated as a continuation requiring feedback, even
+    though this attempt never actually got a response.
+    """
+    conversation.add_message(Response(role="user", text=prompt))
+    if on_response is not None:
+        on_response()
+    try:
+        response = reasoning_model.generate(
+            conversation,
+            temperature=0.2,
+            purpose=purpose,
+        )
+    except Exception:
+        conversation.remove_message()
+        if on_response is not None:
+            on_response()
+        raise
+    conversation.add_message(response)
+    if on_response is not None:
+        on_response()
+    return response
+
+
 def generate_locust_code(
     scenario: dict,
     conversation: Conversation,
@@ -90,17 +120,12 @@ def generate_locust_code(
             locust_code_template=templates.locust_code_template,
         )
 
-    conversation.add_message(Response(role="user", text=prompt))
-    if on_response is not None:
-        on_response()
-    response = reasoning_model.generate(
+    _prompt_with_rollback(
         conversation,
-        temperature=0.2,  # Slight temp for creative problem solving in generating test data
+        prompt,
         purpose="generate_locust_script: generating locust code",
+        on_response=on_response,
     )
-    conversation.add_message(response)
-    if on_response is not None:
-        on_response()
 
     logger.info("Generated Locust script code")
 
@@ -161,17 +186,12 @@ def review_locust_code(
         load_results_report=load_results_report,
         review_decision_format=decision_format,
     )
-    conversation.add_message(Response(role="user", text=prompt))
-    if on_response is not None:
-        on_response()
-    response = reasoning_model.generate(
+    _prompt_with_rollback(
         conversation,
-        temperature=0.2,
+        prompt,
         purpose="review_locust_script: reviewing cross-implementation load results",
+        on_response=on_response,
     )
-    conversation.add_message(response)
-    if on_response is not None:
-        on_response()
 
     logger.info("Reviewed Locust script against cross-implementation load results")
 

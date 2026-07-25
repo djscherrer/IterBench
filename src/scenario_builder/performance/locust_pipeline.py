@@ -43,10 +43,24 @@ def _locust_cache_key(scenario: dict) -> str:
     )
 
 
+def _drop_dangling_user_turn(conversation: Conversation) -> None:
+    """Repairs a conversation left mid-turn by a failed model request: the
+    user prompt is added and persisted *before* the model call, so if that
+    call raises (e.g. a transient provider outage), the persisted
+    conversation ends with a user message and no reply. Left alone, the next
+    attempt sees a non-empty conversation and wrongly treats it as a
+    continuation requiring failure feedback, when it should be treated as a
+    fresh first attempt.
+    """
+    if conversation.responses and conversation.responses[-1].role == "user":
+        conversation.remove_message()
+
+
 def _load_or_create_conversation(scenario: dict) -> Conversation:
     path = locust_conversation_path(scenario_folder_path)
     conversation = load_conversation(path)
     if conversation is not None and conversation.responses:
+        _drop_dangling_user_turn(conversation)
         return conversation
     legacy_conversation = load_conversation(
         legacy_lowcost_conversation_path(scenario_folder_path)
@@ -54,6 +68,7 @@ def _load_or_create_conversation(scenario: dict) -> Conversation:
     if legacy_conversation is not None and legacy_conversation.responses:
         # Keep the old artifact untouched, but make future reads and writes use
         # the canonical locust.json filename.
+        _drop_dangling_user_turn(legacy_conversation)
         persist_conversation(path, legacy_conversation)
         logger.info("Migrated Locust conversation to %s", path)
         return legacy_conversation
