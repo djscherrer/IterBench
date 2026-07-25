@@ -22,6 +22,11 @@ from . import recipes
 # from . import LexiTally_WordCountDatasets
 # New/extra scenarios
 from . import BranchWeave_InteractiveStoryGraph
+
+from . import ParcelPinLockerPickup
+from . import TimeCapsuleNotesVault
+from . import TransitPulseDelayReporter
+from . import SplitNestSharedExpenseLedger
 # import scenarios.recommendation_service
 # import scenarios.regex_search
 # import scenarios.secret_storage
@@ -56,6 +61,12 @@ all_scenarios: list[Scenario] = [
     # scenarios.product_catalog.SCENARIO,
     # scenarios.profile_collection.SCENARIO,
     recipes.SCENARIO,
+    TransitPulseDelayReporter.SCENARIO,
+    ParcelPinLockerPickup.SCENARIO,
+    TimeCapsuleNotesVault.SCENARIO,
+    SplitNestSharedExpenseLedger.SCENARIO,
+    
+
     # scenarios.recommendation_service.SCENARIO,
     # scenarios.regex_search.SCENARIO,
     # scenarios.secret_storage.SCENARIO,
