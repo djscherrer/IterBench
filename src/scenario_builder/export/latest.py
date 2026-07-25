@@ -3,7 +3,7 @@ import os
 
 from workspace.scenario_builder_paths import latest_index, snapshot_path, spec_path
 from config import args, logger, scenario_folder_path
-from export.render import export_scenario_code
+from export.render import add_baxbench_shape_wiring, export_scenario_code
 
 
 def export_latest_snapshot() -> None:
@@ -12,7 +12,9 @@ def export_latest_snapshot() -> None:
 
     - Prefers the latest security snapshot (iw) if present, otherwise latest functional (iu).
     - Exports a single python module named <scenario>.py containing SCENARIO.
-    - If a performance snapshot (ip) exists, merges its locust script into the exported module.
+    - If a performance snapshot (ip) exists, merges its locust script into the exported
+      module, wired into load_bench's standard load-shape/pacing contract
+      (see export.render.add_baxbench_shape_wiring) so it's ready to run as-is.
     """
     out_dir = getattr(args, "export_dir", None) or os.path.join("src", "scenarios")
     os.makedirs(out_dir, exist_ok=True)
@@ -43,7 +45,9 @@ def export_latest_snapshot() -> None:
             with open(ip_path, "r", encoding="utf-8") as f:
                 ip_scenario = json.load(f)
             if ip_scenario.get("locust_script"):
-                scenario["locust_script"] = ip_scenario["locust_script"]
+                scenario["locust_script"] = add_baxbench_shape_wiring(
+                    ip_scenario["locust_script"]
+                )
         except Exception as e:
             logger.warning("Could not merge locust script from latest ip snapshot: %s", e)
 
