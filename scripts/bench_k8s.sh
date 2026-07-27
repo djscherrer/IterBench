@@ -24,9 +24,15 @@
 set -euo pipefail
 
 # --- Experiment scope (what BaxBench task / sample to run) ---
-MODELS="openai/gpt-5.5-2026-04-23" # deepseek/deepseek-v3.2  anthropic/claude-opus-4-6 openai/gpt-5.5-2026-04-23 anthropic/claude-opus-4-8 (temp deprecated) 
+# Space-separated models, one per k8s-bench subprocess run below. A model whose
+# prefix isn't auto-detected (anthropic/openai/together_ai/swissai/openrouter -
+# e.g. z.ai/... or deepseek/...) needs an explicit provider; append it to that
+# one entry as "model:provider" rather than setting PROVIDER globally, so
+# different models can use different providers in the same run:
+#   MODELS="openai/gpt-5.5-2026-04-23 anthropic/claude-opus-4-8 z.ai/glm-5.2:openrouter"
+MODELS="openai/gpt-5.5-2026-04-23" # z.ai/glm-5.2:openrouter openai/gpt-5.5-2026-04-23 anthropic/claude-opus-4-8 (temp deprecated) z.ai/glm-5.2:openrouter
 PROVIDER=""           # openai | anthropic | together_ai | openrouter | swissai | vllm
-                                # required when the model prefix is not auto-detected (e.g. deepseek/…)
+                                # fallback for MODELS entries with no ":provider" suffix
 ONLY_SAMPLES="0"                # e.g. "0"; empty → N_SAMPLES
 N_SAMPLES=""
 ENVS="Python-Flask Go-net/http Rust-Actix"               # Go-net/http
@@ -100,11 +106,18 @@ echo "KUBECONFIG=${KUBECONFIG:-(profile default)}  experiment=${K8S_EXPERIMENT:-
 
 BASE_ENV=()
 RUN_I=0
-for _model in $MODELS; do
+for _entry in $MODELS; do
+  _model="${_entry%%:*}"
+  if [ "$_entry" != "$_model" ]; then
+    _provider="${_entry#*:}"
+  else
+    _provider="$PROVIDER"
+  fi
+
   ARGS=("--mode" "k8s-bench")
 
   add_arg "--models" "$_model"
-  add_arg "--provider" "$PROVIDER"
+  add_arg "--provider" "$_provider"
   add_arg "--only_samples" "$ONLY_SAMPLES"
   add_arg "--n_samples" "$N_SAMPLES"
   add_arg "--envs" "$ENVS"
@@ -136,7 +149,7 @@ for _model in $MODELS; do
       PROFILE_ARGS+=("--load-profile" "$profile")
     fi
     echo ""
-    echo "=== K8s bench run #$RUN_I: model='${_model}' experiment='${K8S_EXPERIMENT:-default}' load_profile='$profile' iterations=${K8S_ITERATIONS:-1} ==="
+    echo "=== K8s bench run #$RUN_I: model='${_model}' provider='${_provider:-auto}' experiment='${K8S_EXPERIMENT:-default}' load_profile='$profile' iterations=${K8S_ITERATIONS:-1} ==="
     echo "Command: pipenv run python src/main.py ${PROFILE_ARGS[*]}"
     (cd "$ROOT" && env "${EXTRA_ENV[@]}" pipenv run python src/main.py "${PROFILE_ARGS[@]}")
     RC=$?
