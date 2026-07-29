@@ -92,7 +92,7 @@ later model-evaluation experiments.
 \begin{figure}[htbp]
   \centering
   \makebox[\textwidth][c]{%
-    \includegraphics[width=1.05\textwidth]{figures/methods/offline-scenario-workload-diagram.png}%
+    \includegraphics[width=1.05\textwidth]{figures/methods/scenario-and-workload-construction/construction-pipeline.pdf}%
   }
   \caption{Three-stage offline construction pipeline. The arrows identify the
     artifacts passed between scenario authoring, functional-test generation,
@@ -112,7 +112,7 @@ adaptations to scenario and API-contract construction and functional-test
 generation, followed by the added load-test generation stage.
 
 \FloatBarrier
-\subsection{Scenario and API-Contract Construction}
+\subsection{Scenario Authoring and API Specification}
 \label{sec:methods-scenario-gen-authoring}
 
 \paragraph{Inherited workflow.}
@@ -127,7 +127,7 @@ construction is inherited; it is not a contribution of this thesis.
 
 \begin{figure}[htbp]
   \centering
-  \includegraphics[width=\textwidth]{figures/methods/scenario-idea-generation-workflow-adb.png}
+  \includegraphics[width=\textwidth]{figures/methods/scenario-and-workload-construction/scenario-authoring-and-api-specification.pdf}
   \caption{Scenario and API-contract construction: novelty admission followed
     by API authoring and validation.}
   \label{fig:scenario-idea-generation}
@@ -145,7 +145,7 @@ turn can avoid repeating the rejected candidate. The API author similarly
 receives the relevant parsing or validation error from the failure record,
 allowing the subsequent turn to address that error directly.
 
-\subsection{Functional Tests and Reference-Implementation Calibration}
+\subsection{Functional-Test Generation and Reference-Implementation Calibration}
 \label{sec:methods-scenario-gen-functional}
 
 \paragraph{Inherited workflow.}
@@ -167,7 +167,7 @@ They are not contributions of this thesis.
 
 \begin{figure}[htbp]
   \centering
-  \includegraphics[width=\linewidth]{figures/methods/functional-test-generation-diagram-adb.png}
+  \includegraphics[width=\linewidth]{figures/methods/scenario-and-workload-construction/functional-test-generation-and-calibration.pdf}
   \caption{Functional-test generation and reference-implementation calibration
     across the three inherited stages.}
   \label{fig:functional-test-generation}
@@ -188,7 +188,7 @@ refinement prompt. This preserves prior context while keeping each repair
 focused on newly observed evidence. The resulting calibrated reference
 implementations are then passed to load-test generation.
 
-\subsection{Load-Test Generation}
+\subsection{Load-Test Generation and Verification}
 \label{sec:methods-scenario-gen-locust}
 
 We extend the adapted \textsc{AutoBaxBuilder} pipeline with a load-test
@@ -207,7 +207,7 @@ logic.
 
 \begin{figure}[htbp]
   \centering
-  \includegraphics[width=\textwidth]{figures/methods/load-test-generation-workflow-adb.png}
+  \includegraphics[width=\textwidth]{figures/methods/scenario-and-workload-construction/load-test-generation-and-verification.pdf}
   \caption{Three-stage load-test generation and verification workflow.}
   \label{fig:load-test-generation-workflow}
 \end{figure}
@@ -281,10 +281,11 @@ memory used to measure performance.
 
 \begin{figure}[htbp]
   \centering
-  \includegraphics[width=1\linewidth]{figures/methods/architecture-diagram.pdf}
-  \caption{Benchmark architecture. The BaxBench orchestrator and Kubernetes
-    control plane deploy each candidate on worker nodes; a Locust master and
-    workers generate HTTP load from separate hosts.}
+  \includegraphics[width=1\linewidth]{figures/methods/benchmark-architecture/architecture.pdf}
+  \caption{Benchmark architecture. The assessed LLM agent interfaces with the
+    BaxBench orchestrator; the orchestrator and Kubernetes control plane deploy
+    each candidate on worker nodes, while a Locust master and workers generate
+    HTTP load from separate hosts.}
   \label{fig:architecture}
 \end{figure}
 
@@ -306,7 +307,7 @@ A private registry stores the container images for candidate deployments so
 that Kubernetes workers can pull them locally.
 
 \paragraph{BaxBench orchestrator.}
-The orchestrator is the evaluation harness. It prompts the external LLM,
+The orchestrator is the evaluation harness. It prompts the assessed LLM agent,
 drives deployment through the control plane, launches Locust on the load
 hosts, and records experiment artifacts.
 
@@ -316,11 +317,11 @@ instructs one or more Locust workers to issue HTTP traffic against the
 deployed backend and aggregates request, latency, and throughput statistics.
 Workers execute the load; the master coordinates the test.
 
-\paragraph{External LLM.}
-An external LLM, accessed through an API, proposes application code,
-deployment specifications, and refinement decisions. The orchestrator supplies
-prompts, prior feedback, and error reports; the model returns the proposed
-artifacts.
+\paragraph{Assessed LLM agent.}
+The assessed LLM agent is the model component under evaluation. Accessed
+through an API, it proposes application code, deployment specifications, and
+refinement decisions. The orchestrator supplies prompts, prior feedback, and
+error reports; the agent returns the proposed artifacts.
 
 \FloatBarrier
 
@@ -338,7 +339,7 @@ The figure provides the vocabulary used in the remainder of the chapter.
 
 \begin{figure}[htbp]
     \centering
-    \includegraphics[width=1\linewidth]{figures/methods/sample-experiment-diagram.png}
+    \includegraphics[width=1\linewidth]{figures/methods/benchmark-state-context-and-feedback/sample-experiment-hierarchy.pdf}
     \caption{Hierarchy of the four experimental units used throughout this
       thesis: cell, sample, experiment, and iteration.}
     \label{fig:sample-experiment-diagram}
@@ -402,7 +403,7 @@ non-zero goodput.
 
 \begin{figure}[htbp]
   \centering
-  \includegraphics[width=1\linewidth]{figures/methods/baseline-vs-refinement-diagram.png}
+  \includegraphics[width=1\linewidth]{figures/methods/benchmark-state-context-and-feedback/baseline-vs-refinement.pdf}
   \caption{Baseline and refinement paths. The baseline generates both
     optimisation artifacts; later iterations regenerate one artifact and reuse
     the other.}
@@ -411,14 +412,18 @@ non-zero goodput.
 
 Baseline generation is more permissive than refinement. Code and
 deployment-specification generation may each retry when validation fails,
-using the preceding failure record to guide the next attempt. Once both
-artifacts are valid, later iterations are deliberately fail-fast: each
-refinement iteration regenerates exactly one artifact and reuses the other.
-This keeps attribution clear, since an observed performance change can be
-associated with either an application or a deployment-specification change,
-while also keeping the number of LLM calls bounded. If the baseline retry
-budget is exhausted, the sample is aborted because there is no executable
-application to refine.
+using the preceding failure record to guide the next attempt. If the baseline
+retry budget is exhausted, the sample is aborted because there is no
+executable candidate to refine.
+
+Once both artifacts are valid, later refinement iterations are deliberately
+fail-fast: each regenerates exactly one artifact and reuses the other. The
+Decision stage uses the preceding outcome to identify the likely bottleneck
+and select the artifact most likely to address it. This keeps attribution
+clear, since an observed performance change can be associated with either an
+application or a deployment-specification change, and avoids regenerating an
+artifact that the evidence does not implicate. It also bounds the number of
+LLM calls per iteration.
 
 \FloatBarrier
 
@@ -446,6 +451,19 @@ other artifact carried forward from the current validated lineage. It creates an
 isolated namespace and returns an iteration-local deployment record containing
 the namespace, resolved target, and port. Bench uses this record to test
 exactly the candidate that passed readiness.
+
+\begin{figure}[htbp]
+  \centering
+  \includegraphics[width=1\linewidth]{figures/methods/benchmark-state-context-and-feedback/artifact-lineage.pdf}
+  \caption{Example artifact lineage through six iterations. Solid links show
+    validated artifacts carried forward between iterations. A failed
+    functional-test or specification-validation attempt does not advance its
+    artifact lineage, whereas an artifact that passes its own validation can
+    remain reusable after a later deployment failure.}
+  \label{fig:artifact-lineage}
+\end{figure}
+
+\FloatBarrier
 
 \paragraph{Diagnostic artifacts.}
 Every stage that stops unsuccessfully produces a structured failure record,
@@ -475,32 +493,6 @@ preserving the evidence needed to recover from a failed iteration. A failure
 record is therefore both an auditable historical artifact and a control signal
 for the next iteration. Its prompt-facing representation is described in
 Section~\ref{sec:methods-memory}.
-
-\begin{figure}[htbp]
-  \centering
-  \includegraphics[width=1\linewidth]{figures/methods/artifact-lineage-diagram.png}
-  \caption{Example artifact lineage through six iterations. Solid links show
-    validated artifacts carried forward between iterations. The failed code
-    attempt at iteration~002 leaves the image lineage unchanged, while the
-    specification that passed static validation at iteration~004 is reused
-    after its downstream deployment failure.}
-  \label{fig:artifact-lineage}
-\end{figure}
-
-\FloatBarrier
-
-Figure~\ref{fig:artifact-lineage} illustrates the two artifact pointers
-separately. The baseline at iteration~000 establishes both the initial image
-and specification. Iteration~001 refines the specification and reuses the
-baseline image. The code attempt at iteration~002 fails its functional tests,
-so the next iteration repeats code generation while retaining the validated
-specification. Iteration~003 succeeds and establishes a new image. Iteration
-004 then produces a specification that passes static validation but fails
-during deployment; the failure record is routed to the next decision, while
-the validated specification remains available for reuse. Iteration~005
-therefore reuses the image from iteration~003 and the specification from
-iteration~004. The example shows that artifact validation and downstream
-deployment success are separate states in the lineage.
 
 \begin{table}[htbp]
   \centering
@@ -586,7 +578,7 @@ state concretely, expanded at one Decision turn.
 
 \begin{figure}[htbp]
   \centering
-  \includegraphics[width=1\linewidth]{figures/methods/conversational-context-diagram.png}
+  \includegraphics[width=1\linewidth]{figures/methods/benchmark-state-context-and-feedback/conversational-context.pdf}
   \caption{The persistent conversation of one experiment, expanded at
     iteration~002's Decision turn. The compact history on the left shows the
     baseline (iteration~000) establishing both artifacts, followed by
@@ -666,7 +658,7 @@ contract and enters failure routing.
 
 \begin{figure}[htbp]
   \centering
-  \includegraphics[width=1\linewidth]{figures/methods/iteration-workflow-diagram.png}
+  \includegraphics[width=1\linewidth]{figures/methods/iteration-protocol-and-stage-contracts/iteration-workflow.pdf}
   \caption{Iteration workflow. The baseline generates both code and
     deployment artifacts; each later iteration chooses one artifact to refine,
     deploys the resulting pair, and measures it under load.}
@@ -714,7 +706,7 @@ contract and enters failure routing.
 
 \begin{figure}[htbp]
   \centering
-  \includegraphics[width=1\linewidth]{figures/methods/stage-contracts-diagram.png}
+  \includegraphics[width=1\linewidth]{figures/methods/iteration-protocol-and-stage-contracts/stage-contracts.pdf}
   \caption{Stage contracts. Every stage consumes its listed inputs, performs
     one processing step, and either returns the listed outputs or records the
     listed failure. Code and Spec are the two alternative refinement paths
@@ -730,9 +722,10 @@ contract and enters failure routing.
 \label{sec:methods-decision}
 
 \paragraph{Purpose.}
-Select exactly one optimisation lever---application code or deployment
-specification---for the current refinement iteration. The stage runs for
-every refinement iteration ($\geq 1$); the baseline
+Use the preceding outcome to identify the likely bottleneck and select exactly
+one optimisation lever---application code or deployment specification---for
+the current refinement iteration. The stage runs for every refinement
+iteration ($\geq 1$); the baseline
 (Section~\ref{sec:methods-workflow}) skips it because baseline iteration~0
 regenerates both artifacts.
 
@@ -751,7 +744,8 @@ Before the model is called, the framework applies the deterministic routing
 rule in Section~\ref{sec:methods-failure}. A code or specification failure
 therefore skips this stage and passes its evidence directly to the relevant
 repair stage. Otherwise, the prompt contains the prior feedback or failure
-record and asks the LLM to choose one permitted lever with a short rationale.
+record and asks the LLM to identify the likely bottleneck, then choose one
+permitted lever with a short rationale.
 An experiment may replace this free choice with a fixed lever for an ablation.
 A malformed response or unavailable model call is recorded as a Decision
 failure. Appendix~\ref{ch:appendix-prompts} gives the corresponding prompt,
