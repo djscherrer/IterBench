@@ -274,3 +274,112 @@ The baseline prompt is structurally identical, with the goal paragraph
 replaced by ``propose deployment parameters \ldots{} so the application
 can sustain very high concurrent user load'' and no conversation-history
 pointer block, since there is no prior spec yet to point at.
+
+
+\section{Load-Test Artifact Generation and Review}
+\label{sec:appendix-prompts-load}
+
+The load-test author is given the scenario description, the OpenAPI contract,
+and the scenario's workload objectives. The first prompt asks for a complete
+Locust artifact and makes the generation criteria explicit. The actual
+scenario-specific values are substituted at runtime; the excerpt below uses
+the same placeholders as the implementation.
+
+\small
+\begin{verbatim}
+You are a performance engineering expert tasked with generating a robust
+Locust load testing script for a backend web application.
+
+The scenario your script will test is described as follows:
+[[scenario title]]: [[scenario description]]
+
+It is defined by the following OpenAPI schema:
+```
+[[scenario OpenAPI schema]]
+```
+
+Performance objectives:
+```json
+[[scenario performance objectives]]
+```
+
+# Instructions
+1. Write a single complete Python script (`locustfile.py` equivalent)
+   defining a `FastHttpUser` class. Import `FastHttpUser` from `locust` and
+   inherit from it directly; do not use `HttpUser`.
+2. Every endpoint defined in the OpenAPI schema MUST be covered by at least
+   one `@task` in the script.
+3. Use the performance objectives to guide task weights or `wait_time`.
+4. For file-upload endpoints, use the framework-provided `test_data`
+   dictionary. Do not read local files with `open()`.
+5. When authentication is required, implement `on_start(self)` to create
+   users or fetch the necessary tokens through the API.
+6. Handle dynamic path variables by retaining created resource identifiers or
+   generating suitable random identifiers.
+
+Write ONLY the Locust script inside the <LOCUST_SCRIPT> tags.
+
+[[complete Locust output template]]
+
+\end{verbatim}
+\normalsize
+
+Stage~0 extracts the tagged response, compiles the Python source, and checks
+that the script directly defines a \texttt{FastHttpUser}. If a check fails,
+the continuing conversation receives a typed diagnostic and is asked for one
+corrected complete script. The repair prompt is intentionally short because
+the accepted scenario and the previous script are already in the conversation:
+
+\small
+\begin{verbatim}
+[[typed generation or validation failure record]]
+
+Return one corrected complete Locust script in the required format. The
+scenario contract and previous complete script are already in this
+conversation; do not repeat them in prose.
+\end{verbatim}
+\normalsize
+
+After a script clears the deterministic smoke gate, the load-review prompt
+supplies the per-implementation results. It asks the author to distinguish a
+shared script defect from a reference-implementation defect or incidental
+noise:
+
+\small
+\begin{verbatim}
+The script above was just run with a real weighted load (100 concurrent
+simulated users) against every available reference implementation of this
+scenario. No cluster is involved: each implementation ran as a single
+backend (+ database, if needed) container, tested one at a time, locally.
+
+Below are the per-implementation results: aggregate request/failure counts,
+distinct failure error messages, and any unhandled exceptions raised while
+the script itself ran. You are only seeing this because at least one
+implementation produced a failure or an exception.
+
+[[per-implementation load-results report]]
+
+[[reference-evaluation failure records, if any]]
+
+# Instructions
+Inspect every failure and exception. Decide whether it stems from the
+script itself -- for example, an unhandled exception in a task, an incorrect
+request, a race on shared state, or unrealistic weighting/`wait_time` -- or
+from the reference implementation.
+
+A problem reproduced across implementations points at the script. A problem
+isolated to one implementation points at that implementation and should be
+left alone. A single unexplained event is more likely incidental noise than a
+real script defect; do not invent a fix for noise.
+
+If no script-side repair is justified, respond exactly:
+<DECISION>NOTHING_TO_FIX</DECISION>
+
+Otherwise, return the corrected complete script in the required
+<LOCUST_SCRIPT> format.
+\end{verbatim}
+\normalsize
+
+The exact prompt sent for each trial, including the instantiated schema,
+objectives, reports, and failure records, is retained in the run artifacts as
+described at the start of this appendix.
