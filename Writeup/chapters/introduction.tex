@@ -156,7 +156,7 @@ The central question above is broad enough that answering it in aggregate
 would hide more than it reveals: whether refinement helps, which lever drives
 that help, whether it depends on the model, and where it breaks down are
 separate empirical claims. Chapter~\ref{ch:results} therefore decomposes it
-into six questions, asked of the same 36-cell dataset (three models, four
+into six questions, asked of the same dataset (three models, eight
 \textsc{BaxBench} scenarios, up to three frameworks; Chapter~\ref{ch:setup}):
 %
 \begin{description}
@@ -214,24 +214,26 @@ This thesis makes the following contributions:
         latency, and goodput collapse thresholds.
 
   \item \textbf{An experimental evaluation} across three frontier-tier
-        LLMs, four \textsc{BaxBench} scenarios, and up to three
-        application frameworks (36 scenario$\times$framework cells in
-        total), tracking LLM cost as a first-class quantity alongside
-        goodput. The evaluation shows that iterative refinement improves
-        sustained goodput in essentially every cell that becomes
-        benchmarkable (gains from just over $1\times$ to more than
-        $75\times$ depending on the baseline), in several cases converting a
-        non-functional deployment into a working one; that code and
-        deployment refinement specialise in practice on different failure
-        classes, with code refinement carrying the largest single-step
-        recoveries and deployment refinement acting as a smaller, more
-        consistent capacity knob; and that model capability shows up mainly
-        as \emph{whether} a working baseline is reached at all, and at what
-        cost, rather than in refinement quality once one exists
-        (Chapter~\ref{ch:results}). Taken together, these findings identify
-        entanglement with code correctness, not the deployment-reasoning
-        task itself, as the largest current limitation of LLM-guided
-        deployment optimisation.
+        LLMs, eight \textsc{BaxBench} scenarios, and up to three
+        application frameworks (72 scenario$\times$framework$\times$model
+        cells in the full matrix, 63 with experiment data), tracking LLM
+        cost as a first-class quantity alongside goodput. The evaluation
+        shows that iterative refinement improves sustained goodput in
+        essentially every cell with data (gains from just over $1\times$ to
+        more than $75\times$ depending on the baseline), in several cases
+        converting a non-functional deployment into a working one; that code
+        and deployment refinement specialise in practice on different
+        failure classes, with code refinement carrying the largest
+        single-step recoveries and deployment refinement acting as a
+        smaller, more model-dependent capacity knob; and that all three
+        models reach a working baseline and complete their full refinement
+        budget on every cell with data, so model differences show up in
+        refinement behaviour, such as one model's deployment-refinement
+        steps turning net negative on average, rather than in whether a
+        baseline is reached at all (Chapter~\ref{ch:results}). Taken
+        together, these findings identify entanglement with code
+        correctness, not the deployment-reasoning task itself, as the
+        largest current limitation of LLM-guided deployment optimisation.
 \end{enumerate}
 
 

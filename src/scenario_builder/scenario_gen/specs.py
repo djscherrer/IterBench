@@ -45,23 +45,23 @@ def _persist_failure(
     scenario: dict,
     errors: tuple[str, ...] = (),
     diagnostic_excerpt: str = "",
-) -> None:
+) -> ScenarioGenerationFailureRecord | None:
     if session is None:
-        return
-    session.persist_failure(
-        ScenarioGenerationFailureRecord(
-            phase="scenario_generation",
-            kind=kind,  # type: ignore[arg-type]
-            iteration_id=session.run_id,
-            summary=summary,
-            attempt=attempt,
-            stage=stage,  # type: ignore[arg-type]
-            candidate_title=str(scenario.get("title") or ""),
-            candidate_description=str(scenario.get("description") or ""),
-            errors=errors,
-            diagnostic_excerpt=diagnostic_excerpt,
-        )
+        return None
+    record = ScenarioGenerationFailureRecord(
+        phase="scenario_generation",
+        kind=kind,  # type: ignore[arg-type]
+        iteration_id=session.run_id,
+        summary=summary,
+        attempt=attempt,
+        stage=stage,  # type: ignore[arg-type]
+        candidate_title=str(scenario.get("title") or ""),
+        candidate_description=str(scenario.get("description") or ""),
+        errors=errors,
+        diagnostic_excerpt=diagnostic_excerpt,
     )
+    session.persist_failure(record)
+    return record
 
 
 def _openapi_failure_kind(exc: Exception) -> str:
@@ -118,8 +118,8 @@ def generate_openapi(
     if session is not None:
         session.persist_conversation("spec_author")
 
-    def on_failure(exc: Exception, _: int) -> None:
-        _persist_failure(
+    def on_failure(exc: Exception, _: int) -> str | None:
+        record = _persist_failure(
             session,
             stage="openapi",
             kind=_openapi_failure_kind(exc),
@@ -128,6 +128,7 @@ def generate_openapi(
             scenario=scenario,
             errors=(str(exc),),
         )
+        return record.to_prompt_block() if record is not None else None
 
     return agentic_loop(
         conversation,
@@ -207,8 +208,8 @@ def generate_text_spec(
     if session is not None:
         session.persist_conversation("spec_author")
 
-    def on_failure(exc: Exception, _: int) -> None:
-        _persist_failure(
+    def on_failure(exc: Exception, _: int) -> str | None:
+        record = _persist_failure(
             session,
             stage="text_spec",
             kind="text_spec_format",
@@ -217,6 +218,7 @@ def generate_text_spec(
             scenario=scenario,
             errors=(str(exc),),
         )
+        return record.to_prompt_block() if record is not None else None
 
     return agentic_loop(
         conversation,

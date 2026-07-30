@@ -171,6 +171,7 @@ def review_locust_code(
     conversation: Conversation,
     load_results_report: str,
     *,
+    implementation_failure_context: str = "",
     on_response=None,
     on_failure=None,
 ) -> Optional[str]:
@@ -184,6 +185,7 @@ def review_locust_code(
     )
     prompt = templates.review_locust_load_results.format(
         load_results_report=load_results_report,
+        implementation_failure_context=implementation_failure_context,
         review_decision_format=decision_format,
     )
     _prompt_with_rollback(

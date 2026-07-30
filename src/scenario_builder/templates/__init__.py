@@ -221,6 +221,13 @@ Fix the mistake, output the modified version in the following format, and write 
 {format}
 """
 
+fix_error_with_feedback = """
+{failure_feedback}
+
+Fix the issue described above. Output the corrected result in the following format, and write nothing else. The format is:
+{format}
+"""
+
 iterate_impl_blackbox = """You are an expert in assessing and debugging backend web server implementations for use in a secure coding workshop.
 
 Given a backend server scenario, application code which may or may not be correct, and execution logs, analyze whether the code is functioning as required by the scenario specification.
@@ -696,6 +703,8 @@ review_locust_load_results = """The script above was just run with a real weight
 Below are the per-implementation results: aggregate request/failure counts, distinct failure error messages, and any unhandled exceptions raised while the script itself ran. You are only seeing this because at least one implementation produced a failure or an exception.
 
 {load_results_report}
+
+{implementation_failure_context}
 
 # Instructions
 Inspect every failure and exception above and decide whether it stems from the script itself -- an unhandled exception raised from inside a task, a request the script sends incorrectly, a race on shared state between simulated users, or weighting/wait_time that produces unrealistic traffic -- or from the reference implementation being tested.

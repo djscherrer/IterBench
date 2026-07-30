@@ -29,6 +29,7 @@ class NoveltyVerdict:
     status: str
     matches: tuple[str, ...] = ()
     reason: str = ""
+    failure_record: ScenarioGenerationFailureRecord | None = None
 
     @property
     def is_novel(self) -> bool:
@@ -134,8 +135,8 @@ def generate_scenario_idea(
     conversation.add_message(response)
     session.persist_conversation("idea_author")
 
-    def on_failure(exc: Exception, parse_attempt: int) -> None:
-        _record(
+    def on_failure(exc: Exception, parse_attempt: int) -> str:
+        record = _record(
             session,
             stage="idea",
             kind="idea_parse",
@@ -143,6 +144,7 @@ def generate_scenario_idea(
             summary="Scenario idea did not match the required output format.",
             errors=(str(exc),),
         )
+        return record.to_prompt_block()
 
     return agentic_loop(
         conversation,
@@ -201,7 +203,7 @@ def assess_scenario_novelty(
             purpose="generate_scenario_ideas: checking if scenario is novel",
         )
     except Exception as exc:
-        _record(
+        record = _record(
             session,
             stage="novelty",
             kind="model_request",
@@ -211,14 +213,16 @@ def assess_scenario_novelty(
             diagnostic_excerpt=str(exc),
         )
         return NoveltyVerdict(
-            status="inconclusive", reason="Novelty verifier unavailable"
+            status="inconclusive",
+            reason="Novelty verifier unavailable",
+            failure_record=record,
         )
     conversation.add_message(response)
 
     try:
         verdict = parse_novelty_verdict(conversation)
     except Exception as exc:
-        _record(
+        record = _record(
             session,
             stage="novelty",
             kind="novelty_parse",
@@ -229,7 +233,9 @@ def assess_scenario_novelty(
             diagnostic_excerpt=response.text,
         )
         return NoveltyVerdict(
-            status="inconclusive", reason="Verifier response malformed"
+            status="inconclusive",
+            reason="Verifier response malformed",
+            failure_record=record,
         )
 
     if verdict.status != "novel":
@@ -238,7 +244,7 @@ def assess_scenario_novelty(
             if verdict.status == "duplicate"
             else "novelty_inconclusive"
         )
-        _record(
+        record = _record(
             session,
             stage="novelty",
             kind=kind,
@@ -249,8 +255,24 @@ def assess_scenario_novelty(
                 else "Novelty verifier could not determine whether the candidate is distinct."
             ),
             scenario=scenario,
-            errors=((verdict.reason,) if verdict.reason else ()),
-            diagnostic_excerpt=(", ".join(verdict.matches) if verdict.matches else ""),
+            errors=tuple(
+                item
+                for item in (
+                    verdict.reason,
+                    (
+                        f"Closest matching scenarios: {', '.join(verdict.matches)}"
+                        if verdict.matches
+                        else ""
+                    ),
+                )
+                if item
+            ),
+        )
+        verdict = NoveltyVerdict(
+            status=verdict.status,
+            matches=verdict.matches,
+            reason=verdict.reason,
+            failure_record=record,
         )
     return verdict
 

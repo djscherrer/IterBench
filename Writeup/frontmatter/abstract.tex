@@ -5,7 +5,7 @@ existing benchmarks evaluate them only in isolated, single-container
 environments and stop at functional and security correctness. Production
 backends run under shared cluster resources, where replica counts,
 resource limits, pod placement, and database topology jointly determine
-achievable throughput --- decisions usually made manually or by reactive
+achievable throughput: decisions usually made manually or by reactive
 autoscalers unaware of the interaction between them. This thesis asks
 whether an LLM agent can close that gap: iteratively optimise deployment
 configuration on a Kubernetes cluster, guided by runtime performance
@@ -21,23 +21,22 @@ goodput}, discovered automatically per deployment without per-scenario
 tuning.
 
 We evaluate three frontier-tier models (Claude Opus 4.8, GPT-5.5, GLM-5.2)
-across four \textsc{BaxBench} scenarios and three application frameworks,
-for 36 scenario$\times$framework cells and ten refinement iterations
-each. Iterative refinement improves sustained goodput in essentially
-every cell that becomes benchmarkable, in several cases converting a
-non-functional deployment into a working one; gains range from just over
-$1\times$ to more than $75\times$ depending on how under-provisioned the
-baseline was. Code refinement contributes the largest single-step
-recoveries, dominated by correctness bugs invisible to single-container
-testing; deployment refinement is a smaller, more consistent capacity
-knob that tracks workload characteristics without being given target
-ranges. All three models reach comparable multiplicative gains once a
-baseline is genuinely attempted; a smaller fraction of cells (six of 36,
-nearly all attributable to a single provider account running low on
-funds) were instead interrupted by LLM-provider billing or quota
-exhaustion during data collection, a confound this thesis identifies,
-traces to its source, and accounts for rather than one current results
-can fully resolve. LLM-guided deployment
-optimisation is a viable, practically bounded complement to code-level
-optimisation, whose largest current limitation is entanglement with code
-correctness rather than the deployment-reasoning task itself.
+across eight \textsc{BaxBench} scenarios and three application frameworks,
+an evaluated matrix of up to 72 scenario$\times$framework$\times$model
+cells and ten refinement iterations each, 63 of which produced experiment
+data. Iterative refinement improves sustained goodput in essentially
+every cell with data, in several cases converting a non-functional
+deployment into a working one; gains range from just over $1\times$ to
+more than $75\times$ depending on how under-provisioned the baseline was.
+Code refinement contributes the largest single-step recoveries, dominated
+by correctness bugs invisible to single-container testing; deployment
+refinement is a smaller capacity knob that tracks workload characteristics
+without being given target ranges, though its net effect varies by model,
+turning net negative for one of the three. All three models reach a
+working baseline and complete their full refinement budget on every cell
+with data; the nine cells without data are concentrated almost entirely in
+a single scenario, leaving the other seven fully usable for comparison.
+LLM-guided deployment optimisation is a viable, practically bounded
+complement to code-level optimisation, whose largest current limitation is
+entanglement with code correctness rather than the deployment-reasoning
+task itself.

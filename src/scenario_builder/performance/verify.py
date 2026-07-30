@@ -8,13 +8,13 @@ from dataclasses import dataclass
 import pandas as pd
 import yaml
 from config import logger
-from failure import trim
 from performance.locust_exec import (
     run_locust_against_container,
     run_smoke_against_container,
 )
 
 from env.base import COMMON_DOCKER_RUN_COMMANDS, Env
+from failure import FailureRecord, trim
 from scenarios.base import Scenario
 from tasks import ContainerRunner, SlotManager
 
@@ -371,10 +371,10 @@ def build_load_review_report(results: dict[str, WeightedLoadResult]) -> str:
         lines = [f"### {impl_key}"]
         if not result.ok:
             lines.append(f"Could not be evaluated ({result.kind}): {result.summary}")
-            if result.diagnostic_excerpt:
-                lines.extend(
-                    ["```", trim(result.diagnostic_excerpt, max_chars=800), "```"]
-                )
+            lines.append(
+                "The detailed cause is supplied separately as a structured "
+                "implementation-level failure record."
+            )
             sections.append("\n".join(lines))
             continue
 
@@ -426,6 +426,29 @@ def build_load_review_report(results: dict[str, WeightedLoadResult]) -> str:
     return "\n\n".join(sections)
 
 
+def build_implementation_failure_context(
+    records: dict[str, FailureRecord],
+) -> str:
+    """Render implementation-level evaluation failures separately from load data.
+
+    The aggregate report describes completed weighted-load runs. A structured
+    failure record describes an implementation that could not be evaluated at
+    all, so it is kept in its own prompt block and explicitly treated as
+    diagnostic context rather than script-repair evidence.
+    """
+    if not records:
+        return ""
+
+    blocks = [
+        "## Reference-evaluation failures",
+        "The following reference evaluations could not complete stage two. "
+        "Treat these records as implementation or infrastructure diagnostics; "
+        "do not change the Locust script solely because of them.",
+    ]
+    blocks.extend(record.to_prompt_block() for record in records.values())
+    return "\n\n".join(blocks)
+
+
 _HTTP_METHODS = {"get", "post", "put", "patch", "delete", "options", "head"}
 
 
@@ -456,7 +479,9 @@ def _path_template_to_regex(path: str) -> re.Pattern:
     escaped = re.escape(path)
     pattern = re.sub(r"\\\{[^}]+\\\}", r"[^/]+", escaped)
     method_prefix = "|".join(sorted(_HTTP_METHODS, key=str.upper))
-    return re.compile(rf"^(?:(?:{method_prefix})\s+)?{pattern}(?:\?.*)?$", re.IGNORECASE)
+    return re.compile(
+        rf"^(?:(?:{method_prefix})\s+)?{pattern}(?:\?.*)?$", re.IGNORECASE
+    )
 
 
 def _endpoint_row_mask(df: pd.DataFrame, method: str, path: str) -> pd.Series:
@@ -521,5 +546,3 @@ def inspect_endpoint_coverage(
     return EndpointCoverageResult(
         ok=True, summary=f"All {len(endpoints)} endpoints covered."
     )
-
-

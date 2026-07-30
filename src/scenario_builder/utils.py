@@ -47,7 +47,7 @@ def agentic_loop(
     format_requirements,
     model_=reasoning_model,
     on_response: Callable[[], None] | None = None,
-    on_failure: Callable[[Exception, int], None] | None = None,
+    on_failure: Callable[[Exception, int], str | None] | None = None,
     record_verdicts: bool = True,
 ):
     """
@@ -69,14 +69,19 @@ def agentic_loop(
             logger.warning(e)
             if record_verdicts:
                 record_verdict(scenario_folder_path, "Error", str(e))
-            if on_failure is not None:
-                on_failure(e, i + 1)
+            failure_feedback = on_failure(e, i + 1) if on_failure is not None else None
 
-            prompt = templates.fix_error.format(
-                action=action,
-                error=str(e),
-                format=format_requirements,
-            )
+            if failure_feedback:
+                prompt = templates.fix_error_with_feedback.format(
+                    failure_feedback=failure_feedback,
+                    format=format_requirements,
+                )
+            else:
+                prompt = templates.fix_error.format(
+                    action=action,
+                    error=str(e),
+                    format=format_requirements,
+                )
         else:
             logger.info(f"Successful in {action}")
             return y

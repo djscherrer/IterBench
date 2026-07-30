@@ -2,6 +2,7 @@ import json
 import os
 import shutil
 
+import templates
 from config import args, logger
 from scenario_gen.ideas import assess_scenario_novelty, generate_scenario_idea
 from scenario_gen.session import ScenarioGenerationSession
@@ -50,21 +51,20 @@ def generate_scenarios() -> None:
             break
 
         logger.warning("Scenario idea was rejected by novelty verification")
-        matches = (
-            ", ".join(verdict.matches)
-            if verdict.matches
-            else "the existing scenario set"
+        failure_feedback = (
+            verdict.failure_record.to_prompt_block()
+            if verdict.failure_record is not None
+            else "The previous candidate was rejected by an independent novelty reviewer."
         )
         idea_conversation.add_message(
             Response(
                 role="user",
                 text=(
-                    "The previous candidate was rejected by an independent novelty "
-                    "reviewer. Do not repeat its domain, primary resource model, or "
-                    "workflow. Use the original requirements above and generate one "
-                    "new candidate.\n\n"
-                    f"Closest matches: {matches}.\n"
-                    f"Reason: {verdict.reason or 'No additional reason supplied.'}"
+                    f"{failure_feedback}\n\n"
+                    "Do not repeat the rejected candidate's domain, primary resource "
+                    "model, or workflow. Use the original requirements above and "
+                    "generate one new candidate. Return only this format:\n\n"
+                    f"{templates.scenario_template}"
                 ),
             )
         )

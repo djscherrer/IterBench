@@ -18,6 +18,7 @@ from performance.generate import (
     uses_fast_http_user,
 )
 from performance.verify import (
+    build_implementation_failure_context,
     build_load_review_report,
     inspect_endpoint_coverage,
     run_smoke_only,
@@ -143,6 +144,15 @@ def _parser_failure_kind(exc: Exception) -> str:
     return "script_parse"
 
 
+def _stage2_retry_target(kind: str) -> str:
+    """Classify failures that prevent one reference implementation's run."""
+    if kind in {"reference_implementation_build", "reference_application_startup"}:
+        return "implementation"
+    if kind in {"stats_missing_or_invalid", "locust_runtime"}:
+        return "infrastructure"
+    return "unknown"
+
+
 def generate_and_verify_locust_script(
     scenario_dict: dict,
     env: Env,
@@ -226,14 +236,15 @@ def generate_and_verify_locust_script(
     max_attempts = args.N_RETRIES + 1
 
     def make_on_parse_failure(attempt: int):
-        def on_parse_failure(exc: Exception, _: int) -> None:
-            _record(
+        def on_parse_failure(exc: Exception, _: int) -> str:
+            record = _record(
                 kind=_parser_failure_kind(exc),
                 attempt=attempt,
                 summary="Generated Locust script failed local parsing or validation.",
                 reference_implementation=ref_impl_key,
                 diagnostic_excerpt=str(exc),
             )
+            return record.to_prompt_block()
 
         return on_parse_failure
 
@@ -313,7 +324,9 @@ def generate_and_verify_locust_script(
             )
             if attempt < max_attempts:
                 feedback = record.to_prompt_block()
-                logger.warning("Retrying Locust author after stage-1 coverage feedback.")
+                logger.warning(
+                    "Retrying Locust author after stage-1 coverage feedback."
+                )
                 continue
             break
 
@@ -323,6 +336,7 @@ def generate_and_verify_locust_script(
             len(implementations),
         )
         sweep = run_weighted_load_sweep(env, scenario, locust_code, implementations)
+        implementation_failures: dict[str, LocustFailureRecord] = {}
         for impl_key, result in sweep.items():
             if not result.ok:
                 # Informational only: an implementation that couldn't even be
@@ -330,13 +344,13 @@ def generate_and_verify_locust_script(
                 # retry the author on its own. It still reaches the author
                 # (via the review report below) whenever at least one other
                 # implementation did produce results to compare against.
-                _record(
+                implementation_failures[impl_key] = _record(
                     kind=result.kind,
                     attempt=attempt,
                     summary=result.summary,
                     reference_implementation=impl_key,
                     code=locust_code,
-                    retry_target="implementation",
+                    retry_target=_stage2_retry_target(result.kind),
                     diagnostic_excerpt=result.diagnostic_excerpt,
                 )
 
@@ -386,11 +400,15 @@ def generate_and_verify_locust_script(
             break
 
         report = build_load_review_report(sweep)
+        implementation_failure_context = build_implementation_failure_context(
+            implementation_failures
+        )
         try:
             reviewed_code = review_locust_code(
                 scenario_dict,
                 conversation,
                 report,
+                implementation_failure_context=implementation_failure_context,
                 on_response=persist,
                 on_failure=on_parse_failure,
             )

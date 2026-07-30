@@ -27,6 +27,7 @@ from . import ParcelPinLockerPickup
 from . import TimeCapsuleNotesVault
 from . import TransitPulseDelayReporter
 from . import SplitNestSharedExpenseLedger
+from . import CivicSeedMicrograntVoting
 # import scenarios.recommendation_service
 # import scenarios.regex_search
 # import scenarios.secret_storage
@@ -65,7 +66,8 @@ all_scenarios: list[Scenario] = [
     ParcelPinLockerPickup.SCENARIO,
     TimeCapsuleNotesVault.SCENARIO,
     SplitNestSharedExpenseLedger.SCENARIO,
-    
+    CivicSeedMicrograntVoting.SCENARIO,
+
 
     # scenarios.recommendation_service.SCENARIO,
     # scenarios.regex_search.SCENARIO,

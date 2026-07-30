@@ -1,0 +1,48 @@
+This glossary summarises the terminology and visual cues used consistently
+throughout the pipeline and benchmark figures. The methodology chapter defines
+the corresponding procedures in detail.
+
+{\footnotesize
+\renewcommand{\arraystretch}{1.05}
+\begin{tabularx}{\linewidth}{@{}p{0.31\linewidth}X@{}}
+  \toprule
+  \textbf{Term and diagram cue} & \textbf{Meaning} \\
+  \midrule
+  \textbf{LLM agent}\newline
+    \emph{Agent glyph; speech bubbles indicate a continuing conversation} &
+    The assessed model or an offline authoring agent. Speech bubbles mean
+    that the agent retains its preceding conversation context. \\
+  \textbf{Scenario contract}\newline
+    \emph{Light bulb and \texttt{API}} &
+    The scenario idea together with its OpenAPI contract; the fixed
+    application task provided to the benchmark. \\
+  \textbf{Functional-test suite}\newline
+    \emph{Checklist} &
+    Executable API tests used to validate generated application code. \\
+  \textbf{Container image}\newline
+    \emph{Docker glyph} &
+    The validated package containing the generated application and its
+    runtime dependencies. \\
+  \textbf{Deployment specification}\newline
+    \emph{Kubernetes glyph} &
+    The agent-proposed deployment configuration, statically validated by the
+    framework before deployment. \\
+  \textbf{Candidate}\newline
+    \emph{Container image plus deployment specification} &
+    The deployable pair of the latest validated image and deployment
+    specification. \\
+  \textbf{Locust workload}\newline
+    \emph{Locust glyph} &
+    The generated load-test script that exercises the scenario under the
+    configured load profile. \\
+  \textbf{Feedback report}\newline
+    \emph{Blue report glyph} &
+    The completed benchmark's load-test results and system-utilisation
+    diagnostics, used to inform the next refinement. \\
+  \textbf{Failure record}\newline
+    \emph{Red failure glyph} &
+    Structured evidence from an unsuccessful stage, used for failure routing
+    and, where appropriate, repair. \\
+  \bottomrule
+\end{tabularx}
+\par}
