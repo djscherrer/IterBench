@@ -1,13 +1,16 @@
 \label{ch:appendix-config}
 
 This appendix lists exact parameter values referenced from
-Chapter~\ref{ch:methods} but left out of the prose there to keep that
-chapter focused on mechanism rather than numbers.
-Table~\ref{tab:appendix-loop-params} gives the iteration-loop parameters
-used for every experiment reported in this thesis
+Chapter~\ref{ch:methods} and Chapter~\ref{ch:setup} but left out of the
+prose there to keep those chapters focused on mechanism rather than
+numbers. Table~\ref{tab:appendix-loop-params} gives the iteration-loop
+parameters used for every experiment reported in this thesis
 (Section~\ref{sec:setup-procedure}); Table~\ref{tab:appendix-load-profile}
 gives the full \texttt{k8s-explore-refine} load-profile parameters
-introduced in Section~\ref{sec:methods-load-profile}.
+introduced in Section~\ref{sec:methods-load-profile};
+Table~\ref{tab:appendix-scenarios} gives the endpoint and functional-test
+counts for the seven evaluated scenarios introduced in
+Section~\ref{sec:setup-scenarios}.
 
 \begin{table}[htbp]
   \centering
@@ -87,6 +90,54 @@ introduced in Section~\ref{sec:methods-load-profile}.
     Refine settle window & 10 consecutive 1\,s samples \\
     Refine stability band & within 5\% of the window mean \\
     Refine max step duration & 60\,s \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\begin{table}[htbp]
+  \centering
+  \caption{Evaluated scenarios and their workload characteristics
+    (Section~\ref{sec:setup-scenarios}). Endpoint counts are unique
+    OpenAPI paths, not operations; e.g.\ \textsc{Petstore}'s 8 paths carry
+    13 operations across the four HTTP methods they use.}
+  \label{tab:appendix-scenarios}
+  \small
+  \begin{tabular}{@{}lp{0.25\linewidth}rrp{0.23\linewidth}@{}}
+    \toprule
+    \textbf{Scenario} & \textbf{Workload} & \textbf{Endpoints} & \textbf{FTs} & \textbf{Notes} \\
+    \midrule
+    \textsc{ClickCount} &
+      Register/retrieve per-user click counts &
+      2 & 1 &
+      near-stateless counter; smallest surface, secret-auth \\
+    \textsc{Recipes} &
+      Upload, comment on, and rate recipes &
+      5 & 1 &
+      moderate read/write mix \\
+    \textsc{BranchWeave} &
+      Build and traverse branching narrative graphs; deterministic
+      playthrough simulation, HTML export &
+      5 & 5 &
+      graph-shaped data, more functional-test surface \\
+    \textsc{Petstore} &
+      Manage pets, orders, and users &
+      8 & 3 &
+      largest API surface, multi-resource CRUD \\
+    \textsc{ParcelPinLockerPickup} &
+      Register numbered lockers, deposit parcels with a recipient and
+      PIN, claim by locker number and PIN, track pickup history &
+      6 & 4 &
+      PIN-gated claim flow; per-locker capacity/occupancy state \\
+    \textsc{SplitNestSharedExpenseLedger} &
+      Create or join expense groups, log shared payments with
+      per-participant shares, compute member balances &
+      6 & 4 &
+      multi-user ledger; balances derived from participant shares \\
+    \textsc{TransitPulseDelayReporter} &
+      Submit transit delay reports per station and route, query
+      per-station summaries and a rider's own reports &
+      5 & 3 &
+      smallest surface of the four generated scenarios \\
     \bottomrule
   \end{tabular}
 \end{table}

@@ -20,6 +20,7 @@ from pathlib import Path
 
 import matplotlib.pyplot as plt
 import numpy as np
+from matplotlib.ticker import MaxNLocator
 import pandas as pd
 
 # ---------------------------------------------------------------------------
@@ -87,6 +88,18 @@ def _short_model(name: str) -> str:
     return name.replace("openai-", "").replace("z-ai-", "").replace("deepseek-", "")
 
 
+_SCENARIO_SHORT = {
+    "BranchWeave_InteractiveStoryGraph": "BranchWeave",
+    "ParcelPinLockerPickup": "ParcelPin",
+    "SplitNestSharedExpenseLedger": "SplitNest",
+    "TransitPulseDelayReporter": "TransitPulse",
+}
+
+
+def _short_scenario(name: str) -> str:
+    return _SCENARIO_SHORT.get(name, name)
+
+
 def _save(fig: plt.Figure, out_dir: Path, stem: str) -> list[Path]:
     out_dir.mkdir(parents=True, exist_ok=True)
     paths = []
@@ -125,7 +138,7 @@ def plot_goodput_trajectories_grid(
 
     n_rows, n_cols = len(scenarios), len(envs)
     fig, axes = plt.subplots(
-        n_rows, n_cols, figsize=(3.1 * n_cols, 2.5 * n_rows), squeeze=False, sharex=False
+        n_rows, n_cols, figsize=(3.4 * n_cols, 2.12 * n_rows), squeeze=False, sharex=False
     )
 
     for r, scenario in enumerate(scenarios):
@@ -143,23 +156,26 @@ def plot_goodput_trajectories_grid(
                     sub["iteration_index"],
                     sub["goodput_rps"],
                     color=colors[model],
-                    linewidth=1.6,
+                    linewidth=2.0,
                     marker="o",
-                    markersize=3.5,
+                    markersize=4.5,
                     label=_short_model(model),
                 )
             _style_axes(ax)
             top = ax.get_ylim()[1]
             ax.set_ylim(0, top if top > 1 else 1)
+            ax.yaxis.set_major_locator(MaxNLocator(nbins=8, min_n_ticks=6))
             if r == 0:
-                ax.set_title(env, fontsize=9, color=_INK_SECONDARY)
+                ax.set_title(env, fontsize=14, fontweight="bold", color=_INK_PRIMARY)
             if c == 0:
-                ax.set_ylabel(scenario, fontsize=9, color=_INK_SECONDARY)
-            ax.tick_params(labelsize=7)
+                ax.set_ylabel(
+                    _short_scenario(scenario), fontsize=13, fontweight="bold", color=_INK_PRIMARY
+                )
+            ax.tick_params(labelsize=11)
 
     handles, labels = [], []
     for model in models:
-        (h,) = axes[0][0].plot([], [], color=colors[model], marker="o", markersize=4)
+        (h,) = axes[0][0].plot([], [], color=colors[model], marker="o", markersize=6)
         handles.append(h)
         labels.append(_short_model(model))
     fig.legend(
@@ -169,9 +185,10 @@ def plot_goodput_trajectories_grid(
         ncol=len(models),
         bbox_to_anchor=(0.5, 1.02),
         frameon=False,
+        fontsize=14,
     )
-    fig.supxlabel("Iteration index", fontsize=9, color=_INK_SECONDARY)
-    fig.supylabel("Sustained goodput (successful req/s)", fontsize=9, color=_INK_SECONDARY)
+    fig.supxlabel("Iteration index", fontsize=13, color=_INK_SECONDARY)
+    fig.supylabel("Sustained goodput (successful req/s)", fontsize=13, color=_INK_SECONDARY)
     fig.tight_layout(rect=(0, 0, 1, 0.97))
     return _save(fig, out_dir, stem)
 

@@ -1,16 +1,16 @@
 \chapter*{Abstract}
 
-Large language models can now generate complete backend applications, but
-existing benchmarks evaluate them only in isolated, single-container
-environments and stop at functional and security correctness. Production
-backends run under shared cluster resources, where replica counts,
-resource limits, pod placement, and database topology jointly determine
-achievable throughput: decisions usually made manually or by reactive
-autoscalers unaware of the interaction between them. This thesis asks
-whether an LLM agent can close that gap: iteratively optimise deployment
-configuration on a Kubernetes cluster, guided by runtime performance
-feedback, to maximise sustainable throughput under fixed infrastructure
-constraints.
+Large language models can now generate functionally correct backend
+applications, but existing benchmarks evaluate them in an isolated,
+single-container environment and stop there. Production backends run
+under shared cluster resources, where replica counts, resource limits,
+pod placement, and database topology jointly determine achievable
+throughput: decisions usually left to a human operator or to a reactive
+autoscaler that reasons about none of them jointly. This thesis asks
+whether an LLM agent can close that gap itself: iteratively optimise the
+deployment configuration of a backend application on a Kubernetes
+cluster, guided by runtime performance feedback, to maximise sustainable
+throughput under fixed infrastructure constraints.
 
 We extend \textsc{BaxBench} with a Kubernetes-based iterative
 benchmarking framework in which an agent alternates, one lever per
@@ -21,22 +21,22 @@ goodput}, discovered automatically per deployment without per-scenario
 tuning.
 
 We evaluate three frontier-tier models (Claude Opus 4.8, GPT-5.5, GLM-5.2)
-across eight \textsc{BaxBench} scenarios and three application frameworks,
-an evaluated matrix of up to 72 scenario$\times$framework$\times$model
-cells and ten refinement iterations each, 63 of which produced experiment
-data. Iterative refinement improves sustained goodput in essentially
-every cell with data, in several cases converting a non-functional
-deployment into a working one; gains range from just over $1\times$ to
-more than $75\times$ depending on how under-provisioned the baseline was.
+across seven \textsc{BaxBench} scenarios and three application frameworks,
+a fully covered matrix of 63 scenario$\times$framework$\times$model cells
+and ten refinement iterations each. Iterative refinement improves
+sustained goodput in essentially every cell, sometimes converting a
+non-functional deployment into a working one, with gains from just over
+$1\times$ to more than $75\times$ depending on baseline under-provisioning.
 Code refinement contributes the largest single-step recoveries, dominated
-by correctness bugs invisible to single-container testing; deployment
+by correctness bugs invisible to single-container testing, and its mean
+effect exceeds deployment refinement's for every model. Deployment
 refinement is a smaller capacity knob that tracks workload characteristics
-without being given target ranges, though its net effect varies by model,
-turning net negative for one of the three. All three models reach a
-working baseline and complete their full refinement budget on every cell
-with data; the nine cells without data are concentrated almost entirely in
-a single scenario, leaving the other seven fully usable for comparison.
-LLM-guided deployment optimisation is a viable, practically bounded
-complement to code-level optimisation, whose largest current limitation is
-entanglement with code correctness rather than the deployment-reasoning
+without target ranges, but its net effect is model-dependent: negative on
+average for one model, and in one cell severe enough to end a trajectory
+at zero goodput once its budget ran out mid-regression. All three models
+reach baseline and complete their full budget on every cell, so
+completion rate does not differentiate them. LLM-guided deployment
+optimisation is a viable, bounded complement to code-level optimisation,
+whose largest limitations are code-correctness entanglement and a fixed
+budget's risk to late-trajectory regressions, not the deployment-reasoning
 task itself.

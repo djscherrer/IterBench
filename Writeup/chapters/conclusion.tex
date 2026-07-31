@@ -1,7 +1,7 @@
 % =============================================================
 %  Chapter 7 — Conclusion
 % =============================================================
-%  Grounded in the final results/ snapshot (2026-07-30, 63 of 72 cells).
+%  Grounded in the final results/ snapshot (2026-07-31, 63 of 63 cells, full coverage).
 % =============================================================
 
 \chapter{Conclusion}
@@ -78,11 +78,19 @@ deployment-spec fields whose interaction it cannot fully anticipate
 (Section~\ref{sec:results-rq6}). For one model, \texttt{glm-5.2}, this was
 not a one-off: its deployment-refinement steps are net negative on average
 across 66 steps, the only one of the three models where this lever is a
-net liability rather than a net gain (Section~\ref{sec:results-rq2}).
-Separately, and closer to a framework finding than a model one: static
-spec validation did not catch every deployment that would later prove
-impossible to schedule, and the taxonomy that records those failures uses
-inconsistent labels for what reads as the same underlying symptom
+net liability rather than a net gain (Section~\ref{sec:results-rq2}). A
+second, more severe instance of the same failure mode shows up on
+\texttt{claude-opus-4-8}: one cell recovers from a dead baseline, peaks at
+$3\times$ that baseline, and then loses everything again to two
+consecutive deployment-refinement regressions with no iterations left in
+its budget to recover (Section~\ref{sec:results-rq1}), so the same
+occasional-backfire pattern is not confined to the one model whose average
+is net negative. Separately, and closer to a framework finding than a
+model one: static spec validation did not catch every deployment that
+would later prove impossible to schedule, and the taxonomy that records
+those failures uses inconsistent labels for what reads as the same
+underlying symptom, and is blind entirely to a trajectory that ends at
+zero goodput without a single harness-level failure along the way
 (Section~\ref{sec:results-rq6}).
 
 \paragraph{What surprised us.} The multiplicative gain from refinement
@@ -132,9 +140,10 @@ of a backend application on a Kubernetes cluster, guided by runtime
 performance feedback, to maximise sustainable throughput under fixed
 infrastructure constraints?}
 
-\textbf{Yes, within the scope this thesis tested.} Across 63 of a possible
-72 scenario$\times$framework$\times$model cells, across three models, an
-LLM agent that alternates between code and deployment-specification
+\textbf{Yes, within the scope this thesis tested.} Across all 63
+scenario$\times$framework$\times$model cells in the evaluated matrix,
+across three models, an LLM agent that alternates between code and
+deployment-specification
 refinement, guided only by adaptive load-test feedback and resource
 diagnostics, consistently increased sustained goodput once a functionally
 correct baseline existed, and in a majority of dead-baseline cells it
@@ -151,10 +160,9 @@ compounding in most, though not all, observed cases
 (Section~\ref{sec:results-rq6}).
 
 The qualification matters as much as the answer. What this thesis cannot
-yet say is whether the result generalises beyond eight database-backed
-scenarios (one of which, \textsc{TimeCapsuleNotesVault}, is itself
-under-represented in the final dataset), one cluster topology, and a
-ten-iteration budget at $n=1$ sample per cell
+yet say is whether the result generalises beyond seven database-backed
+scenarios, one cluster topology, and a ten-iteration budget at $n=1$
+sample per cell
 (Section~\ref{sec:conclusion-limitations}); nor can it cleanly separate
 ``the agent optimises deployment configuration well'' from ``the agent
 optimises deployment configuration well \emph{once code correctness stops
@@ -167,47 +175,77 @@ simultaneously true early in a trajectory.
 \label{sec:conclusion-limitations}
 
 The full discussion is in Section~\ref{sec:discussion-limitations}; in
-summary, every result in this thesis should be read against: 9 of 72 cells
-in the evaluated matrix without experiment data, eight of them
-concentrated in a single scenario, \textsc{TimeCapsuleNotesVault} (which
-as a result has data for only one of its nine possible
-model$\times$framework combinations), plus one further
-\texttt{claude-opus-4-8} cell, which makes \textsc{TimeCapsuleNotesVault}
-specifically unsuitable for scenario-level or cross-model comparison while
-leaving the other seven scenarios, and the code/deployment-refinement
-findings (RQ1, RQ2, RQ6) built on them, largely unaffected; scenario
-coverage limited to 8 of \textsc{BaxBench}'s 28 scenarios, all
-database-backed; a fixed 10-iteration refinement budget; $n=1$ sample per
-cell, so no comparative claim here has been tested against sampling
-variance; a single scalar (sustained goodput under one adaptive load
-profile) as the sole optimisation signal; temperature-$0.2$ but still
-stochastic LLM behaviour with no repeated draws to quantify it; and a
-single cluster topology and hardware profile, so ``fixed infrastructure
-constraints'' in this thesis means one specific capacity envelope, not
-infrastructure constraints in general.
+summary, every result in this thesis should be read against: scenario
+coverage limited to 7 of \textsc{BaxBench}'s 28 scenarios, all
+database-backed, and chosen to span workload shapes rather than to be a
+statistically representative sample; a fixed 10-iteration refinement
+budget, which this dataset shows can end a trajectory at zero goodput
+purely because it runs out before a late regression is corrected; $n=1$
+sample per cell, so no comparative claim here has been tested against
+sampling variance; a single scalar (sustained goodput under one adaptive
+load profile) as the sole optimisation signal, which does not distinguish
+a dead baseline from a trajectory that recovered and later collapsed
+again; temperature-$0.2$ but still stochastic LLM behaviour with no
+repeated draws to quantify it; and a single cluster topology and hardware
+profile, so ``fixed infrastructure constraints'' in this thesis means one
+specific capacity envelope, not infrastructure constraints in general.
 
 
 % ----- §7.5 Future Work -----
 \section{Future Work}
 \label{sec:conclusion-future-work}
 
-\paragraph{Close the \textsc{TimeCapsuleNotesVault} coverage gap.} Eight
-of the nine cells without experiment data in this thesis's final dataset
-belong to a single scenario, \textsc{TimeCapsuleNotesVault}
-(Section~\ref{sec:results-rq3}). Running the remaining eight cells (all
-but \texttt{gpt-5.5}$\times$\textsc{Go-net-http}) would let this scenario
-enter the same scenario-level and cross-model comparisons the other seven
-already support, and would show whether its workload shape (shared,
-read-only note boxes) behaves like the other seven database-backed
-scenarios or differently.
-
-\paragraph{Broaden scenario coverage beyond database-bound workloads.}
-Every scenario evaluated here is network- and database-bound
-(Section~\ref{sec:discussion-limitations}); extending to compute-bound or
-memory-bound \textsc{BaxBench} scenarios would test whether the
-code/deployment division of labour observed here
+\paragraph{Steer scenario generation toward diverse, complex bottlenecks.}
+Every scenario evaluated here is, structurally, a CRUD application over a
+single relational database: read/write operations on rows, with the
+deployment-tuning problem consequently concentrated in database topology,
+connection pooling, and horizontal fan-out
+(Section~\ref{sec:discussion-limitations}). This is a property of the
+scenario-construction pipeline (Section~\ref{sec:methods-scenario-gen})
+as much as of the workload domain: nothing in it currently steers idea
+generation toward a particular bottleneck shape, so it converges on the
+same CRUD-over-Postgres pattern scenario after scenario. Extending it to
+explicitly target other bottleneck classes, compute-bound work
+(image or data processing), memory-bound state (large in-process caches
+or aggregations), or coordination-bound work (locking, queues,
+multi-step transactions spanning several requests), would test whether
+the code/deployment division of labour observed here
 (Section~\ref{sec:results-rq2}) is a general property of the two levers or
-an artefact of the scenarios chosen.
+an artefact of the scenario shapes chosen. The same generation pipeline
+could also be pushed toward larger, less crude application shapes, more
+resources and relationships per scenario, and multi-step business
+processes rather than single-entity CRUD, independently of which
+bottleneck class it targets.
+
+\paragraph{Reintroduce security testing.} \textsc{BaxBench} scores
+generated code on functional \emph{and} security correctness
+(Section~\ref{sec:intro-context}), but this thesis's evaluation carries
+forward only the functional side: exploit-style security tests are part
+of the inherited scenario format but play no role in the deployment-loop
+scoring or the results reported here. Wiring a security-test pass back
+into the refinement loop, and tracking whether either refinement lever
+introduces or fixes a vulnerability as a side effect of a goodput-motivated
+change, would close a gap this thesis's own framing (a benchmark that
+should evaluate more than BaxBench's original single-container
+functional-and-security check) otherwise leaves open.
+
+\paragraph{Strengthen spec validation and functional-test depth.} Two
+separate validation surfaces could plausibly be doing more than they do
+now. Static spec validation (Section~\ref{sec:methods-spec}) currently
+checks a fixed set of structural and capacity properties; RQ6's
+\texttt{unschedulable}/\texttt{namespace\_cleanup} gap
+(Section~\ref{sec:results-rq6}) shows at least one class of deployment
+failure it does not catch, and it is not obvious that the current check
+set is complete rather than simply the set that was implemented first.
+Separately, functional-test generation (Section~\ref{sec:methods-code})
+could be pushed from today's single-behaviour checks (change one thing,
+assert the resulting state) toward layered coverage: keep the small,
+cheap per-endpoint checks as a first tier, but add larger scripted user
+flows that chain several endpoints together and assert on the
+end-to-end outcome, closer to how the load-test scripts already exercise
+the API but oriented at correctness rather than throughput. Both would
+raise the bar an implementation has to clear before it is trusted, at the
+cost of a stricter, more expensive generation pipeline.
 
 \paragraph{Constrain or measure within-lever attribution.} The backfire
 case in Section~\ref{sec:results-rq6} shows that a single spec-refinement
@@ -219,6 +257,17 @@ spec-refinement mean is net negative in this dataset, or instrument enough
 to attribute outcomes to individual fields \emph{post hoc} without
 constraining the agent's search space.
 
+\paragraph{Protect against a trajectory ending on a regression.} This
+dataset now contains one cell that recovers from a dead baseline, peaks
+well above it, and then loses everything to two consecutive late
+regressions with no budget left to recover (Section~\ref{sec:results-rq1}).
+A cheap mitigation worth testing is reporting, or even deploying, the best
+validated iteration rather than the last one when a trajectory's budget
+runs out mid-regression; a more involved one is letting the decision stage
+revert to a known-good spec once a regression is detected rather than
+always moving forward. Either would change how often a fixed budget is
+the reason a good result is lost rather than a stable measure of it.
+
 \paragraph{Investigate the \textsc{Rust-Actix} build-failure concentration.}
 Every \texttt{docker\_build} failure recorded in this dataset is a
 \textsc{Rust-Actix} compile failure (Section~\ref{sec:results-rq6}), most
@@ -227,13 +276,35 @@ proficiency specifically, an interaction with this scenario suite's API
 shapes, or something about the build toolchain itself is not yet
 separable from this dataset alone.
 
-\paragraph{Test transfer across cluster topology and scale.} All results
-come from one cluster profile (Section~\ref{sec:setup-infrastructure}).
-Repeating even a subset of cells on a cluster an order of magnitude larger
-or smaller, or with a different node/network topology, would show whether
-the deployment decisions the agent converges to
-(Section~\ref{sec:results-rq5}) are tuned to the workload or partly to
-this specific cluster's capacity envelope.
+\paragraph{Widen the deployment specification and test transfer across
+cluster topology and scale.} All results come from one cluster profile
+and one deployment-component vocabulary, backend, database, pooler,
+cache (Section~\ref{sec:setup-infrastructure},
+Section~\ref{sec:methods-spec}). Two extensions are natural here, and
+largely independent of each other. First, growing the
+\texttt{spec.yaml} schema to cover more component types, message queues,
+background workers, additional cache tiers, would let the agent's search
+space match a larger slice of real deployment topologies rather than the
+database-and-pooler-centric one evaluated here. Second, repeating even a
+subset of cells on a cluster an order of magnitude larger or smaller, or
+with a different node/network topology, would show whether the
+deployment decisions the agent converges to (Section~\ref{sec:results-rq5})
+are tuned to the workload or partly to this specific cluster's capacity
+envelope.
+
+\paragraph{Exercise load profiles this evaluation never used.} Every
+result here comes from a single adaptive load profile,
+\texttt{k8s-explore-refine}, chosen to discover sustainable throughput
+without per-scenario tuning (Section~\ref{sec:methods-load-profile}).
+Nothing about the agent or the framework is specific to that profile:
+running the same refinement loop under a spike or surge profile, sudden,
+short-lived traffic bursts well above the sustained rate, rather than a
+gradually ramping one, would test a different and arguably more realistic
+production concern than steady-state capacity, and would show whether the
+deployment decisions favoured for sustained goodput (Section~\ref{sec:results-rq5})
+still hold up, or trade away, burst headroom. No such profile exists in
+this framework yet; building one is a prerequisite for this direction,
+not just a configuration change.
 
 \paragraph{Richer feedback and multi-objective scoring.} Sustained
 goodput is deliberately a single number

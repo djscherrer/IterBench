@@ -4,7 +4,7 @@
 %  Interprets Chapter~\ref{ch:results} rather than re-deriving it:
 %  no new numbers should be introduced here that are not already
 %  in the Evaluation chapter. Grounded in the final results/
-%  snapshot (2026-07-30, 63 of 72 cells).
+%  snapshot (2026-07-31, 63 of 63 cells, full coverage).
 % =============================================================
 
 \chapter{Discussion}
@@ -24,7 +24,7 @@ Section~\ref{sec:results-rq6}) and the largest single-step goodput
 recoveries (Section~\ref{sec:results-rq2}) both trace to code correctness,
 not deployment tuning, and this holds for every model with data. Where
 model differences do appear, they concentrate in a narrower place than a
-first glance at the completion figures would suggest: every model that
+first glance at raw completion counts would suggest: every model that
 reaches a working baseline completes its full refinement budget
 (Section~\ref{sec:results-rq3}), so the interesting variation in this
 dataset is not \emph{whether} a model finishes, but how it uses the two
@@ -32,18 +32,18 @@ levers once it starts.
 
 \paragraph{What can and cannot be said about cost.} \texttt{glm-5.2} is
 roughly an order of magnitude cheaper per cell than \texttt{gpt-5.5} or
-\texttt{claude-opus-4-8} (Section~\ref{sec:results-rq3}). What this
-dataset cannot yet say with confidence is whether that cost advantage
-comes with a reliability cost in the sense of code quality: on completion
-metrics, \texttt{glm-5.2} is indistinguishable from the other two models,
-reaching baseline and finishing its budget on every one of its 21 cells.
-Where its profile does look different is in how its two refinement levers
-behave once it is running: its deployment-refinement steps are net
-negative on average (Section~\ref{sec:results-rq2}), and its code-side
-failure profile leans more heavily on \textsc{Rust-Actix} build failures
-than the other two models' do (Section~\ref{sec:results-rq6}). Cost,
-completion reliability, and refinement quality are three separate axes in
-this data, and only the first shows a clear gap.
+\texttt{claude-opus-4-8} (Section~\ref{sec:results-rq3}), and that
+advantage does not come at the expense of either completion reliability
+or achieved goodput: it reaches baseline and finishes its budget on every
+one of its 21 cells, and its median best-iteration goodput sits close to
+\texttt{claude-opus-4-8}'s. Where its profile does look different is in
+how its two refinement levers behave once it is running: its
+deployment-refinement steps are net negative on average
+(Section~\ref{sec:results-rq2}), and its code-side failure profile leans
+more heavily on \textsc{Rust-Actix} build failures than the other two
+models' do (Section~\ref{sec:results-rq6}). Cost, completion reliability,
+achieved goodput, and refinement-lever quality are separate axes in this
+data, and \texttt{glm-5.2} only underperforms on the last of them.
 
 \paragraph{Deployment-specification versus code refinement.} The division
 of labour in Section~\ref{sec:results-rq2}, code refinement carrying
@@ -80,21 +80,14 @@ several spec fields whose interaction it cannot fully anticipate.
 \section{Limitations}
 \label{sec:discussion-limitations}
 
-\paragraph{Scenario coverage, and one scenario in particular.} Eight of
-\textsc{BaxBench}'s 28 scenarios were evaluated
-(Section~\ref{sec:setup-scenarios}), chosen to span a range of workload
-shapes rather than to be a representative sample in a statistical sense.
-All eight require a database; none is compute-bound in the way an
-image-processing or cryptographic scenario would be, so the
+\paragraph{Scenario coverage.} Seven of \textsc{BaxBench}'s 28 scenarios
+were evaluated (Section~\ref{sec:setup-scenarios}), chosen to span a range
+of workload shapes rather than to be a representative sample in a
+statistical sense. All seven require a database; none is compute-bound in
+the way an image-processing or cryptographic scenario would be, so the
 deployment-tuning story this thesis tells is specifically a
-\emph{database-and-network-bound} story. Within those eight,
-\textsc{TimeCapsuleNotesVault} is a specific and material gap: it has data
-for only one of its nine possible model$\times$framework combinations
-(Section~\ref{sec:results-rq3}), so this thesis's scenario-level and
-cross-model comparisons effectively rest on the other seven scenarios, not
-all eight. Whether the same code/deployment division of labour holds for
-CPU-bound workloads, or for \textsc{TimeCapsuleNotesVault} specifically, is
-untested.
+\emph{database-and-network-bound} story. Whether the same code/deployment
+division of labour holds for CPU-bound workloads is untested.
 
 \paragraph{Iteration budget.} Every experiment used a fixed $N{=}10$
 refinement budget (Section~\ref{sec:setup-procedure}). Several
@@ -103,11 +96,19 @@ recovered from a regression, at iteration 010; a larger budget could
 change both the achieved goodput ceiling and the RQ2 code-vs-spec split,
 since which lever a decision stage reaches for next may depend on how many
 refinement rounds it has already spent recovering from earlier failures.
+This is not only a hypothetical concern: one cell in this dataset
+(\texttt{claude-opus-4-8}'s \textsc{BranchWeave}$\times$\textsc{Rust-Actix},
+Section~\ref{sec:results-rq1}) recovers from its dead baseline, peaks at
+$3\times$ that baseline, and then ends its fixed budget at zero goodput
+after two consecutive late regressions it never gets a further iteration
+to correct. A one- or two-iteration longer budget might well have changed
+that cell's final outcome without changing anything about the model's
+underlying behaviour.
 
 \paragraph{Sample count.} Every cell is $n=1$
 (Section~\ref{sec:setup-procedure}). A single code-generation seed can be
 unusually lucky or unlucky, and Chapter~\ref{ch:results} already flags
-several ratios (Section~\ref{sec:results-rq1}) that rest on 7-to-16
+several ratios (Section~\ref{sec:results-rq1}) that rest on 7-to-15
 healthy-baseline cells per model. Every comparative number in this thesis
 should be read as a single-draw estimate, not a distribution; nothing here
 has been significance-tested against sampling variance, because there is
@@ -127,7 +128,11 @@ $=0$) to one that technically starts but collapses immediately under the
 first load step; Section~\ref{sec:results-rq1} treats both as ``dead
 baselines'' without distinguishing them further, and the two cells that
 never recover within their ten-iteration budget are recorded the same way
-throughout.
+throughout. A goodput of $0$ at the \emph{end} of an otherwise-healthy
+trajectory is scored identically again, even though it is a different
+phenomenon (Section~\ref{sec:results-rq1}): the failure taxonomy
+(Section~\ref{sec:results-rq6}) does not flag it at all, since every
+individual iteration still completed as a harness-level success.
 
 \paragraph{Stochastic LLM behaviour.} Temperature was fixed at $0.2$
 (Section~\ref{sec:setup-models}), a deliberate reduction of but not an

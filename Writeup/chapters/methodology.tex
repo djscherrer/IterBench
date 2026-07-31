@@ -796,11 +796,7 @@ attributed to either lever.
 
 \paragraph{Purpose.}
 Produce application code that passes the scenario's functional tests and
-builds into a container image. When the preceding Decision selected the
-deployment specification instead, this stage generates no new code: it
-carries forward the latest validated source tree (the application's
-complete set of source files) and its built image, unchanged, from the
-lineage (Section~\ref{sec:methods-artifacts}).
+builds into a container image.
 
 \paragraph{Inputs.}
 Baseline generation receives the scenario description, API contract, and
@@ -809,6 +805,10 @@ refinement additionally receives the current valid code in the
 conversation, pointed at by an artifact pointer
 (Section~\ref{sec:methods-memory}), and, after a previous code failure, an
 error record containing evidence of the failure in the test or build phase.
+When Spec is selected instead, no new code is generated: the current
+validated source tree (the application's complete set of source files) and
+image are simply carried forward from the lineage, unchanged
+(Section~\ref{sec:methods-artifacts}).
 
 \paragraph{Processing.}
 The check each attempt must pass, building a container image and running
@@ -882,29 +882,53 @@ Produce \texttt{spec.yaml}, a structured description of the desired
 Kubernetes deployment. This stage is central to the thesis's contribution:
 the agent never writes Kubernetes manifests directly; it fills in a bounded
 schema, and the framework alone turns that schema into manifests (Deploy,
-below) so that comparisons stay about deployment \emph{decisions} rather
-than YAML-authoring skill.
+below). This design serves three purposes. First, it avoids asking the agent
+to author large, verbose manifests from scratch on every turn. Second, it
+keeps the search space bounded and comparable across models and iterations,
+so comparisons stay about deployment \emph{decisions} rather than
+YAML-authoring skill. Third, it lowers generation cost, since only the
+fields that can genuinely differ between iterations need to be produced at
+all. It also keeps purely cluster-specific mechanics, the exact image
+reference, port, or namespace, out of the agent's responsibility entirely:
+even though a sufficiently detailed prompt could in principle supply these,
+omitting them removes an entire failure mode, a manifest broken by an
+incidental detail rather than a deployment decision, from the outcome being
+measured.
 
 \paragraph{Inputs.}
-The stage receives the cluster's allocatable worker capacity and the
-application context.  Deployment refinement additionally refers to the
-current valid specification and, after a prior specification failure, its
-validation evidence.  During code refinement, the current validated
-specification is reused unchanged.
+The stage receives the cluster's allocatable worker capacity
+(Section~\ref{sec:methods-architecture}) and the scenario and framework
+being deployed. Deployment refinement additionally receives the current
+valid specification, pointed at by an artifact pointer
+(Section~\ref{sec:methods-memory}), and, after a prior specification
+failure, an error record containing its validation evidence. When Code is
+selected instead, the current validated specification is simply carried
+forward unchanged (Section~\ref{sec:methods-artifacts}).
 
 \paragraph{Processing.}
-\emph{Generation and normalisation.} The LLM returns a
-\texttt{<SPEC>} YAML fragment covering \texttt{backend}, optional
-\texttt{pooler}/\texttt{read\_pooler}/\texttt{cache}, and
-\texttt{database} (Table~\ref{tab:spec-schema}). The framework merges this
-fragment onto fields it always controls itself: the container image
-reference, listening port, namespace, and database connection variables are
-never agent-settable. It also resolves named node-placement constraints.
+\emph{Generation and normalisation.} The LLM returns a YAML fragment
+(Table~\ref{tab:spec-schema}) covering \texttt{backend}, optional
+\texttt{pooler}/\texttt{read\_pooler}/\texttt{cache}, and \texttt{database};
+it is a \emph{fragment} because it covers only the agent-controlled subset
+of the deployment, not a complete manifest. The framework merges this
+fragment onto the fields it always controls itself, the container image
+reference, listening port, namespace, and database connection variables,
+filling those in only later, when Deploy renders the final Kubernetes
+manifests (Section~\ref{sec:methods-deploy}). It also resolves named
+node-placement constraints: the agent may name a worker by a short
+identifier (for example \texttt{node3}), which the framework matches
+against the cluster's actual worker hostnames.
+
 Baseline generation receives a configured number of outer attempts
-(Appendix~\ref{ch:appendix-config}); each outer attempt may re-prompt the
-LLM a small number of times to correct a parse or validation error before it
-is recorded as failed. Refinement receives exactly one outer attempt with no
-internal retry, matching the code stage's fail-fast refinement behaviour.
+(Appendix~\ref{ch:appendix-config}), each a fresh generation call informed
+by the previous attempt's failure record. Within one outer attempt, the
+framework may additionally re-prompt the LLM a small number of times, each
+re-prompt quoting the specific parse or validation error, to correct a
+malformed or invalid response before that attempt is recorded as failed;
+this inner correction loop has no equivalent in Code, where a parse failure
+simply ends the attempt (Section~\ref{sec:methods-code}). Refinement
+receives exactly one outer attempt with no inner retry either, matching the
+code stage's fail-fast refinement behaviour.
 
 The prompt documents field semantics, hard scheduling constraints, and a
 small set of qualitative diagnostic heuristics. For example, idle read
@@ -941,22 +965,30 @@ reachable. That is what the Deploy stage checks next
   \caption{Deployment specification schema (agent-controlled fields).}
   \label{tab:spec-schema}
   \small
-  \begin{tabular}{@{}p{0.35\linewidth}p{0.6\linewidth}@{}}
+  \renewcommand{\arraystretch}{1.12}
+  \begin{tabular}{@{}p{0.42\linewidth}p{0.53\linewidth}@{}}
     \toprule
     \textbf{Field} & \textbf{Effect} \\
     \midrule
+    \rowcolor{black!5}
     \texttt{backend.replicas} & Horizontal scale behind the backend Service \\
     \texttt{backend.resources.*} & Per-pod CPU/memory request and limit \\
-    \texttt{backend.placement.\allowbreak workers}, \texttt{.spread\_replicas} & Node allow-list; anti-affinity across nodes \\
+    \rowcolor{black!5}
+    \texttt{backend.placement.workers}, \texttt{backend.placement.\allowbreak spread\_replicas} & Node allow-list; anti-affinity across nodes \\
     \texttt{backend.env.*} & Allow-listed runtime knobs the app must itself read, e.g.\ \texttt{DB\_POOL\_SIZE}, \texttt{WEB\_CONCURRENCY}, \texttt{GOMAXPROCS} \\
+    \rowcolor{black!5}
     \texttt{pooler.*} & Optional PgBouncer in front of the Postgres primary: \texttt{enabled}, \texttt{mode}, \texttt{replicas}, \texttt{max\_client\_conn}, \texttt{default\_pool\_size}, \texttt{resources} \\
     \texttt{read\_pooler.*} & Same fields, in front of read replicas; requires \texttt{database.replicas}~$>1$ \\
+    \rowcolor{black!5}
     \texttt{cache.*} & Optional application-level Redis: \texttt{enabled}, \texttt{replicas}, \texttt{maxmemory}, \texttt{resources} \\
     \texttt{database.replicas} & $1$ = standalone; $N{>}1$ = 1 primary + $(N{-}1)$ streaming read replicas \\
+    \rowcolor{black!5}
     \texttt{database.max\_connections} & Postgres primary connection ceiling \\
-    \texttt{database.resources.*}, \texttt{.primary.resources}, \texttt{.replica.resources} & Default, and optional asymmetric overrides, per DB role \\
-    \texttt{database.placement.\allowbreak worker}, \texttt{.placement.workers} & Pin or restrict DB pod placement \\
+    \texttt{database.resources.*}, \texttt{database.primary.resources}, \texttt{database.replica.resources} & Default, and optional asymmetric overrides, per DB role \\
+    \rowcolor{black!5}
+    \texttt{database.placement.worker}, \texttt{database.placement.workers} & Pin or restrict DB pod placement \\
     \texttt{database.tuning.*} & 11 Postgres GUCs (memory: \texttt{shared\_buffers}, \texttt{work\_mem}, \ldots; parallelism; checkpoint/WAL; planner cost; statement timeout); full list in Appendix~\ref{ch:appendix-prompts} \\
+    \rowcolor{black!5}
     \texttt{database.cache.*} & Optional DB-adjacent Redis, shared with \texttt{cache} or dedicated \\
     \bottomrule
   \end{tabular}

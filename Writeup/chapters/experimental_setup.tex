@@ -7,9 +7,9 @@
 %  built the way it is) lives in Chapter~\ref{ch:methods}; this
 %  chapter is deliberately just the concrete instantiation of it.
 %
-%  Grounded in the final results/ snapshot (2026-07-30): 63 of a
-%  possible 72 cells (8 scenarios x 3 frameworks x 3 models) have
-%  experiment data. Regenerate via
+%  Grounded in the final results/ snapshot (2026-07-31): 63 of a
+%  possible 63 cells (7 scenarios x 3 frameworks x 3 models) have
+%  experiment data (full coverage). Regenerate via
 %  ``pipenv run python scripts/analysis/aggregate_evaluation.py''
 %  (default --results-root matches the current layout) before editing
 %  any number below by hand.
@@ -37,50 +37,70 @@ All three are accessed through the same conversational, cache-aware harness
 (Section~\ref{sec:methods-workflow}), with generation configuration held
 fixed across models: temperature $0.2$, the \texttt{openapi} spec type, and
 the \texttt{high\_performance} safety-prompt variant
-(Section~\ref{sec:methods-code}). Provider-specific quirks (context window,
-native prompt-caching mechanism, and cost structure) are not levelled out;
-holding those aside instead of routing around them lets differences in
-outcome be attributed to model capability and cost rather than to a
-different generation configuration per model.
+(Section~\ref{sec:methods-code}). All three also offer a comparable context
+window (Table~\ref{tab:setup-model-config}: approximately $1{,}000{,}000$
+tokens each, \texttt{gpt-5.5} marginally larger at $1{,}050{,}000$), so that
+dimension is already roughly matched rather than a confound to control for.
+What genuinely differs by provider is cost and how each one caches a
+growing conversation, and that difference is left in place rather than
+unified: it is exactly what lets a model's capability be read alongside
+its cost, instead of only in isolation.
 
 \paragraph{Caching policy.} The general prompt-caching mechanism is
 described in Section~\ref{sec:methods-memory}; the concrete policy differs
-by provider, since each exposes caching differently. For
-\texttt{claude-opus-4-8}, cache breakpoints sit on the system prompt and the
-latest conversation turn with a 1-hour time-to-live rather than Anthropic's
-5-minute default: a full iteration (Deploy plus Bench, including the
-cluster-side load test) routinely runs longer than 5 minutes, which would
-otherwise evict the cache before the next call could reuse it. Anthropic
-prices the initial cache write at a premium that scales with the chosen
-TTL ($1.25\times$ input for 5 minutes, $2\times$ for 1 hour), so the
-1-hour choice trades a higher write cost for a much higher hit rate across
-iterations. For \texttt{gpt-5.5}, caching is retention-based rather than
-TTL-based: every request sets \texttt{prompt\_cache\_retention} to 24 hours
-and pins the conversation to a stable cache key, with no write premium (a
-cache write bills at the ordinary input rate). For \texttt{glm-5.2},
-accessed through OpenRouter rather than a first-party API, caching is
-implicit: the upstream provider caches its own shared prompt prefix, and
-OpenRouter's provider-sticky routing keeps every follow-up call pinned to
-the same backend instance, so the harness sends no explicit cache
-parameters for this model at all.
+by provider, since each exposes caching differently.
+
+\texttt{claude-opus-4-8} places an explicit cache breakpoint on the system
+prompt and on the latest conversation turn, with a 1-hour time-to-live
+rather than Anthropic's 5-minute default: a full iteration (Deploy plus
+Bench, including the cluster-side load test) routinely runs longer than 5
+minutes, which would otherwise evict the cache before the next call could
+reuse it. Anthropic prices the initial cache write at a premium that
+scales with the chosen TTL ($1.25\times$ input for 5 minutes, $2\times$ for
+1 hour). Only the newest turn is written at that premium on any given
+call, while the entire accumulated conversation so far is read back from
+cache at a $0.1\times$ discount; as a trajectory lengthens, the cheap
+read side keeps growing while the premium-priced write side per call
+stays roughly constant, so the 1-hour choice is worth its higher upfront
+cost once a few iterations have accumulated.
+
+\texttt{gpt-5.5} caches differently: rather than an explicit,
+manually placed breakpoint with its own time-to-live, OpenAI detects a
+repeated prompt prefix automatically and keeps it available for a
+configured retention window (\texttt{prompt\_cache\_retention}, set to 24
+hours here) instead of a TTL tied to a specific write. A stable
+\texttt{prompt\_cache\_key}, one per experiment sample rather than
+anything derived from the prompt content itself, is attached to every
+call so that repeated requests from the same trajectory are routed back
+to the same cached instance rather than to a different backend that would
+have to rebuild the cache from scratch. Because the cache is populated as
+a by-product of ordinary request processing rather than an explicit
+annotated write, there is no separate write premium: a cache write bills
+at the ordinary input rate.
+
+\texttt{glm-5.2}, accessed through OpenRouter rather than a first-party
+API, caches implicitly: the upstream provider caches the prompt prefix on
+its own, and OpenRouter routes follow-up calls to the same backend
+instance so that cache stays useful. The harness does not need to send
+any explicit cache parameters for this model.
 
 Table~\ref{tab:setup-model-config} gives the resulting per-model context
-window and price list; Table~\ref{tab:setup-model-cost} below then reports
-what that translated to in measured spend over this evaluation.
+window and price list; Section~\ref{sec:results-rq3} reports what that
+translated to in measured spend over this evaluation.
 
 \begin{table}[htbp]
   \centering
-  \caption{Per-model context window and list price. Rates are
-    USD per million tokens (MTok).}
+  \caption{Per-model context window and list price, in USD per million
+    tokens (MTok).}
   \label{tab:setup-model-config}
   \small
   \begin{tabular}{@{}llrrrr@{}}
     \toprule
-    \textbf{Model} & \textbf{Provider (routing)} & \textbf{Context} & \textbf{Input} & \textbf{Output} & \textbf{Cached read} \\
+    \textbf{Model} & \textbf{Provider} & \textbf{Context} & \textbf{Input} & \textbf{Output} & \textbf{Cached read} \\
     \midrule
-    \texttt{claude-opus-4-8} & Anthropic (native) & 1{,}000{,}000 & \$5.00 & \$25.00 & \$0.50 \\
-    \texttt{gpt-5.5} & OpenAI (native) & 1{,}050{,}000 & \$5.00 / \$10.00$^\dagger$ & \$30.00 / \$45.00$^\dagger$ & \$0.50 / \$1.00$^\dagger$ \\
-    \texttt{glm-5.2} & Z.ai (via OpenRouter) & 1{,}000{,}000 & \multicolumn{3}{c}{OpenRouter-reported$^\ddagger$} \\
+    \texttt{claude-opus-4-8} & Anthropic & 1M & 5 & 25 & 0.50 \\
+    \texttt{gpt-5.5} & OpenAI & 1.05M & 5 / 10$^\dagger$ & 30 / 45$^\dagger$ & 0.50 / 1.00$^\dagger$ \\
+    \texttt{glm-5.2} & Z.ai & 1M & \multicolumn{3}{c}{OpenRouter-reported$^\ddagger$} \\
     \bottomrule
   \end{tabular}
   \vspace{0.5em}
@@ -89,158 +109,110 @@ what that translated to in measured spend over this evaluation.
   $^\dagger$\texttt{gpt-5.5} bills the higher rate on the \emph{entire}
   request once its total input exceeds a 128{,}000-token threshold, a
   point conversational runs here cross by roughly iteration~5.
-  $^\ddagger$\texttt{glm-5.2} has no fixed \$/MTok rate in this evaluation:
-  its measured cost (Table~\ref{tab:setup-model-cost}) is taken directly
-  from OpenRouter's own reported per-request charge, which already nets
-  out its implicit caching discount, rather than computed from a price
-  list.
+  $^\ddagger$\texttt{glm-5.2} is accessed through OpenRouter rather than a
+  first-party API and has no fixed \$/MTok rate in this evaluation: its
+  measured cost (Section~\ref{sec:results-rq3}) is taken directly from
+  OpenRouter's own reported per-request charge, which already nets out its
+  implicit caching discount, rather than computed from a price list.
 \end{table}
 
 \paragraph{Why these three.} The selection targets provider diversity at a
-comparable capability tier rather than an exhaustive model sweep: exactly
-one iterative refinement trajectory already costs several dollars in LLM
-spend (Table~\ref{tab:setup-model-cost}), so the achievable sweep is in the
-low single digits of models, not dozens.
-
-\paragraph{Measured cost per cell.} Despite comparable per-cell iteration
-budgets, the three models differ substantially in measured LLM spend
-(Table~\ref{tab:setup-model-cost}): partly a direct consequence of the
-per-token rates above, partly of how differently each model uses its
-context (turn length, retry rate, cache-hit ratio). The Evaluation chapter
-treats this cost gap as a variable worth comparing in its own right
-(Section~\ref{sec:results-rq3} onward), not just a nuisance parameter.
-
-\begin{table}[htbp]
-  \centering
-  \caption{Measured LLM spend per model, over cells that produced
-    experiment data.}
-  \label{tab:setup-model-cost}
-  \small
-  \begin{tabular}{@{}lrrr@{}}
-    \toprule
-    \textbf{Model} & \textbf{Total spend} & \textbf{Cells} & \textbf{Spend / cell} \\
-    \midrule
-    \texttt{gpt-5.5}         & \$151.43 & 22 & \$6.88 \\
-    \texttt{claude-opus-4-8} & \$127.51 & 20 & \$6.38 \\
-    \texttt{glm-5.2}         & \$28.49  & 21 & \$1.36 \\
-    \bottomrule
-  \end{tabular}
-\end{table}
+comparable capability tier rather than an exhaustive model sweep. This is
+mainly for economical reasons: exactly one iterative refinement trajectory
+already costs several dollars in LLM spend, so the achievable sweep is
+restricted to the low single digits of models, not dozens.
 
 
 % ----- §4.2 Scenarios -----
 \section{Scenarios}
 \label{sec:setup-scenarios}
 
-Eight \textsc{BaxBench} scenarios were evaluated, chosen to span a range of
-workload shapes rather than to be an exhaustive sample of the full BaxBench
-suite (28 scenarios; Section~\ref{sec:rw-benchmarks}). All eight require a
-backing database, so database topology and connection handling
-(Section~\ref{sec:methods-spec}) are relevant to every cell; they differ
-mainly in API surface size and statefulness, which is what varies the
-achievable goodput ceiling and the shape of the deployment-tuning problem.
-The first four (\textsc{ClickCount}, \textsc{Recipes}, \textsc{BranchWeave},
-\textsc{Petstore}) were part of the original evaluated set; the remaining
-four were added subsequently to broaden coverage beyond that initial set.
+Seven \textsc{BaxBench} scenarios were evaluated, chosen to span a range of
+workload shapes. Three of them (\textsc{ClickCount}, \textsc{Recipes},
+\textsc{Petstore}) are original \textsc{BaxBench} scenarios; the other four
+(\textsc{BranchWeave}, \textsc{ParcelPinLockerPickup},
+\textsc{SplitNestSharedExpenseLedger}, \textsc{TransitPulseDelayReporter})
+were produced by the scenario-construction pipeline of
+Section~\ref{sec:methods-scenario-gen}. This is a subset of the full
+\textsc{BaxBench} suite (28 scenarios; Section~\ref{sec:rw-benchmarks}),
+not an exhaustive sample of it. All seven require a backing database,
+making database topology and connection handling
+(Section~\ref{sec:methods-spec}) relevant to every cell. They differ
+mainly in API surface size and statefulness.
 
-\begin{table}[htbp]
-  \centering
-  \caption{Evaluated scenarios and their workload characteristics. Endpoint
-    counts are unique OpenAPI paths (not operations); e.g.\ \textsc{Petstore}'s
-    8 paths carry 13 operations across the four HTTP methods they use.}
-  \label{tab:setup-scenarios}
-  \small
-  \begin{tabular}{@{}lp{0.25\linewidth}rrp{0.23\linewidth}@{}}
-    \toprule
-    \textbf{Scenario} & \textbf{Workload} & \textbf{Endpoints} & \textbf{FTs} & \textbf{Notes} \\
-    \midrule
-    \textsc{ClickCount} &
-      Register/retrieve per-user click counts &
-      2 & 1 &
-      near-stateless counter; smallest surface, secret-auth \\
-    \textsc{Recipes} &
-      Upload, comment on, and rate recipes &
-      5 & 1 &
-      moderate read/write mix \\
-    \textsc{BranchWeave} &
-      Build and traverse branching narrative graphs; deterministic
-      playthrough simulation, HTML export &
-      5 & 5 &
-      graph-shaped data, more functional-test surface \\
-    \textsc{Petstore} &
-      Manage pets, orders, and users &
-      8 & 3 &
-      largest API surface, multi-resource CRUD \\
-    \textsc{TimeCapsuleNotesVault} &
-      Register/log in, create dated note boxes, add notes, and share
-      boxes read-only with other users &
-      7 & 3 &
-      second-largest surface; only scenario with cross-user, read-only
-      sharing \\
-    \textsc{ParcelPinLockerPickup} &
-      Register numbered lockers, deposit parcels with a recipient and
-      PIN, claim by locker number and PIN, track pickup history &
-      6 & 4 &
-      PIN-gated claim flow; per-locker capacity/occupancy state \\
-    \textsc{SplitNestSharedExpenseLedger} &
-      Create or join expense groups, log shared payments with
-      per-participant shares, compute member balances &
-      6 & 4 &
-      multi-user ledger; balances derived from participant shares \\
-    \textsc{TransitPulseDelayReporter} &
-      Submit transit delay reports per station and route, query
-      per-station summaries and a rider's own reports &
-      5 & 3 &
-      smallest surface among the added scenarios \\
-    \bottomrule
-  \end{tabular}
-\end{table}
+Endpoint counts below are unique OpenAPI paths, not operations
+(\textsc{Petstore}'s 8 paths, for example, carry 13 operations across the
+four HTTP methods they use); a compact reference table with the same
+counts is given in Appendix~\ref{ch:appendix-config}.
 
-\textsc{ClickCount} is the scenario where the deployment-tuning signal is
-cleanest to read (Section~\ref{sec:results-rq5}): a near-stateless counter
-increment has negligible per-request CPU cost, so the ``correct'' scaling
-direction (favour replica fan-out over per-pod headroom) is unambiguous and
-lets us check whether the agent's \texttt{spec.yaml} trajectory tracks it.
-\textsc{Petstore} has the largest API surface and the most opportunities
-for a single missed endpoint or validation rule to fail a functional test,
-which shows up in Section~\ref{sec:results-rq6}'s failure taxonomy.
+\begin{description}
+  \item[\normalfont\textsc{ClickCount}] (2 endpoints, 1 functional test) registers and
+    retrieves per-user click counts behind secret-based authentication; it
+    is the smallest surface of the seven.
+  \item[\normalfont\textsc{Recipes}] (5 endpoints, 1 functional test) lets users
+    upload, comment on, and rate recipes, a moderate read/write mix.
+  \item[\normalfont\textsc{BranchWeave}] (5 endpoints, 5 functional tests) builds and
+    traverses branching narrative graphs, with a deterministic playthrough
+    simulation and an HTML export endpoint; its graph-shaped data gives it
+    the largest functional-test surface of the seven relative to its
+    endpoint count.
+  \item[\normalfont\textsc{Petstore}] (8 endpoints, 3 functional tests) manages pets,
+    orders, and users and has the largest API surface of the seven.
+  \item[\normalfont\textsc{ParcelPinLockerPickup}] (6 endpoints, 4 functional tests)
+    registers numbered lockers, deposits parcels against a recipient and
+    PIN, and claims them by locker number and PIN, with pickup history
+    tracked per locker.
+  \item[\normalfont\textsc{SplitNestSharedExpenseLedger}] (6 endpoints, 4 functional
+    tests) lets users create or join expense groups, log shared payments
+    with per-participant shares, and compute member balances derived from
+    those shares.
+  \item[\normalfont\textsc{TransitPulseDelayReporter}] (5 endpoints, 3 functional
+    tests) lets riders submit transit delay reports per station and route
+    and query per-station summaries and their own reports.
+\end{description}
 
 Each scenario is combined with up to three application frameworks
 (\textsc{Go-net-http}, \textsc{Python-Flask}, \textsc{Rust-Actix}), spanning
-a compiled natively-concurrent runtime, an interpreted WSGI stack, and a
-compiled async runtime respectively: three points on the throughput-ceiling
-spectrum that Section~\ref{sec:results-rq4} uses to separate framework
-effects from refinement effects.
+a compiled natively-concurrent runtime, an interpreted WSGI stack (the
+standard synchronous Python web-server interface, run here under
+\texttt{gunicorn}), and a compiled async runtime respectively: three points
+on the throughput-ceiling spectrum that Section~\ref{sec:results-rq4} uses
+to separate framework effects from refinement effects.
 
 
 % ----- §4.3 Infrastructure -----
 \section{Infrastructure}
 \label{sec:setup-infrastructure}
 
-Experiments run on a dedicated multi-node cluster (Emulab-hosted;
-profile \texttt{baxbench-emulab} in
-\texttt{k8s\_bench/cluster/profiles.py}), following the architecture
-described in Section~\ref{sec:methods-architecture}:
+Experiments run on a dedicated 9-host cluster on Emulab, all nine hosts
+identical \texttt{d430} nodes (32 CPU cores, approximately 62.7\,GiB of
+memory each) allocated from a single experiment topology, following the
+architecture described in Section~\ref{sec:methods-architecture}:
 
 \begin{itemize}
-  \item \textbf{Control plane / orchestrator / registry (1 host).} A single
-        node runs the Kubernetes control plane, the BaxBench orchestrator,
-        and the private image registry, collocated for operational
-        simplicity.
+  \item \textbf{Control plane / orchestrator / registry (1 host).} For
+        operational simplicity, a single node runs the Kubernetes control
+        plane, the BaxBench orchestrator, and the private image registry.
   \item \textbf{Kubernetes workers (4 hosts).} Candidate deployments
         (application pods, databases, poolers, caches) are scheduled only
-        onto these nodes.
-  \item \textbf{Locust load generation (separate hosts).} A master process
-        coordinates load; workers run on hosts disjoint from the Kubernetes
-        workers, so measured goodput is not confounded by load-generation
-        CPU contention (Section~\ref{sec:methods-architecture}).
+        onto these nodes, which in total expose 128 CPU cores and
+        approximately 251\,GiB of memory to Kubernetes. This capacity is
+        measured live from the cluster every time a deployment
+        specification is generated or validated (Section~\ref{sec:methods-spec}),
+        not assumed once and cached.
+  \item \textbf{Locust load generation (4 hosts).} One host runs the Locust
+        master process, collocated with 16 of its own worker processes; the
+        remaining three hosts each run 32 worker processes. All four are
+        disjoint from the Kubernetes workers, so measured goodput is not
+        confounded by load-generation CPU contention
+        (Section~\ref{sec:methods-architecture}).
 \end{itemize}
 
-Cluster capacity (allocatable CPU/memory per worker) is what the spec-schema
-static validation (Section~\ref{sec:methods-spec}) checks candidate
-deployments against; it is fixed for the whole evaluation, which is what
-makes ``fixed infrastructure constraints'' in the thesis research question
-concrete rather than rhetorical.
+This measured worker capacity is exactly what the spec-schema static
+validation (Section~\ref{sec:methods-spec}) checks candidate deployments
+against, and it is fixed for the whole evaluation, which is what makes
+``fixed infrastructure constraints'' in the thesis research question
+concrete.
 
 
 % ----- §4.4 Evaluation Procedure -----
@@ -252,35 +224,32 @@ defined in Section~\ref{sec:methods-workflow}; this section states the
 concrete budget values used throughout Chapter~\ref{ch:results}.
 
 \begin{itemize}
-  \item \textbf{Cells.} Every combination of the 8 scenarios
-        (Section~\ref{sec:setup-scenarios}) and up to 3 frameworks that a
-        model was run on: up to 72 cells across the 3 models.
-        \textcolor{red}{TODO: coverage of this matrix is not yet complete;
-        some cells still need to be run. The exact accounting of what has
-        been collected so far is given in Section~\ref{sec:results-overview}
-        and is not repeated here.}
+  \item \textbf{Cells.} Every combination of the 7 scenarios and 3
+        frameworks (Section~\ref{sec:setup-scenarios}), crossed with the 3
+        evaluated models (Section~\ref{sec:setup-models}): 63 cells in
+        total.
   \item \textbf{Samples.} One sample per cell ($n=1$). This is a budget
-        constraint, not a methodological preference: at
-        \textasciitilde\$1--7 per cell in LLM spend alone
-        (Table~\ref{tab:setup-model-cost}), repeated sampling across the
-        cells evaluated here was not affordable within this thesis's
-        compute budget. Its
-        consequence for how results are read is stated explicitly in
+        constraint, not a methodological preference: preliminary
+        experiments showed roughly \$1--7 per cell in LLM spend alone,
+        compounded by each experiment's long wall-clock runtime (typically
+        2 to 3 hours end to end for the full ten-iteration budget), so
+        repeated sampling across the cells evaluated here was not
+        affordable within this thesis's compute budget. Its consequence
+        for how results are read is stated explicitly in
         Section~\ref{sec:methods-metrics} and repeated where it matters in
         Chapter~\ref{ch:results}.
   \item \textbf{Experiments.} One experiment per sample, i.e.\ one
         refinement trajectory per cell; no re-runs under different
         budgets/profiles were kept for the cells reported here.
   \item \textbf{Iteration budget.} $N{=}10$ refinement iterations
-        (iterations \texttt{000}--\texttt{010}) per experiment, plus the
-        baseline retry allowances of Section~\ref{sec:methods-code}
-        (\texttt{baseline\_code\_max\_attempts}, \texttt{baseline\_spec\_max\_attempts}).
+        (iterations \texttt{000}--\texttt{010}) per experiment, plus up to
+        10 baseline generation attempts (Section~\ref{sec:methods-code})
+        and 3 retries per LLM call to absorb transient errors in
+        communication with the inference provider
+        (Appendix~\ref{ch:appendix-config}).
   \item \textbf{Load profile.} \texttt{k8s-explore-refine}
         (Section~\ref{sec:methods-load-profile}) for every bench.
   \item \textbf{Cost tracking.} LLM spend is logged per experiment
         (Section~\ref{sec:methods-workflow}) and reported alongside
-        capability in Chapter~\ref{ch:results}, since, as
-        Table~\ref{tab:setup-model-cost} already shows, the cheapest and
-        most expensive model in this evaluation differ by close to an
-        order of magnitude per cell.
+        capability in Chapter~\ref{ch:results}.
 \end{itemize}
