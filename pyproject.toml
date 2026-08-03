@@ -49,6 +49,10 @@ dev = [
     "types-regex>=2026.2.28.20260301",
 ]
 
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+
 [tool.uv]
 package = false
 

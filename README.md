@@ -25,7 +25,7 @@ src/
 ├── llm/                  # provider-agnostic LLM client: prompting, caching, conversation state, providers/
 ├── workspace/            # k8s-bench experiment workspace: iteration-directory layout, decision/feedback artifacts,
 │                         #   iteration metadata (shared by k8s_bench and plots/)
-├── k8s_bench/            # iterative deployment-optimization loop (cluster/, code/, spec/, stages/, ...)
+├── k8s_bench/            # iterative deployment-optimization loop (cluster/, code/, spec/, stages/, reverify/, ...)
 ├── plots/                # all plotting/reporting: per-experiment goodput + ramp plots, aggregate/ (cross-experiment
 │                         #   tables + figures), ramp/ (adaptive-ramp data + plot), reporting/ (pass@k text tables)
 ├── load_bench/           # Locust runner, load shapes/profiles, goodput measurement
@@ -35,10 +35,12 @@ src/
 
 scripts/
 ├── bench_k8s.sh, k8s_preflight.sh, k8s_setup_cluster.sh, k8s_run_iteration.sh
+├── k8s_rebench_results.py   # bulk deploy+bench reverification across a whole results tree (see docs/k8s_approach.md)
 ├── orchestrate_scenarios.sh  # drives scenario_builder to generate + export a new scenario
 ├── analysis/             # results aggregation across models/scenarios
 └── results_overview.py, fetch_results.sh
 
+tests/                    # pytest unit tests (pure-logic modules only, e.g. k8s_bench/reverify/); `pytest` from repo root
 docs/                     # design notes for the k8s pipeline (approach, prompt design, failure taxonomy, Locust pipeline)
 results/                  # generated code + logs, one dir per model (gitignored)
 results_aggregate/        # cross-run aggregate tables/figures (gitignored)

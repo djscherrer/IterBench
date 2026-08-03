@@ -366,6 +366,90 @@ Standalone spec-only (no deploy): use ``--mode k8s-bench`` with ``--k8s-iteratio
 to pin a single phase, or edit ``03-spec/spec.yaml`` by hand and re-bench with
 ``--deploy-only``.
 
+### Bulk re-benchmarking / reverification
+
+`scripts/k8s_rebench_results.py` re-runs the deploy + Locust bench stages for
+**every** iteration under a results tree in one command — e.g. to re-measure
+an existing dataset under a different load profile without touching the
+original data or re-generating any code/spec. It reuses
+`k8s_bench.orchestration.deploy_only.execute_deploy_only_iteration` unchanged
+(no LLM calls, no code or spec regeneration, no refinement-decision routing);
+the new code is purely discovery (`k8s_bench/reverify/discovery.py`),
+idempotency bookkeeping (`k8s_bench/reverify/manifest.py`), and safe cleanup
+of stale generated artifacts (`k8s_bench/reverify/cleanup.py`).
+
+**1. Copy the results tree first.** The tool never writes outside the
+directory passed to `--results-dir` — copying first is what keeps the
+original safe, not anything the tool inspects or infers:
+
+```bash
+cp -r results results_reverified
+```
+
+**2. Preview with `--dry-run`.** Lists every iteration that would run and
+every stale artifact (`04-deploy/`, `05-bench/`, `iteration.log`) that would
+be deleted first, with no Kubernetes contact and no filesystem writes:
+
+```bash
+python scripts/k8s_rebench_results.py \
+    --results-dir results_reverified \
+    --cluster baxbench-emulab \
+    --load-profile default \
+    --dry-run
+```
+
+**3. Run for real:**
+
+```bash
+python scripts/k8s_rebench_results.py \
+    --results-dir results_reverified \
+    --cluster baxbench-emulab \
+    --load-profile default
+```
+
+Task metadata (model, scenario, environment, temperature, spec type, safety
+prompt, sample, experiment slug) is derived automatically from each
+iteration's path — the usual
+`<model>/<scenario>/<env>/temp<T>-<spec_type>-<safety>/sample<N>/k8s-experiments/<experiment>/iterations/iteration-NNN[-kind]`
+layout — so nothing needs to be repeated on the command line. Iteration
+numbers do not need to be contiguous (e.g. failed attempts in the middle of a
+run are fine).
+
+An iteration is **re-benchable** when its folder name parses, it has a
+`03-spec/spec.yaml`, and it has an application code snapshot either of its
+own or inherited from an earlier iteration (the same fallback
+`execute_deploy_only_iteration` already uses). Everything the tool decides —
+processed, skipped, or failed, and why — is both logged and written to
+`<results-dir>/reverification_manifest.json`, keyed by
+`(sample directory, experiment id, iteration id)` so a later `-failed` folder
+rename does not orphan an iteration's history. `-failed` folders are
+excluded by default; pass `--include-failed` to consider them (they still
+need a spec + resolvable code).
+
+**Resuming / forcing.** Without `--force`, an iteration already recorded in
+the manifest as `status: success` for the *same* `--load-profile` is skipped
+— switching `--load-profile` is treated as a materially different request
+and is never silently skipped. With `--force`, its stale `04-deploy/`,
+`05-bench/`, and `iteration.log` are removed and it re-runs. On a first pass
+over a freshly copied tree, everything runs regardless of `--force` (nothing
+has been "reverified" yet — the original copied bench data doesn't count).
+
+**Filters** (`--models`, `--scenarios`, `--envs`, `--samples`,
+`--experiments`, `--iterations`) narrow the automatic discovery instead of
+replacing it; anything excluded still gets a manifest entry
+(`"excluded by filter"`) rather than disappearing silently.
+
+**Concurrency.** Groups (one sample × one k8s-experiment slug) run
+sequentially by default to avoid cluster/load-generator contention; pass
+`--parallel N` to run up to `N` groups concurrently (iterations within one
+group always run sequentially).
+
+**Where things land.** Per-iteration artifacts (deploy logs, bench logs,
+`iteration_feedback.json`, `experiment_summary.md` blocks) are written to the
+exact same paths `--deploy-only` always uses — nothing new there. The two
+new outputs are the discovery/run log on stdout and
+`reverification_manifest.json` at the results root.
+
 ### Code-stage infrastructure vs application failures
 
 Functional-test harness classifies some log lines as **infrastructure** (port bind failures, harness could not start container, etc.). **Application crashes** (e.g. gunicorn `ModuleNotFoundError` in container logs) that prevent the HTTP server from starting are **code failures**, not infra — so baseline codegen can retry with FT feedback. See `k8s_bench/failure/infra.py` and `stages/code.py` fail-fast rules.
