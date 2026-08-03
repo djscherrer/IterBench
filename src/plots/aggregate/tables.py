@@ -15,6 +15,7 @@ for the CLI that turns this into CSVs and figures.
 from __future__ import annotations
 
 import json
+import math
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -100,6 +101,29 @@ def discover_cells(
 # ---------------------------------------------------------------------------
 
 
+def geometric_mean(values: list[float]) -> float | None:
+    """
+    Geometric mean of strictly positive values: exp(mean(log(x))).
+
+    Values that are ``None`` are dropped (treated as "not applicable", e.g.
+    a cell that never reaches a completed iteration). A value of exactly
+    ``0`` cannot enter a geometric mean (log(0) is undefined) and is a
+    caller error, not something this function silently works around: it is
+    the caller's job to have already excluded zero/never-positive cells and
+    to report that exclusion explicitly (Section 6.2's "healthy baseline"
+    vs. "first non-zero" distinction).
+    """
+    vals = [v for v in values if v is not None]
+    if not vals:
+        return None
+    if any(v <= 0 for v in vals):
+        raise ValueError(
+            "geometric_mean() requires strictly positive values; caller must "
+            "exclude zero/never-positive cells first, not pass them in"
+        )
+    return math.exp(sum(math.log(v) for v in vals) / len(vals))
+
+
 def _load_total_llm_cost(exp_dir: Path) -> float | None:
     ledger = exp_dir / "llm_cost_ledger.json"
     if not ledger.is_file():
@@ -139,6 +163,21 @@ def cell_summary_row(key: CellKey, exp_dir: Path) -> dict[str, Any]:
     reached_baseline = any(p.iteration_index == 0 for p in points)
     max_folder_index = max((parse_iteration_index(d.name) or -1) for d in all_dirs) if all_dirs else -1
 
+    # First iteration (in order) with strictly positive goodput. ``None`` for a
+    # cell that never records positive goodput at all (Section 6.2 RQ1): such a
+    # cell has no valid reference point for a gain ratio and must be excluded
+    # from any geometric-mean aggregate over gains, not silently zero-filled.
+    first_nonzero_point = next((p for p in points if p.goodput_rps > 0), None)
+    first_nonzero_goodput = first_nonzero_point.goodput_rps if first_nonzero_point else None
+    first_nonzero_iteration_index = (
+        first_nonzero_point.iteration_index if first_nonzero_point else None
+    )
+    gain_first_nonzero = (
+        (max_goodput / first_nonzero_goodput)
+        if first_nonzero_goodput is not None and max_goodput is not None
+        else None
+    )
+
     return {
         "model": key.model,
         "scenario": key.scenario,
@@ -153,6 +192,8 @@ def cell_summary_row(key: CellKey, exp_dir: Path) -> dict[str, Any]:
         "baseline_goodput_rps": baseline_goodput,
         "final_goodput_rps": final_goodput,
         "max_goodput_rps": max_goodput,
+        "first_nonzero_goodput_rps": first_nonzero_goodput,
+        "first_nonzero_iteration_index": first_nonzero_iteration_index,
         "code_refinement_steps": code_steps,
         "spec_refinement_steps": spec_steps,
         "improvement_ratio": (
@@ -160,6 +201,7 @@ def cell_summary_row(key: CellKey, exp_dir: Path) -> dict[str, Any]:
             if baseline_goodput and baseline_goodput > 0 and max_goodput is not None
             else None
         ),
+        "gain_first_nonzero": gain_first_nonzero,
         "recovered_from_dead_baseline": bool(
             baseline_goodput is not None
             and baseline_goodput == 0.0

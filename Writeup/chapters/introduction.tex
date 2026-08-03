@@ -155,29 +155,39 @@ rather than in place of it.
 The central question above is broad enough that answering it in aggregate
 would hide more than it reveals: whether refinement helps, which lever drives
 that help, whether it depends on the model, and where it breaks down are
-separate empirical claims. Chapter~\ref{ch:results} therefore decomposes it
-into six questions, asked of the same dataset (three models, seven
-\textsc{BaxBench} scenarios, three frameworks; Chapter~\ref{ch:setup}):
+separate empirical claims. It also rests on a measurement whose own behavior
+needs checking before it can carry that weight: every iteration score in this
+thesis comes from the Explore-and-Refine load profile
+(Section~\ref{sec:methods-load-profile}), so Chapter~\ref{ch:results}
+decomposes the central question into seven questions, asked of the same
+dataset (three models, seven \textsc{BaxBench} scenarios, three frameworks;
+Chapter~\ref{ch:setup}):
 %
 \begin{description}
   \item[RQ1] Does iterative refinement improve sustained goodput
     (Section~\ref{sec:results-rq1})?
-  \item[RQ2] Which refinement lever, code or deployment, contributes more,
+  \item[RQ2] Does the Explore-and-Refine load profile itself locate a
+    system's sustained goodput efficiently and reliably, while remaining
+    robust enough to survive and recover from the overload it deliberately
+    induces (Section~\ref{sec:results-rq2})?
+  \item[RQ3] Which refinement lever, code or deployment, contributes more,
     and do the two specialise on different failure classes
-    (Section~\ref{sec:results-rq2})?
-  \item[RQ3] How do the evaluated models compare, in refinement outcome and
-    in cost (Section~\ref{sec:results-rq3})?
-  \item[RQ4] Does application-framework choice affect achievable goodput
-    independently of refinement (Section~\ref{sec:results-rq4})?
-  \item[RQ5] What deployment parameters does the agent converge to, and do
+    (Section~\ref{sec:results-rq3})?
+  \item[RQ4] How do the evaluated models compare, in refinement outcome and
+    in cost (Section~\ref{sec:results-rq4})?
+  \item[RQ5] Does application-framework choice affect achievable goodput
+    independently of refinement (Section~\ref{sec:results-rq5})?
+  \item[RQ6] What deployment parameters does the agent converge to, and do
     they track the workload's actual characteristics
-    (Section~\ref{sec:results-rq5})?
-  \item[RQ6] What are the dominant failure modes, and what do individual
-    trajectories reveal that aggregate statistics do not
     (Section~\ref{sec:results-rq6})?
+  \item[RQ7] What are the dominant failure modes, and what do individual
+    trajectories reveal that aggregate statistics do not
+    (Section~\ref{sec:results-rq7})?
 \end{description}
 %
-Chapter~\ref{ch:discussion} interprets the six answers together, and
+RQ2 validates the measurement instrument the other six RQs depend on rather
+than adding a new claim about the systems themselves.
+Chapter~\ref{ch:discussion} interprets the seven answers together, and
 Chapter~\ref{ch:conclusion} returns to the overarching question directly.
 
 
@@ -219,8 +229,9 @@ This thesis makes the following contributions:
         the full matrix, all with experiment data), tracking LLM
         cost as a first-class quantity alongside goodput. The evaluation
         shows that iterative refinement improves sustained goodput in
-        essentially every cell (gains from just over $1\times$ to
-        more than $75\times$ depending on the baseline), in several cases
+        essentially every cell (gains from $1\times$, in a few cells that
+        never improve past their first success, to more than $75\times$
+        depending on the baseline), in several cases
         converting a non-functional deployment into a working one; that code
         and deployment refinement specialise in practice on different
         failure classes, with code refinement carrying the largest

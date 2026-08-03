@@ -12,6 +12,11 @@ for every cell that has an ``iterations/`` tree, and produces:
 - ``failures.csv``   one row per recorded ``failure.json`` (phase, kind).
 - ``figures/*.png`` + ``*.pdf``  the plots in ``plots.aggregate.figures``.
 
+The per-model summary below reports geometric means (goodput is a positive
+performance metric; see ``rq_summary_stats.py`` for the full RQ1/RQ4
+breakdown with explicit exclusion accounting for cells that never record
+positive goodput).
+
 Usage:
     pipenv run python scripts/analysis/aggregate_evaluation.py \\
         --exclude-models deepseek-deepseek-v3.2
@@ -22,12 +27,14 @@ import argparse
 import sys
 from pathlib import Path
 
+import pandas as pd
+
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _SRC = _REPO_ROOT / "src"
 if str(_SRC) not in sys.path:
     sys.path.insert(0, str(_SRC))
 
-from plots.aggregate.tables import collect_all  # noqa: E402
+from plots.aggregate.tables import collect_all, geometric_mean  # noqa: E402
 from plots.aggregate.figures import generate_all_figures  # noqa: E402
 
 
@@ -65,17 +72,27 @@ def main() -> int:
     print(f"Wrote {args.out_dir / 'failures.csv'} ({len(data.failures)} rows)")
 
     print("\n== Per-model summary ==")
-    summary = (
-        data.cells.groupby("model")
-        .agg(
-            n_cells=("scenario", "count"),
-            n_reached_baseline=("reached_baseline", "sum"),
-            median_baseline_goodput=("baseline_goodput_rps", "median"),
-            median_best_goodput=("max_goodput_rps", "median"),
-            total_llm_cost_usd=("total_llm_cost_usd", "sum"),
-        )
-        .round(2)
+    print(
+        "(gm_* columns are geometric means over cells with positive goodput;\n"
+        " n_gm_valid is how many of n_cells that was. See rq_summary_stats.py\n"
+        " for the full RQ1/RQ4 breakdown, including the excluded cells by name.)"
     )
+    rows = []
+    for model, sub in data.cells.groupby("model"):
+        positive_best = sub.loc[sub["max_goodput_rps"] > 0, "max_goodput_rps"]
+        positive_baseline = sub.loc[sub["baseline_goodput_rps"] > 0, "baseline_goodput_rps"]
+        rows.append(
+            {
+                "model": model,
+                "n_cells": len(sub),
+                "n_reached_baseline": int(sub["reached_baseline"].sum()),
+                "n_gm_valid": int((sub["max_goodput_rps"] > 0).sum()),
+                "gm_baseline_goodput": geometric_mean(list(positive_baseline)),
+                "gm_best_goodput": geometric_mean(list(positive_best)),
+                "total_llm_cost_usd": sub["total_llm_cost_usd"].sum(),
+            }
+        )
+    summary = pd.DataFrame(rows).set_index("model").round(2)
     print(summary.to_string())
 
     if not args.no_figures:

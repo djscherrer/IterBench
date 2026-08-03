@@ -23,6 +23,8 @@ import numpy as np
 from matplotlib.ticker import MaxNLocator
 import pandas as pd
 
+from .tables import geometric_mean
+
 # ---------------------------------------------------------------------------
 # Palette (see docs/thesis figure palette note in this module's docstring)
 # ---------------------------------------------------------------------------
@@ -201,63 +203,109 @@ def plot_goodput_trajectories_grid(
 def plot_baseline_vs_best_by_model(
     cells: pd.DataFrame, out_dir: Path, *, stem: str = "baseline_vs_best_by_model"
 ) -> list[Path]:
-    df = cells.dropna(subset=["baseline_goodput_rps", "max_goodput_rps"])
+    from matplotlib.patches import Patch
+
+    # Cells with no first-non-zero-goodput point never record positive
+    # goodput at all; they have no valid gain reference and are excluded
+    # from this comparison (Section 6.2 RQ1), not zero-filled.
+    df = cells.dropna(subset=["first_nonzero_goodput_rps", "max_goodput_rps"])
     if df.empty:
-        raise ValueError("no cells with both baseline and max goodput")
+        raise ValueError("no cells with both a first-non-zero and a max goodput")
 
     models = sorted(df["model"].unique())
     rng = np.random.default_rng(7)
 
-    fig, ax = plt.subplots(figsize=(1.9 * len(models) + 1.5, 4.2))
+    fig, ax = plt.subplots(figsize=(2.3 * len(models) + 1.5, 4.6))
     width = 0.32
     x = np.arange(len(models))
 
+    box_style = dict(
+        widths=width * 0.85,
+        patch_artist=True,
+        showfliers=False,
+        whis=(0, 100),  # whiskers span the full min-max range: n is small (<=21) per box
+        medianprops={"color": _INK_PRIMARY, "linewidth": 1.4},
+        boxprops={"linewidth": 0.8, "edgecolor": _AXIS},
+        whiskerprops={"color": _AXIS, "linewidth": 1.0},
+        capprops={"color": _AXIS, "linewidth": 1.0},
+    )
+
     for i, model in enumerate(models):
         sub = df[df["model"] == model]
-        baseline_med = sub["baseline_goodput_rps"].median()
-        best_med = sub["max_goodput_rps"].median()
-        ax.bar(
-            x[i] - width / 2,
-            baseline_med,
-            width=width,
-            color=_KIND_COLORS["baseline"],
-            label="baseline (iteration 000)" if i == 0 else None,
-            zorder=2,
-        )
-        ax.bar(
-            x[i] + width / 2,
-            best_med,
-            width=width,
-            color=_KIND_COLORS["code"],
-            label="best refined iteration" if i == 0 else None,
-            zorder=2,
-        )
-        jitter = rng.uniform(-0.05, 0.05, size=len(sub))
+        first_nonzero_vals = sub["first_nonzero_goodput_rps"].to_numpy()
+        best_vals = sub["max_goodput_rps"].to_numpy()
+        first_nonzero_gm = geometric_mean(list(first_nonzero_vals))
+        best_gm = geometric_mean(list(best_vals))
+
+        bp1 = ax.boxplot([first_nonzero_vals], positions=[x[i] - width / 2], **box_style)
+        bp2 = ax.boxplot([best_vals], positions=[x[i] + width / 2], **box_style)
+        for patch in bp1["boxes"]:
+            patch.set_facecolor(_KIND_COLORS["baseline"])
+            patch.set_alpha(0.5)
+        for patch in bp2["boxes"]:
+            patch.set_facecolor(_KIND_COLORS["code"])
+            patch.set_alpha(0.5)
+
+        jitter = rng.uniform(-0.06, 0.06, size=len(sub))
         ax.scatter(
             x[i] - width / 2 + jitter,
-            sub["baseline_goodput_rps"],
+            first_nonzero_vals,
             color=_INK_PRIMARY,
-            s=10,
-            alpha=0.35,
+            s=9,
+            alpha=0.3,
             zorder=3,
             linewidths=0,
         )
         ax.scatter(
             x[i] + width / 2 + jitter,
-            sub["max_goodput_rps"],
+            best_vals,
             color=_INK_PRIMARY,
-            s=10,
-            alpha=0.35,
+            s=9,
+            alpha=0.3,
             zorder=3,
             linewidths=0,
         )
+        ax.scatter(
+            [x[i] - width / 2],
+            [first_nonzero_gm],
+            marker="D",
+            s=46,
+            color=_KIND_COLORS["baseline"],
+            edgecolors=_INK_PRIMARY,
+            linewidths=0.9,
+            zorder=5,
+        )
+        ax.scatter(
+            [x[i] + width / 2],
+            [best_gm],
+            marker="D",
+            s=46,
+            color=_KIND_COLORS["code"],
+            edgecolors=_INK_PRIMARY,
+            linewidths=0.9,
+            zorder=5,
+        )
 
+    ax.set_yscale("symlog", linthresh=100)
     ax.set_xticks(x)
     ax.set_xticklabels([_short_model(m) for m in models])
-    ax.set_ylabel("Sustained goodput (successful req/s)")
-    ax.set_title("Median baseline vs. best-refined goodput per model\n(dots: individual scenario×framework cells)")
+    ax.set_ylabel("Sustained goodput (successful req/s, symlog)")
+    ax.set_title(
+        "First-non-zero-goodput vs. best-refined goodput per model\n"
+        "(box: quartiles and full range; diamond: geometric mean, as reported\n"
+        "in the text; dots: individual scenario×framework cells)"
+    )
     _style_axes(ax)
-    ax.legend(frameon=False, loc="upper left")
+    legend_handles = [
+        Patch(facecolor=_KIND_COLORS["baseline"], alpha=0.5, label="first non-zero-goodput iteration"),
+        Patch(facecolor=_KIND_COLORS["code"], alpha=0.5, label="best refined iteration"),
+        plt.Line2D(
+            [0], [0], marker="D", linestyle="none", markersize=7,
+            markerfacecolor="white", markeredgecolor=_INK_PRIMARY,
+            label="geometric mean",
+        ),
+    ]
+    ax.legend(handles=legend_handles, frameon=False, loc="upper left")
     fig.tight_layout()
     return _save(fig, out_dir, stem)
 
@@ -270,9 +318,14 @@ def plot_baseline_vs_best_by_model(
 def plot_framework_comparison(
     cells: pd.DataFrame, out_dir: Path, *, stem: str = "framework_comparison"
 ) -> list[Path]:
+    # A cell with max_goodput_rps == 0 never records positive goodput at
+    # all and has no value a geometric mean can include (log(0) is
+    # undefined); exclude it explicitly rather than let it silently drop
+    # out via a NaN-only filter or, worse, get treated as a small value.
     df = cells.dropna(subset=["max_goodput_rps"])
+    df = df[df["max_goodput_rps"] > 0]
     if df.empty:
-        raise ValueError("no cells with max goodput")
+        raise ValueError("no cells with positive max goodput")
 
     envs = sorted(df["env"].unique())
     models = sorted(df["model"].unique())
@@ -303,7 +356,7 @@ def plot_framework_comparison(
                 zorder=3,
             )
             ax.hlines(
-                sub["max_goodput_rps"].median(),
+                geometric_mean(list(sub["max_goodput_rps"])),
                 xpos - slot * 0.32,
                 xpos + slot * 0.32,
                 color=model_colors[model],
@@ -315,7 +368,11 @@ def plot_framework_comparison(
     ax.set_xticks(range(len(envs)))
     ax.set_xticklabels(envs)
     ax.set_ylabel("Best goodput reached (successful req/s, symlog)")
-    ax.set_title("Best goodput reached per framework\n(dot: one scenario cell; bar: per-model median)")
+    ax.set_title(
+        "Best goodput reached per framework\n"
+        "(dot: one scenario cell; bar: per-model geometric mean;\n"
+        "cells with zero goodput throughout are excluded)"
+    )
     _style_axes(ax)
     ax.legend(frameon=False, loc="center left", bbox_to_anchor=(1.01, 0.5))
     fig.tight_layout()

@@ -25,8 +25,9 @@ across seven \textsc{BaxBench} scenarios and three application frameworks,
 a fully covered matrix of 63 scenario$\times$framework$\times$model cells
 and ten refinement iterations each. Iterative refinement improves
 sustained goodput in essentially every cell, sometimes converting a
-non-functional deployment into a working one, with gains from just over
-$1\times$ to more than $75\times$ depending on baseline under-provisioning.
+non-functional deployment into a working one, with gains from $1\times$
+(a few cells never improve past their first success) to more than
+$75\times$ depending on baseline under-provisioning.
 Code refinement contributes the largest single-step recoveries, dominated
 by correctness bugs invisible to single-container testing, and its mean
 effect exceeds deployment refinement's for every model. Deployment

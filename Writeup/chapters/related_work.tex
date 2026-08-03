@@ -1,13 +1,13 @@
 % =============================================================
-%  Chapter 2 — Related Work (revised draft)
+%  Chapter 2 — Related Work (shortened draft)
 % =============================================================
 %    §2.1  LLM code generation and backend evaluation benchmarks
-%    §2.2  Iterative self-refinement and agentic coding
-%    §2.3  Verification-gated code generation
-%    §2.4  Deployment configuration and learned cluster management
+%    §2.2  Self-refinement, agentic coding, and verification-gated
+%           generation
+%    §2.3  Deployment configuration and learned cluster management
 %           (incl. LLM-generated infrastructure as code)
-%    §2.5  LLM-driven performance optimization
-%    §2.6  Positioning of this work
+%    §2.4  LLM-driven performance optimization
+%    §2.5  Positioning of this work
 % =============================================================
 
 \chapter{Related Work}
@@ -18,307 +18,165 @@
 \section{LLM Code Generation and Backend Evaluation Benchmarks}
 \label{sec:rw-benchmarks}
 
-Evaluation of large language models for software engineering has progressed
-along a clear trajectory of increasing scope and realism.
-HumanEval~\cite{chen2021humaneval} and MBPP~\cite{austin2021mbpp} established
-pass@$k$ as the standard metric for short, self-contained Python synthesis
-from natural-language specifications.  SWE-bench~\cite{jimenez2024swebench}
-moved evaluation to the repository level, requiring models to resolve real
-GitHub issues by producing patches that pass project test suites.  These
-benchmarks measure whether generated software is \emph{correct} at increasing
-scales of context, but they do not assess complete backend services, security
-properties, or runtime performance under deployment.
+Evaluation of large language models for software engineering has moved from
+single-function synthesis~\cite{chen2021humaneval,austin2021mbpp} to
+repository-level issue resolution~\cite{jimenez2024swebench} to complete,
+security-checked backend applications~\cite{vero2025baxbench}
+(Section~\ref{sec:background-codegen}).  CWEval~\cite{peng2025cweval} and
+SecRepoBench~\cite{shen2026secrepobench} extend the security dimension with
+outcome-driven test oracles and repository-scale, fuzz-tested code-agent
+evaluation, respectively.  CodeFlowBench~\cite{wang2025codeflowbench} extends
+the correctness dimension to \emph{multi-turn} construction, where later
+functionality reuses earlier turns' output, and finds significant
+degradation as dependency complexity grows.
 
-\textsc{BaxBench}~\cite{vero2025baxbench} addresses the application layer:
-392~tasks across 28~scenarios, 14~frameworks, and 6~languages, evaluating
-whether LLMs can generate \emph{complete} backend applications that pass
-functional tests and resist security exploits.  Results show that even strong
-models achieve only moderate functional correctness, and that a large fraction
-of correct code remains insecure.  Complementary work by
-CWEval~\cite{peng2025cweval} jointly evaluates functionality and security with
-outcome-driven test oracles, demonstrating that prior security benchmarks can
-substantially overestimate safety.  SecRepoBench~\cite{shen2026secrepobench}
-extends secure-code evaluation to repository-level \emph{code agents},
-combining developer unit tests with OSS-Fuzz security tests across
-318~completion tasks in real C/C++ projects.
-
-CodeFlowBench~\cite{wang2025codeflowbench} introduces a complementary
-dimension: \emph{multi-turn iterative} code generation (``codeflow''), where
-new functionality is built by reusing functions implemented in earlier turns.
-Experiments show significant performance degradation relative to single-turn
-generation as dependency complexity grows, highlighting that iterative
-software construction is a distinct and difficult evaluation setting.
-
-Together, these benchmarks characterise whether LLM-generated software is
-correct, secure, or constructible over multiple turns.  They typically execute
+Together, these benchmarks characterise whether generated software is
+correct, secure, or constructible over multiple turns.  All of them execute
 programs in isolated containers, without orchestrated deployment, shared
-cluster resources, or load testing.  None measures \emph{sustainable
-throughput} when an application is deployed as a replicated service on
-Kubernetes, which is the gap our work addresses.
+cluster resources, or load testing (Section~\ref{sec:background-containerization}).
+None measures \emph{sustainable throughput} when an application is deployed
+as a replicated service on Kubernetes, which is the gap our work addresses.
 
 
-% ----- §2.2  Self-refinement and agentic coding -----
-\section{Iterative Self-Refinement and Agentic Coding}
+% ----- §2.2  Self-refinement, agentic coding, and verification -----
+\section{Self-Refinement, Agentic Coding, and Verification-Gated Generation}
 \label{sec:rw-agentic}
 
-A separate line of work asks not whether an LLM can produce correct output in
-one attempt, but whether it can improve its own output across turns using
-feedback it generates or receives.  ReAct~\cite{yao2023react} interleaves
-reasoning traces with actions against an external environment, letting a
-model plan, act, and revise its plan from observations rather than committing
-to a single chain of thought.  Reflexion~\cite{shinn2023reflexion} builds an
-explicit memory on top of this idea: an agent that fails a task verbalises
-what went wrong and carries that reflection into its next attempt, entirely
-through in-context text rather than any weight update.
-Self-Refine~\cite{madaan2023selfrefine} shows that the same
-generate-critique-revise loop, driven purely by an LLM's own textual
-feedback with no external verifier, improves outputs across a broad range of
-reasoning and generation tasks.
+Section~\ref{sec:background-iterative-refinement} introduces the general
+propose-evaluate-revise pattern our own method instantiates.  Two lines of
+prior work instantiate it for code, with different feedback sources.
+Reflexion~\cite{shinn2023reflexion} and Self-Refine~\cite{madaan2023selfrefine}
+use an LLM's own linguistic self-critique, an agent verbalises what went
+wrong, or critiques its own output, and carries that text into its next
+attempt, with no external verifier.  Specialised for software engineering,
+SWE-agent~\cite{yang2024sweagent} and OpenHands~\cite{wang2024openhands}
+instead close the loop with compiler and test signals from a sandboxed
+shell, the latter now underlying much of the field's pluggable multi-agent
+tooling.
 
-These general-purpose refinement loops have been specialised for software
-engineering.  SWE-agent~\cite{yang2024sweagent} shows that a purpose-built
-agent-computer interface, offering structured file viewing, editing, and
-test-running commands rather than an unconstrained shell, substantially
-improves an LLM's ability to resolve SWE-bench issues.
-OpenHands~\cite{wang2024openhands} generalises this into an open platform for
-coding agents that write code, run commands, and browse the web inside a
-sandboxed executor, and now underlies much of the pluggable multi-agent
-tooling used across the field.  AgentBench~\cite{liu2023agentbench}
-evaluates this broader class of LLM agents across eight interactive
-environments (including a database and an operating-system shell) and finds
-that even strong commercial models trail badly on long-horizon
-decision-making, motivating narrower, domain-specific loops such as
-SWE-agent's over an open-ended one.
+A related but distinct line constrains what an LLM may output, rather than
+iterating on what it has already produced.
+Synchromesh~\cite{poesia2022synchromesh} restricts token sampling to
+grammar- and type-correct programs; Clover~\cite{sun2023clover} and
+VERGE~\cite{singh2026verge} instead check code, specifications, or
+decomposed logical claims for mutual consistency using formal tools or SMT
+solvers.  All three target small, well-specified problems and have not been
+shown to scale to BaxBench-sized applications.
 
-Our iteration loop shares the basic shape of these systems: propose, execute,
-observe feedback, revise.  It differs in what is proposed and in what closes
-the loop.  Reflexion and Self-Refine revise natural-language or
-single-function outputs using an LLM's own linguistic self-critique.
-SWE-agent and OpenHands revise repository-level source code using compiler
-and test signals from a sandboxed shell.  Our agent instead revises one of two
-structured artefacts, application code or a constrained deployment
-specification, using quantitative signals gathered from an actual multi-node
-Kubernetes deployment under load: goodput, latency percentiles, and resource
-utilisation.  No self-critique step is required, since the load test itself
-supplies an objective, numeric verifier that self-refinement approaches lack.
+Our agent instead revises one of two structured artefacts, application code
+or a constrained deployment specification, using quantitative signals from
+an actual multi-node Kubernetes deployment under load: goodput, latency
+percentiles, and resource utilisation.  No self-critique step or formal
+proof is required, since the load test itself supplies an objective, numeric
+verifier that neither line above uses, and our correctness gate, BaxBench
+functional tests plus schema-validated specifications, is coarser but more
+scalable than constrained decoding or SMT verification.
 
 
-% ----- §2.3  Reliability -----
-\section{Verification-Gated Code Generation}
-\label{sec:rw-reliability}
-
-A third line of reliability work constrains what an LLM is allowed to output,
-rather than iterating on what it has already produced.
-Synchromesh~\cite{poesia2022synchromesh} combines Target Similarity Tuning for
-few-shot example selection with Constrained Semantic Decoding, which restricts
-token sampling to programs satisfying grammar, typing, and domain
-constraints.  Clover~\cite{sun2023clover} and VERGE~\cite{singh2026verge}
-pursue closed-loop \emph{formal} verification instead: code, specifications,
-or decomposed logical claims are checked for mutual consistency using formal
-tools or SMT solvers, with VERGE's Minimal Correction Subsets providing
-actionable refinement feedback across iterations.
-
-These methods target small, well-specified problems, textbook-level Dafny
-programs or decomposed logical claims, where constrained decoding or SMT
-verification stays tractable; none has been shown to scale to the multi-file
-backend applications that BaxBench evaluates.  Our framework enforces
-reliability with a coarser but more scalable gate: BaxBench functional tests
-and schema-validated deployment specifications, rather than constrained
-decoding or formal proof.  That gate is necessary but insufficient on its
-own, since a deployment that passes tests can still perform poorly under
-load, which motivates the performance-oriented refinement discussed in
-Sections~\ref{sec:rw-cluster} and~\ref{sec:rw-llm-perf}.
-
-
-% ----- §2.4  Cluster tuning -----
+% ----- §2.3  Cluster tuning -----
 \section{Deployment Configuration and Learned Cluster Management}
 \label{sec:rw-cluster}
 
-The idea that a system should observe its own state and adjust itself toward
-an operator's goals long predates LLM agents.  Kephart and Chess's vision of
-autonomic computing~\cite{kephart2003autonomic} frames self-management as a
-monitor-analyse-plan-execute loop and argues that growing system complexity
-makes such loops necessary rather than optional.  Our iteration loop, bench,
-feedback, decide, refine, is an instance of exactly this pattern, specialised
-to the case where the planning and execution steps are delegated to an LLM
-instead of a fixed control law.
+Self-management, a system observing its own state and adjusting itself
+toward an operator's goals, predates LLM agents.  Kephart and Chess's
+autonomic computing~\cite{kephart2003autonomic} frames this as a
+monitor-analyse-plan-execute loop; our own iteration loop (bench, feedback,
+decide, refine) is an instance of it, with an LLM standing in for the fixed
+control law.  In Kubernetes~\cite{burns2016borg,kubernetes}
+(Sections~\ref{sec:background-kubernetes}--\ref{sec:background-deployment-levers}),
+day-to-day tuning is typically \emph{reactive}: the Horizontal and Vertical
+Pod Autoscalers~\cite{kubernetes-hpa} adjust replica count or per-pod
+resources from live metrics within a fixed template, without reasoning
+about database topology, connection pooling, or pod placement.
 
-Production backends run on container orchestration platforms rather than in
-isolation, most commonly Kubernetes~\cite{burns2016borg,kubernetes}
-(Sections~\ref{sec:background-kubernetes}
-and~\ref{sec:background-deployment-levers} introduce the relevant primitives
-and deployment levers as background). Day-to-day tuning of a deployment's
-declared intent is often \emph{reactive}: the Horizontal and Vertical Pod
-Autoscalers~\cite{kubernetes-hpa} adjust replica count or per-pod resource
-requests from live metrics within a \emph{fixed} deployment template, without
-reasoning about database topology, connection pooling, pod placement, or the
-joint effect of application code and infrastructure layout.
+Several systems instead learn resource-management policy from data while
+holding the application and its manifest fixed.
+Autopilot~\cite{rzadca2020autopilot} recommends horizontal and vertical
+scaling from historical utilisation; FIRM~\cite{qiu2020firm} localises and
+automatically reprovisions the resource causing a service-level-objective
+violation; Decima~\cite{mao2019decima} learns cluster scheduling policy with
+deep reinforcement learning; OtterTune~\cite{vanaken2017ottertune} applies
+the same idea to DBMS configuration knobs directly analogous to our
+connection-pooling and database-topology fields.  None of the four revises
+application code or a deployment manifest for arbitrary HTTP services, and
+none is driven by an LLM.
 
-Beyond reactive rules, several systems learn resource-management policies
-directly from data.  Google's Autopilot~\cite{rzadca2020autopilot}
-recommends and enacts both horizontal and vertical scaling decisions for
-production workloads from historical utilisation, aiming to curb the chronic
-over-provisioning that manual limit-setting produces at scale.
-FIRM~\cite{qiu2020firm} takes a more reactive, SLO-driven approach: machine
-learning localises which microservice and which resource is causing a
-service-level-objective violation, then the system reprovisions that
-resource automatically, cutting violations by up to $16\times$ across
-standard microservice benchmarks.  Decima~\cite{mao2019decima} uses deep
-reinforcement learning to discover cluster scheduling policies for
-data-processing jobs that outperform hand-tuned heuristics.  At the database
-layer, OtterTune~\cite{vanaken2017ottertune} applies large-scale machine
-learning to recommend DBMS configuration knobs, buffer sizes, connection
-limits, and related parameters directly analogous to the connection-pooling
-and database-topology knobs exposed by our own deployment specification.
-All four systems optimise policies or parameters within a fixed system
-architecture: none revises application code or a declarative deployment
-manifest for arbitrary HTTP services, and none is driven by an LLM.
+Glia~\cite{hamadanian2025glia} is the closest prior work in combining LLM
+reasoning with measured performance feedback for infrastructure behaviour: a
+multi-agent architecture that autonomously designs request-routing,
+scheduling, and autoscaling mechanisms for a GPU cluster serving LLM
+inference.  It targets inference-serving mechanism design, generating new
+algorithms, rather than filling a constrained deployment specification for
+general backends.
 
-More recently, Glia~\cite{hamadanian2025glia} applies a multi-agent LLM
-architecture, combining reasoning, experimentation, and analysis, to design
-systems mechanisms for a distributed GPU cluster running LLM inference.  The
-system autonomously proposes algorithms for request routing, job scheduling,
-and autoscaling that match human-expert quality in substantially less time,
-with interpretable designs grounded in empirical feedback.  Glia is the
-closest prior work to our setting in combining \emph{LLM reasoning} with
-\emph{measured performance feedback} for infrastructure behaviour.  Our work
-differs in three respects: we target \emph{general BaxBench backend
-applications} rather than inference-serving stacks; we optimise a
-\emph{constrained deployment specification} (\texttt{spec.yaml}) rather than
-generating new routing or scheduling algorithms; and we score iterations by
-\emph{adaptive load-test goodput} on a multi-node Kubernetes cluster with
-explicit correctness gates before each benchmark.
+Closer to the \emph{specification} side of our framework,
+\textsc{IaCGen}~\cite{zhang2026iacgen} and TerraFormer~\cite{jana2026terraformer}
+apply the same iterative-agent pattern directly to infrastructure code
+(surveyed by Srivatsa~et~al.~\cite{srivatsa2024iacsurvey}): a
+fail-learn-refine-succeed loop against a live deployment simulation
+(\textsc{IaCGen}, raising first-attempt success from 20--30\% to over 90\%
+within 25~attempts), or against policy-guided verifier feedback
+(TerraFormer).  Both stop at \emph{deployability}, a binary, did-it-provision
+signal, rather than the throughput or latency the provisioned system
+sustains, and neither touches the application code being deployed.  Our
+deploy probe plays exactly this role, but as a precondition for our loop
+rather than its objective: only after a candidate is schedulable and ready
+do we measure and refine for goodput.
 
-A second, more directly comparable line of work applies the iterative-agent
-pattern of Section~\ref{sec:rw-agentic} to infrastructure code itself.
-Srivatsa~et~al.~\cite{srivatsa2024iacsurvey} survey the emerging use of LLMs
-for generating Infrastructure as Code (IaC), covering tools such as Terraform,
-CloudFormation, and Kubernetes manifests, and identify \emph{deployability},
-whether the generated configuration actually provisions successfully, as an
-open problem distinct from syntactic validity.
-Zhang~et~al.~\cite{zhang2026iacgen} address this directly: their
-\textsc{IaCGen} framework wraps an LLM in an iterative
-fail-learn-refine-succeed loop that deploys each candidate against a live
-DevOps simulation and feeds back format, syntax, and deployment errors,
-raising first-attempt deployment success from 20--30\% to over 90\% within
-25~attempts across 153~real-world cloud scenarios.
-TerraFormer~\cite{jana2026terraformer} pursues the same goal with a
-different feedback mechanism, fine-tuning an LLM with policy-guided verifier
-feedback (formal syntax, deployability, and policy-compliance checks) rather
-than live deployment attempts.
-
-\textsc{IaCGen} and TerraFormer are the closest prior systems to the
-\emph{spec} side of our framework: both iteratively regenerate a declarative
-configuration using feedback from real or simulated deployment attempts,
-exactly as our baseline-spec retries and deploy probes do for
-\texttt{spec.yaml} (Section~\ref{sec:methods-spec}).  They stop, however, at
-\emph{deployability}: their feedback signal and success criterion are binary
-(did the configuration provision correctly), not the throughput or latency
-the provisioned system can sustain under load, and neither work touches the
-application code being deployed.  Our deploy probe plays exactly the role
-their deployability check does, but it is a necessary precondition for our
-loop rather than its objective: only after a candidate is schedulable and
-ready do we measure and refine for goodput, and only our framework couples
-that refinement to an LLM-controlled choice between infrastructure and
-application-code changes.
-
-The systems above are typically evaluated on standard microservice benchmark
-suites.  DeathStarBench~\cite{gan2019deathstarbench} in particular
-established multi-tier social-network, media, and e-commerce applications,
-each with its own datastore, as a common substrate for studying resource
-management and tail latency under load.  Our BaxBench-derived scenarios play
-an analogous role for LLM-generated backends: fixed, representative
-applications deployed and load-tested on a real cluster, so that
-deployment-optimisation results are comparable across scenarios rather than
-tied to one hand-built benchmark application.  Unlike DeathStarBench's fixed
-microservice implementations, the applications in our study are themselves
-LLM-generated and refinable, which adds a second axis, application code, to
-the deployment-optimisation search space that FIRM, Autopilot, and Decima
-hold fixed.
-
-No prior system in this line evaluates whether an LLM agent can
-\emph{iteratively} refine replica topology, resource allocation, placement,
-and optional application code for LLM-generated web backends using
-sustainable-throughput feedback.  Learned resource managers (FIRM, Autopilot,
-Decima, OtterTune) hold application and deployment specification fixed and
-optimise policies instead; IaC-generation agents (\textsc{IaCGen},
-TerraFormer) iteratively refine a deployment specification but stop at
-deployability rather than performance.  Combining both, refinement of a
+No prior system combines both limits: learned resource managers (FIRM,
+Autopilot, Decima, OtterTune) hold application and specification fixed and
+optimise policy instead; IaC-generation agents (\textsc{IaCGen},
+TerraFormer) refine a specification but stop at deployability.  Refining a
 constrained deployment specification \emph{and} application code, driven by
-runtime load-test goodput rather than a pass/fail deployability check, is the
-problem our framework formalises.
+runtime load-test goodput rather than a pass/fail deployability check, is
+the problem our framework formalises.
 
 
-% ----- §2.5  Performance optimization -----
+% ----- §2.4  Performance optimization -----
 \section{LLM-Driven Performance Optimization}
 \label{sec:rw-llm-perf}
 
-Automatically searching for a faster configuration of a fixed program predates
-LLMs by a decade.  OpenTuner~\cite{ansel2014opentuner} runs an ensemble of
-search techniques over a program's parameter space, reallocating search
-budget toward whichever technique is currently improving a measured
-objective fastest.  It shares our framework's basic premise, that a
-measured objective should drive the next candidate, but searches a numeric
-parameter space rather than revising source code or a structured deployment
-specification, and does not reason about the candidate in natural language.
+Automatically searching for a faster configuration of a fixed program
+predates LLMs: OpenTuner~\cite{ansel2014opentuner} runs an ensemble of
+search techniques over a program's parameter space, reallocating budget
+toward whichever technique is currently improving a measured objective
+fastest.  It shares our premise that a measured objective should drive the
+next candidate, but searches a numeric parameter space rather than source
+code or a structured deployment specification.
 
-A growing body of more recent work asks whether LLMs specifically can
-improve \emph{performance}, not merely correctness, when given execution
-feedback.  Shypula~et~al.~\cite{shypula2024pie} curate PIE, a dataset of
-over
-77{,}000~human performance-improving edit pairs from competitive programming,
-and show that LLMs prompted or fine-tuned with feedback from a custom timing
-harness can learn to produce measurably faster code, including high-level
-algorithmic rewrites rather than only micro-optimisations.
-SWE-Perf~\cite{he2025sweperf} moves the same question to repository scale:
-140~instances derived from performance-improving pull requests, each with
-performance tests and expert reference patches.  Evaluations of
-Agentless~\cite{xia2024agentless}, OpenHands, and related approaches reveal a
-substantial gap between current LLMs and expert optimisers.  Both benchmarks
-are largely \emph{one-shot}: PIE evaluates isolated edit pairs and SWE-Perf
-asks for a single optimised patch, neither incorporating iterative runtime
-feedback from a system executing under load.
+More recent work asks whether LLMs specifically can improve
+\emph{performance}, not merely correctness, given execution feedback.
+Shypula~et~al.~\cite{shypula2024pie} curate PIE, over 77{,}000~human
+performance-improving edit pairs from competitive programming, and show that
+LLMs given feedback from a timing harness can learn to produce measurably
+faster code, including algorithmic rewrites.  SWE-Perf~\cite{he2025sweperf}
+moves the same question to repository scale, 140~instances derived from real
+performance-improving pull requests, and finds a substantial gap between
+current LLMs and expert optimisers.  Both are largely \emph{one-shot}:
+neither incorporates iterative runtime feedback from a system executing
+under load.
 
 Agentic systems have begun to close that loop with measurement.
 VibeServe~\cite{kamahori2025vibeserve} synthesises bespoke LLM serving
-runtimes through a two-level multi-agent loop.  An outer planner maintains an
-issue tracker and git-recorded optimisation history; an inner loop separates
-implementation, accuracy judging, and performance evaluation.  On standard
-Llama serving, generated systems match vLLM; on non-standard
-model-hardware-workload combinations, they achieve large speedups by
-specialising kernels, memory management, and scheduling logic.
+runtimes through a two-level multi-agent loop, an outer planner tracking
+optimisation history, an inner loop separating implementation, correctness
+judging, and performance evaluation, matching vLLM on standard Llama serving
+and achieving large speedups on non-standard hardware-workload combinations.
+Liu~et~al.~\cite{liu2025jitsystems}'s \emph{Just-in-Time Systems}
+(\textsc{Jitskit}) iterate an LLM agent through planning, coding, and
+critic-guided reflection to synthesise entire key-value stores that
+outperform FASTER, RocksDB, and Redis on all 18~configurations tested.
 
-The goodput objective itself has a systems lineage independent of LLM-driven
-optimisation.  DistServe~\cite{zhong2024distserve} disaggregates prefill and
-decoding across GPUs to maximise \emph{goodput}, the request rate an LLM
-serving system sustains while meeting per-request latency service-level
-objectives, rather than raw throughput that ignores those objectives.  We
-adopt the same goodput framing for a different serving problem, ordinary HTTP
-backends rather than LLM token generation, and use it as the reward signal an
-LLM agent optimises rather than as a scheduling objective a hand-designed
-system maximises.
-
-Liu~et~al.~\cite{liu2025jitsystems} argue for \emph{Just-in-Time Systems}:
-LLM agents can synthesise entire key-value stores from specification cards
-describing environment, workload, and required properties.  Their pipeline
-(\textsc{Jitskit}) iterates through planning, coding, evaluation with leading
-indicators, and critic-guided reflection, with an adversarial auditor that
-detects reward hacking.  Synthesised stores outperform FASTER, RocksDB, and
-Redis on all 18~configurations tested (up to $4.6\times$ on the most
-favourable spec).
-
-Our framework shares the iterative structure of VibeServe and Jitskit: each
-round produces a candidate, passes correctness gates, is benchmarked, and
-feeds structured diagnostics to the next iteration. It operates at a
-different level of the stack. PIE and SWE-Perf optimise \emph{source code} in
-isolation; VibeServe and Jitskit synthesise \emph{system implementations}; we
-optimise \emph{Kubernetes deployment configuration} (and optionally
-application code) for BaxBench backends, using \emph{goodput}, sustained
-successful requests per second, as the primary objective under an adaptive
-load profile.
+Our framework shares this iterative structure, propose, gate on correctness,
+benchmark, feed diagnostics forward, but at a different level of the stack:
+PIE and SWE-Perf optimise \emph{source code} in isolation; VibeServe and
+Jitskit synthesise \emph{system implementations}; we optimise
+\emph{Kubernetes deployment configuration} (and optionally application code)
+for BaxBench backends, using \emph{goodput} as the objective under an
+adaptive load profile.
 
 
-% ----- §2.6  Positioning -----
+% ----- §2.5  Positioning -----
 \section{Positioning of This Work}
 \label{sec:rw-positioning}
 
@@ -326,27 +184,23 @@ Table~\ref{tab:rw-comparison} summarises how representative systems relate to
 our framework across evaluation target, feedback structure, and deployment
 environment.  Benchmarks through CodeFlowBench establish correctness,
 security, and multi-turn code quality but not cluster performance.
-General-purpose iterative-refinement loops (Reflexion, Self-Refine) and their
-coding specialisations (SWE-agent, OpenHands) establish that LLMs can improve
-their own output across turns, but none of them is driven by a quantitative
-infrastructure metric or touches deployment at all.  Verification-based
-reliability methods (Synchromesh, Clover, VERGE), classical and learned
-cluster or database tooling (autonomic computing, OpenTuner, autoscaling,
-Decima, FIRM, Autopilot, OtterTune), and LLM-driven IaC generation
-(\textsc{IaCGen}, TerraFormer) address trust, infrastructure tuning, or
-deployability without benchmarking full LLM-generated backends under
-adaptive load.  Glia is the closest system in spirit, combining LLM
-reasoning with measured feedback for infrastructure behaviour, but for
-inference-serving mechanism design rather than deployment configuration.
-SWE-Perf, PIE, VibeServe, and Jitskit demonstrate LLM-driven performance
-optimisation at the code or implementation level.
+General-purpose and code-specialised refinement loops, and verification-based
+reliability methods, establish that LLMs can improve or constrain their own
+output, but none is driven by a quantitative infrastructure metric.
+Classical and learned cluster or database tooling, and LLM-driven IaC
+generation, address infrastructure tuning or deployability without
+benchmarking full LLM-generated backends under adaptive load.  Glia is
+closest in spirit, combining LLM reasoning with measured feedback, but for
+inference-serving mechanism design.  SWE-Perf, PIE, VibeServe, and Jitskit
+demonstrate LLM-driven performance optimisation at the code or
+implementation level.
 
 Our thesis occupies the intersection these lines leave open: \emph{iterative
 deployment optimisation} of complete, LLM-generated backend applications on a
 real Kubernetes cluster, with the agent controlling both application code and
-a validated deployment specification, and with each iteration scored by
-measured goodput, rather than static tests, self-critique, a deployability
-check, or a fixed benchmark application alone.
+a validated deployment specification, scored each iteration by measured
+goodput rather than static tests, self-critique, a deployability check, or a
+fixed benchmark application alone.
 
 \begin{table}[t]
   \centering

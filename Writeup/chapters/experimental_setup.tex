@@ -85,7 +85,7 @@ instance so that cache stays useful. The harness does not need to send
 any explicit cache parameters for this model.
 
 Table~\ref{tab:setup-model-config} gives the resulting per-model context
-window and price list; Section~\ref{sec:results-rq3} reports what that
+window and price list; Section~\ref{sec:results-rq4} reports what that
 translated to in measured spend over this evaluation.
 
 \begin{table}[htbp]
@@ -111,7 +111,7 @@ translated to in measured spend over this evaluation.
   point conversational runs here cross by roughly iteration~5.
   $^\ddagger$\texttt{glm-5.2} is accessed through OpenRouter rather than a
   first-party API and has no fixed \$/MTok rate in this evaluation: its
-  measured cost (Section~\ref{sec:results-rq3}) is taken directly from
+  measured cost (Section~\ref{sec:results-rq4}) is taken directly from
   OpenRouter's own reported per-request charge, which already nets out its
   implicit caching discount, rather than computed from a price list.
 \end{table}
@@ -139,6 +139,18 @@ not an exhaustive sample of it. All seven require a backing database,
 making database topology and connection handling
 (Section~\ref{sec:methods-spec}) relevant to every cell. They differ
 mainly in API surface size and statefulness.
+
+\paragraph{Generation parameters.} For the four generated scenarios,
+\texttt{gpt-5.5} drove the pipeline's own reasoning steps (scenario idea,
+API specification, and functional-test generation and iteration;
+Section~\ref{sec:methods-scenario-gen}), with a difficulty setting of 5
+endpoints. \texttt{glm-5.2}, \texttt{gemini-3.6-flash}, and
+\texttt{deepseek-v4-flash} supplied the reference implementations used to
+calibrate the resulting functional and load tests
+(Sections~\ref{sec:methods-scenario-gen-functional}
+and~\ref{sec:methods-scenario-gen-locust}); as with every reference
+implementation in this thesis, none of the three is itself a candidate in
+the later model-evaluation experiments.
 
 Endpoint counts below are unique OpenAPI paths, not operations
 (\textsc{Petstore}'s 8 paths, for example, carry 13 operations across the
@@ -176,7 +188,7 @@ Each scenario is combined with up to three application frameworks
 a compiled natively-concurrent runtime, an interpreted WSGI stack (the
 standard synchronous Python web-server interface, run here under
 \texttt{gunicorn}), and a compiled async runtime respectively: three points
-on the throughput-ceiling spectrum that Section~\ref{sec:results-rq4} uses
+on the throughput-ceiling spectrum that Section~\ref{sec:results-rq5} uses
 to separate framework effects from refinement effects.
 
 
