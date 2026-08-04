@@ -17,9 +17,9 @@
 Chapter~\ref{ch:setup} fixed what was run: three models, seven scenarios,
 three frameworks, one sample per cell. This chapter asks what it shows.
 Rather than walking through every cell one at a time, it is organised
-around six research questions that each aggregate across every cell,
+around seven research questions that each aggregate across every cell,
 model, and scenario collected, closing with a synthesis that draws the
-six answers together and connects them back to the thesis's central
+seven answers together and connects them back to the thesis's central
 question (Section~\ref{sec:intro-missing}): \emph{can an LLM agent
 iteratively optimise the deployment configuration of a backend application
 on a Kubernetes cluster, guided by runtime performance feedback, to
@@ -35,25 +35,122 @@ ten-iteration refinement budget.
 \section{Overview of the Collected Data}
 \label{sec:results-overview}
 
-This section reports on \textbf{63 Kubernetes experiments} across the
-three models, seven scenarios, and three frameworks introduced in
-Chapter~\ref{ch:setup}. Each experiment's per-iteration goodput,
-refinement lever, deployment-spec knobs, and recorded failure records
-feed the figures and summary statistics throughout this chapter.
-%
-\textbf{Caveat on sample size.} Every cell in this chapter is a single
-sample (one code-generation seed) run once (Section~\ref{sec:setup-procedure}).
-The comparisons below are therefore \emph{descriptive}, not statistically
-tested; medians and individual scenario-level points are shown side by
-side throughout so the reader can judge dispersion directly rather than
-trust a single summary statistic. Section~\ref{sec:discussion-limitations}
-returns to what this does and does not license us to claim.
+This section reports on \textbf{63 experiments} across the three models,
+seven scenarios, and three frameworks introduced in
+Chapter~\ref{ch:setup}. Each experiment records its per-iteration
+goodput, the refinement lever applied, the resulting deployment-spec
+knobs, and any failures observed; these records feed the figures and
+summary statistics presented later in this chapter.
+
+Every cell in this chapter reflects a single run, generated from one
+code-generation and deployment-generation seed
+(Section~\ref{sec:setup-procedure}); Section~\ref{sec:methods-metrics}
+gives the rationale for this design and what it does and does not
+support. Goodput and gain,
+introduced from Section~\ref{sec:results-rq1} onward, are positive,
+multiplicative quantities and are summarised using geometric means.
+Individual scenario-level points are shown alongside every aggregate so
+the reader can assess variation directly rather than rely on a single
+summary statistic. Section~\ref{sec:discussion-limitations} discusses in
+more detail what this single-run design does and does not allow us to
+claim.
 
 
 % ----- §5.2 RQ1 -----
 \section{RQ1: Does Iterative Refinement Improve Sustained Goodput?}
 \label{sec:results-rq1}
 
+\begin{table}[htbp]
+  \centering
+  \caption{First-non-zero-goodput vs.\ best-iteration goodput, by model,
+    as geometric means over cells with positive goodput ($n$ valid, out
+    of 21). \emph{Healthy baseline} is the stricter count of cells already
+    serving traffic at iteration \texttt{000}. \emph{Gain} is the
+    geometric mean of each cell's own best/first-non-zero ratio.}
+  \label{tab:results-rq1-summary}
+  \small
+  \begin{tabular}{@{}lrrrrr@{}}
+    \toprule
+    \textbf{Model} & $n$ valid & Healthy baseline & First non-zero & Best & Gain \\
+    \midrule
+    \texttt{claude-opus-4-8} & 20 / 21          & 12 / 21          & 4{,}084           & 13{,}382          & $\mathbf{3.3\times}$ \\
+    \texttt{gpt-5.5}         & \textbf{21 / 21} & \textbf{15 / 21} & \textbf{11{,}989} & \textbf{32{,}817} & $2.7\times$ \\
+    \texttt{glm-5.2}         & 20 / 21          & 7 / 21           & 4{,}952           & 12{,}630          & $2.5\times$ \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\paragraph{Evidence.}
+Table~\ref{tab:results-rq1-summary} aggregates all 63 cells by model: for
+each cell it compares the first iteration with positive goodput against
+that cell's own best iteration, and reports the geometric-mean ratio
+between them as the \emph{gain}. Figure~\ref{fig:results-baseline-vs-best}
+(below) shows the first-vs-best comparison aggregated per model, with
+every cell's own value plotted alongside the geometric mean.
+Figure~\ref{fig:results-trajectories-grid} (further below) shows the same
+63 trajectories individually, one panel per scenario$\times$framework
+cell. Cells that never record positive goodput at any iteration have no
+valid gain reference and are excluded from these geometric means rather
+than counted at $0$ (the table's ``$n$ valid'' column). The same two
+cells appear in Figure~\ref{fig:results-trajectories-grid} as panels
+whose trajectory never leaves zero across all ten iterations.
+
+\texttt{gpt-5.5} leads on both ends, and not by a small margin: its
+geometric-mean best ($32{,}817$\,req/s) is more than double
+\texttt{claude-opus-4-8}'s ($13{,}382$) and roughly $2.6\times$
+\texttt{glm-5.2}'s ($12{,}630$). It also has the highest first-non-zero
+goodput and the most cells with an already-healthy baseline (15 of 21),
+meaning it most often produces a baseline strong enough to go straight
+into refinement rather than needing to recover from a dead start first.
+
+\texttt{glm-5.2} sits at the other end on the healthy-baseline measure,
+with the fewest healthy baselines of the three (7 of 21, less than half
+of \texttt{gpt-5.5}'s 15), yet still reaches a geometric-mean best
+goodput ($12{,}630$\,req/s) close to \texttt{claude-opus-4-8}'s
+($13{,}382$): whatever state the baseline is in, refinement closes most
+of the gap by the best iteration.
+
+\texttt{claude-opus-4-8} shows the largest geometric-mean gain of the
+three ($3.3\times$), largely because it also starts from the lowest
+first-non-zero goodput. The same absolute improvement reads as a larger
+multiplicative gain from a lower starting point, so this result says more
+about where its trajectories start than about how strong its best
+iteration is. Its geometric-mean best ($13{,}382$\,req/s) sits well below
+\texttt{gpt-5.5}'s but only modestly above \texttt{glm-5.2}'s
+($12{,}630$). Section~\ref{sec:results-rq5} traces this shortfall to a
+pair of low-goodput \textsc{Rust-Actix} cells that stall at their first
+successful iteration, not to a general weakness of that framework for
+\texttt{claude-opus-4-8}.
+
+\begin{figure}[htbp]
+  \centering
+  \includegraphics[width=0.85\linewidth]{figures/eval/baseline_vs_best_by_model.pdf}
+  \caption{First-non-zero-goodput vs.\ best-refined-iteration goodput, per
+    model. Boxes show the quartiles and full range across cells with
+    positive goodput; diamonds mark the geometric mean reported in the
+    text and Table~\ref{tab:results-rq1-summary}; dots show every
+    individual scenario$\times$framework cell.}
+  \label{fig:results-baseline-vs-best}
+\end{figure}
+
+Figure~\ref{fig:results-baseline-vs-best} and Table~\ref{tab:results-rq1-summary}
+make the same point from two directions. \texttt{gpt-5.5}'s first-non-zero
+geometric mean ($11{,}989$\,req/s) is on par with \texttt{glm-5.2}'s and
+\texttt{claude-opus-4-8}'s \emph{best}-iteration geometric means
+($12{,}630$ and $13{,}382$\,req/s): on average, its baseline already
+reaches the goodput level the other two models only reach after
+refinement. This is not an average pulled up by a handful of strong
+cells: \texttt{gpt-5.5}'s whole first-non-zero box sits close to the
+other two models' best-iteration boxes, not just its geometric mean, and
+even its lowest first-non-zero value ($1{,}182$\,req/s) is higher than
+either other model's lowest. The boxes also differ in width:
+\texttt{claude-opus-4-8} has the widest spread of the three models on
+both the first-non-zero and best-iteration side, driven by the same low
+outliers noted above. \texttt{glm-5.2}'s best-iteration box is the
+narrowest of the three, its refined cells landing in a comparatively
+tight band regardless of how healthy the baseline was.
+
+\FloatBarrier
 \begin{figure}[htbp]
   \centering
   \includegraphics[width=1\linewidth]{figures/eval/goodput_trajectories_grid.pdf}
@@ -61,115 +158,52 @@ returns to what this does and does not license us to claim.
     cell, coloured by model.}
   \label{fig:results-trajectories-grid}
 \end{figure}
+\FloatBarrier
 
-\begin{figure}[htbp]
-  \centering
-  \includegraphics[width=0.85\linewidth]{figures/eval/baseline_vs_best_by_model.pdf}
-  \caption{Median baseline (iteration \texttt{000}) vs.\ best-refined-iteration
-    goodput, per model. Bars show the per-model median across cells; dots show
-    every individual scenario$\times$framework cell.}
-  \label{fig:results-baseline-vs-best}
-\end{figure}
-
-\paragraph{Evidence.}
-Table~\ref{tab:results-rq1-summary} and Figures~\ref{fig:results-trajectories-grid}--\ref{fig:results-baseline-vs-best}
-summarise all 63 cells at the model level.
-
-\begin{table}[htbp]
-  \centering
-  \caption{Baseline vs.\ best-iteration goodput, by model ($n=21$ cells per
-    model). Baseline and Best are medians across all cells, in req/s;
-    Healthy is the number of cells with baseline goodput $>0$; Gain is the
-    median best/baseline ratio restricted to healthy cells.}
-  \label{tab:results-rq1-summary}
-  \small
-  \begin{tabular}{@{}lrrrrr@{}}
-    \toprule
-    \textbf{Model} & $n$ & Baseline & Best & Healthy & Gain \\
-    \midrule
-    \texttt{claude-opus-4-8} & 21 & 1{,}868.1  & 15{,}565.2 & 12 / 21 & $4.4\times$ \\
-    \texttt{gpt-5.5}         & 21 & 11{,}305.1 & 31{,}590.2 & 15 / 21 & $2.1\times$ \\
-    \texttt{glm-5.2}         & 21 & 0.0        & 13{,}946.2 & 7 / 21  & $1.8\times$ \\
-    \bottomrule
-  \end{tabular}
-\end{table}
-
-Restricting to cells where the baseline already reached measurable
-goodput, the ratio of best-iteration to baseline goodput is positive for
-every model:
-
-\begin{description}
-  \item[\texttt{claude-opus-4-8}] has a healthy baseline in 12 of its 21
-    cells; median gain $4.4\times$ (mean $6.3\times$), ranging from
-    $1.7\times$ to $16.2\times$.
-  \item[\texttt{gpt-5.5}] has a healthy baseline in 15 of its 21 cells;
-    median gain $2.1\times$ (mean $9.7\times$, pulled up by a $75.4\times$
-    outlier on \textsc{ClickCount}$\times$\textsc{Go-net-http}, where the
-    baseline was severely under-provisioned at 48 replicas and a full CPU
-    core each, against a $1.1\times$ floor where the baseline was already
-    close to its achievable ceiling).
-  \item[\texttt{glm-5.2}] has a healthy baseline in only 7 of its 21
-    cells, the lowest of the three; median gain $1.8\times$ (mean
-    $4.7\times$, range $1.0$--$14.9\times$), with its own largest gain
-    also on \textsc{ClickCount}$\times$\textsc{Go-net-http} ($14.9\times$):
-    the same near-stateless, severely under-provisioned scenario drives
-    the largest observed gain for both models that show a large-outlier
-    pattern, evidence the effect is a property of the scenario's baseline
-    provisioning rather than of either model individually.
-\end{description}
-
-\texttt{claude-opus-4-8}'s median sits below the other two partly because
-of one cell, \textsc{BranchWeave}$\times$\textsc{Rust-Actix}: a healthy
-baseline ($8{,}325.0$\,req/s) that peaks at $3.0\times$
-($25{,}327.3$\,req/s, iteration~007) but is not this cell's largest
-oddity; see the note on its ending below.
-
+\newpage
 \paragraph{Refinement also rescues \emph{dead} baselines, almost always.}
-In several cells the baseline is recorded as exactly $0$\,req/s, which is
-not the same as never having served a request. This happens in one of two
-ways (Section~\ref{sec:methods-load-profile}): either the initial warm-up
-health check fails and the explore phase never starts, or explore
-succeeds in finding a working load level but the deployment then fails
-the health check during the recovery step that would hand it off to
-refine, the phase sustained goodput is actually scored from. Both are
-closer to the deployment collapsing under sustained load than to it never
-functioning at all. Across all three models, \textbf{29 of the 63 cells}
-start this way, and
-\textbf{27 of those 29} recover to a benchmarkable, non-zero deployment
-somewhere in their trajectory: all 6 of \texttt{gpt-5.5}'s dead baselines
-recover, 13 of \texttt{glm-5.2}'s 14 dead baselines recover, and 8 of
+Figure~\ref{fig:results-trajectories-grid} plots the sustained goodput
+recorded at each refinement iteration, not the higher load levels
+explore deliberately probes to find where the deployment collapses
+(Section~\ref{sec:methods-load-profile}). A trajectory that stays at
+$0$\,req/s therefore means the deployment failed the warm-up or recovery
+health gate required to enter or continue refinement, not necessarily
+that it could serve no requests at any load. Across all three models,
+\textbf{29 of the 63 cells} start with an unhealthy baseline, and
+\textbf{27 of those 29} recover to a non-zero deployment somewhere in
+their trajectory: all 6 of \texttt{gpt-5.5}'s dead baselines recover, 13
+of \texttt{glm-5.2}'s 14 dead baselines recover, and 8 of
 \texttt{claude-opus-4-8}'s 9 dead baselines recover. Two cells never
 recover across the full ten-iteration budget: \texttt{claude-opus-4-8}'s
 \textsc{ClickCount}$\times$\textsc{Python-Flask} and \texttt{glm-5.2}'s
 \textsc{TransitPulseDelayReporter}$\times$\textsc{Go-net-http}, the latter
 recording exactly $0$\,req/s at every one of its ten iterations despite the
 decision stage trying both code and deployment refinement across the
-trajectory. This is a qualitatively different contribution than the tuning
-gains above: it is the loop converting a \emph{non-functional} deployment
-into a \emph{functional} one, not just a faster one, though, as the two
-non-recovering cases show, not a guarantee.
+trajectory. Refinement therefore contributes more than a tuning-speed
+improvement: in most of these cases it brings a deployment that was not
+clearing our health gate up to an accepted sustained-goodput level under
+our load profile, though, as the two non-recovering cases show, recovery
+is not guaranteed.
 
-\paragraph{Improvement is not perfectly monotonic, and can end badly.}
-Individual iterations regularly regress goodput relative to the previous
-successful iteration (visible as sawtooth segments in
-Figure~\ref{fig:results-trajectories-grid}). Because the framework only
-advances the ``latest good'' lineage on \emph{successful} benches
-(Section~\ref{sec:methods-outcome}), a regression is not silently
-compounded: the next iteration's decision stage sees it in its feedback,
-and in most cases observed here the trajectory recovers within one to two
-iterations. \textsc{BranchWeave}$\times$\textsc{Rust-Actix} on
-\texttt{claude-opus-4-8}, flagged above, is the sharpest exception to that
-pattern in this dataset: after peaking at $25{,}327.3$\,req/s (iteration~007),
-two consecutive spec-refinement iterations (009, dropping database
-replicas $3\to2$; 010, dropping \texttt{max\_connections} $400\to250$)
-both regress the deployment to \textbf{0} goodput, and the trajectory
-simply runs out of budget there, ending at $0$\,req/s despite having
-reached $3\times$ its own baseline one iteration earlier. Unlike the dead
-baselines above, this cell's baseline was healthy; what fails is the
-\emph{end} of an otherwise-successful trajectory, with no iterations left
-to recover once the budget is spent. Section~\ref{sec:results-rq6} details
-a related, if less severe, case where the recovery takes longer than one
-step but still happens before the budget runs out.
+\paragraph{Improvement is not perfectly monotonic and can end in failure.}
+Individual iterations often regress relative to the preceding successful
+iteration, producing the sawtooth patterns in
+Figure~\ref{fig:results-trajectories-grid}. Because the framework
+advances the ``latest good'' lineage only after a successful benchmark
+(Section~\ref{sec:methods-outcome}), regressions are not silently
+compounded: the next decision stage receives them as feedback, and most
+trajectories recover within one or two iterations.
+\textsc{BranchWeave}$\times$\textsc{Rust-Actix} on \texttt{claude-opus-4-8}
+is the sharpest exception. After reaching $25{,}327.3$\,req/s at
+iteration~007, two consecutive spec-refinement iterations, 009, which
+reduced database replicas from 3 to 2, and 010, which reduced
+\texttt{max\_connections} from 400 to 250, drove goodput to zero. The
+trajectory then exhausted its budget, ending at $0$\,req/s despite having
+reached $3\times$ its own baseline just one iteration earlier. Unlike the
+dead baselines above, this cell began healthy; it failed only at the end
+of an otherwise successful trajectory, with no iterations remaining for
+recovery. Section~\ref{sec:results-rq7} discusses a milder case that
+recovers more slowly but before the budget is exhausted.
 
 \paragraph{Interpretation.}
 Iterative refinement improves sustained goodput in essentially every cell
@@ -200,8 +234,193 @@ it could recover from a late regression.
 
 
 % ----- §5.3 RQ2 -----
-\section{RQ2: Which Refinement Lever Contributes More: Code or Deployment?}
+\section{RQ2: Does the Load Profile Itself Locate Sustained Goodput
+  Efficiently and Reliably?}
 \label{sec:results-rq2}
+
+Every goodput number in this chapter, including RQ1's, is produced by one
+measurement instrument: the Explore-and-Refine load profile
+(Section~\ref{sec:methods-load-profile}), which searches for a
+deployment's sustainable throughput in four stages, a health-gated
+warm-up, an aggressive explore ramp, a conservative recovery step, and a
+fine-grained refine search, rather than being told a target rate in
+advance. This question validates that instrument rather than adding a new
+claim about the systems it measures: if the profile itself locates
+sustained goodput slowly, inconsistently, or only for a narrow range of
+deployments, every other RQ in this chapter inherits that weakness
+silently. We ask this in three parts: how much wall-clock time the search
+costs and where that time goes across its four phases; how the refined
+estimate it eventually reports relates to the peak goodput the explore
+phase observes on the way there; and how often the profile actually
+reaches a usable estimate at all, given that it deliberately pushes every
+deployment into overload at least once.
+
+\paragraph{Method.} The figures below are not read off
+\texttt{results\_aggregate/cells.csv}, whose \texttt{max\_/final\_goodput\_rps}
+columns are aggregated along the \emph{iteration} axis (the outer
+code/deployment refinement loop RQ1 and RQ3 examine), not along the
+\emph{phase} axis this question needs. Instead, each of the \textbf{631}
+individual bench runs recorded in this dataset, every iteration of every
+cell, not only the 63 baseline iterations, has its controller log
+(\texttt{bench.log}) parsed directly for the phase-transition lines the
+load profile itself emits: the warm-up health check, each explore-ramp
+step and its running peak, the explore-stop condition, the recovery
+settle outcome, and the refine phase's per-level decisions. This recovers
+the four phase durations, the goodput the explore phase peaked at before
+stopping, and the phase at which each run ultimately terminated, all from
+data already on disk; no additional bench runs were needed for this part
+of the analysis.
+
+\paragraph{Evidence: efficiency.}
+Figure~\ref{fig:results-rq2-phase-durations} shows the wall-clock
+duration of each phase across all parsed runs. The warm-up gate is fixed
+at 30\,s by construction. Explore is the dominant cost (median 246\,s,
+IQR 157--342\,s, up to 588\,s), consistent with it being the phase that
+searches the widest range of load levels; recovery is cheap and mostly
+single-attempt (median 45\,s, IQR 45--46\,s, matching the profile's
+45\,s settle window); refine costs less than explore despite being the
+more careful search (median 62\,s, IQR 41--105\,s), because its
+efficiency-scaled step size shrinks automatically as the deployment
+approaches its ceiling. A complete run costs a median of \textbf{402\,s}
+(IQR 303--513\,s, maximum 1{,}154\,s), well under the profile's own
+30-minute (1{,}800\,s) time budget in every one of the 631 runs: the
+search consistently terminates on its own phase-completion criteria, not
+because the time budget forced it to stop.
+
+\begin{figure}[htbp]
+  \centering
+  \includegraphics[width=0.72\linewidth]{figures/eval/load_profile_phase_durations.pdf}
+  \caption{Wall-clock duration by load-profile phase, across all 631
+    individual bench runs in this dataset (log scale; warm-up is
+    effectively fixed at 30\,s by construction).}
+  \label{fig:results-rq2-phase-durations}
+\end{figure}
+
+\paragraph{Evidence: accuracy and repeatability.}
+Restricting to the 479 runs that produce a positive sustained-goodput
+estimate, that estimate ranges from 287\,req/s to 96{,}925\,req/s, over
+two orders of magnitude, which is the range an exponential-ish explore
+ramp is designed for: a linear staircase sized to resolve the low end of
+this range would need an impractical number of steps to reach the high
+end. Figure~\ref{fig:results-rq2-peak-vs-sustained} compares, for each of
+these runs, the explore phase's own recorded peak goodput against the
+refine phase's final sustained-goodput estimate. The typical pattern is
+the expected one: refine settles at a level below the transient explore
+peak (median gap $+8.4\%$, IQR $0.2$--$33.9\%$), reflecting that a peak
+reached while still ramping upward is not the same as a level the
+deployment can hold indefinitely. Less expected: in \textbf{23.8\%} of
+runs, the refined estimate is \emph{higher} than the explore phase's own
+recorded peak. The clearest case in this dataset is
+\texttt{gpt-5.5}'s \textsc{ClickCount}$\times$\textsc{Python-Flask},
+iteration~5: explore stops at 8{,}750 users after a single p95 spike to
+1{,}100\,ms (peak 6{,}817.7\,req/s), but refine's careful,
+stability-gated search from the recovered level continues past that
+figure to settle at 18{,}560 users and 17{,}401.2\,req/s, $2.55\times$
+higher. Explore's fast, coarse ramp is vulnerable to exactly this kind of
+transient latency spike; refine exists in part to correct for it, not
+merely to shave a safety margin off a peak that was already
+trustworthy.
+
+\begin{figure}[htbp]
+  \centering
+  \includegraphics[width=0.62\linewidth]{figures/eval/load_profile_peak_vs_sustained.pdf}
+  \caption{Explore-phase peak goodput vs.\ the refine-phase sustained
+    estimate, one point per bench run with both quantities defined
+    ($n=479$). Points above the $y=x$ line settle higher than their own
+    recorded explore peak.}
+  \label{fig:results-rq2-peak-vs-sustained}
+\end{figure}
+
+\textbf{Repeatability.} \emph{[Pending: a stratified sample of existing
+cells is being re-benchmarked with the bulk reverification tool
+(Section~\ref{sec:methods-load-profile}, deploy-and-bench only, no new LLM
+calls) under an identical load-profile configuration, to report how much
+the sustained-goodput estimate varies run-to-run holding code, spec, and
+deployment fixed. This paragraph will report the relative deviation
+across those paired runs once that data is available; every other number
+in this section is already final.]}
+
+\paragraph{Evidence: reliability, safety, and robustness.}
+Table~\ref{tab:results-rq2-funnel} tracks all 631 runs through the four
+gates the profile must pass to report an estimate. \textbf{92.2\%}
+survive the 30-second warm-up health check; every run that survives it
+goes on to trigger one of the profile's explore-stop conditions, roughly
+half on a latency breach ($49.5\%$), just over a third on a goodput
+collapse ($37.3\%$), and the rest on an outright failure-rate breach
+($7.9\%$) or the 100{,}000-user ceiling ($5.3\%$). Of the runs that
+reach this point, recovery succeeds, and hands off to refine, in
+\textbf{86.6\%} of cases. Refine, in turn, produces a usable estimate in
+\textbf{95.0\%} of the runs that reach it; the remaining 25 runs enter
+refine only to hit an immediate overload (fail rate above threshold)
+before completing even one stable settle window, so recovery having
+succeeded is not itself a guarantee that refine will report a nonzero
+number. Chaining all four gates, \textbf{75.9\%} of all 631 runs produce
+a positive sustained-goodput estimate; the rest report exactly $0$,
+consistent with the two failure mechanisms RQ1 already describes
+qualitatively (Section~\ref{sec:results-rq1}), a warm-up that never
+passes, or a recovery that exhausts its retries, now counted precisely at
+the level of individual bench runs rather than only baseline iterations.
+
+\begin{table}[htbp]
+  \centering
+  \caption{Phase-outcome funnel across all 631 bench runs.}
+  \label{tab:results-rq2-funnel}
+  \small
+  \begin{tabular}{@{}lrr@{}}
+    \toprule
+    \textbf{Gate} & \textbf{Count} & \textbf{\% of previous stage} \\
+    \midrule
+    Total bench runs                   & 631 & --- \\
+    Survives warm-up                   & 582 & $92.2\%$ \\
+    Recovery succeeds                  & 504 & $86.6\%$ \\
+    Refine produces an estimate        & 479 & $95.0\%$ \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+None of these failure rates point to the profile being miscalibrated
+toward excessive aggression: a $92.2\%$ warm-up survival rate leaves
+comparatively few runs failing before the load profile has done anything
+beyond holding a fixed, modest initial load, and the majority of the
+remaining loss happens at recovery and refine, which is exactly where a
+genuinely unhealthy or regressed deployment (Section~\ref{sec:results-rq1}'s
+dead baselines and late regressions) would be expected to show up
+regardless of which load profile measured it.
+
+\paragraph{Interpretation.}
+The load profile costs a median of under seven minutes per run, well
+inside its own time budget, and spends that time roughly where the
+mechanism design would predict: most on the wide, aggressive explore
+search, least on the narrow, efficiency-gated refine search. Its refined
+estimate is usually, but not always, below the transient peak the
+explore phase observes, and the exception, refine settling
+\emph{above} explore's peak in roughly a quarter of runs, is itself
+informative: it shows the coarse explore ramp can be fooled by a single
+latency spike into stopping short of what a deployment can actually
+sustain, and that the recovery-and-refine sequence is doing real
+corrective work, not just conservatively discounting a number it already
+trusted. Three in four runs produce a usable estimate at all; of the
+runs that do not, most fail at a stage (recovery, refine) that plausibly
+reflects the deployment's own health rather than the profile's search
+strategy.
+
+\paragraph{Conclusion.}
+\textbf{Yes, with one part still open.} The profile locates sustained
+goodput efficiently (a median run costs under seven minutes, comfortably
+inside its own budget) and is robust enough to survive and recover from
+the overload it deliberately induces in the large majority of runs
+(86.6\% recovery success given an explore-stop, 75.9\% of all runs
+reaching a positive estimate overall). Its refined estimate is not simply
+a discounted version of the explore peak: it is sometimes lower, as
+expected, and sometimes higher, correcting for a peak that undersold the
+deployment. What this section cannot yet answer is how much that refined
+estimate varies if the same deployment is measured twice; the
+repeatability paragraph above will close that gap.
+
+
+% ----- §5.4 RQ3 -----
+\section{RQ3: Which Refinement Lever Contributes More: Code or Deployment?}
+\label{sec:results-rq3}
 
 \begin{figure}[htbp]
   \centering
@@ -209,14 +428,14 @@ it could recover from a late regression.
   \caption{Per-step goodput change (\%) relative to the previous
     \emph{successful} iteration, split by refinement lever. Steps whose
     predecessor had zero sustained goodput are excluded here (their delta
-    is undefined as a percentage) and discussed under RQ1/RQ6.}
+    is undefined as a percentage) and discussed under RQ1/RQ7.}
   \label{fig:results-code-vs-spec}
 \end{figure}
 
 \paragraph{Evidence.}
 Across all three models, 279 completed iterations chose \textbf{code}
 refinement and 289 chose \textbf{deployment (spec)} refinement.
-Table~\ref{tab:results-rq2-summary} and Figure~\ref{fig:results-code-vs-spec}
+Table~\ref{tab:results-rq3-summary} and Figure~\ref{fig:results-code-vs-spec}
 break the resulting per-step goodput change down by model and lever,
 restricted to the 183 code and 242 spec steps whose predecessor iteration
 was already serving traffic (so a percentage change is defined).
@@ -225,7 +444,7 @@ was already serving traffic (so a percentage change is defined).
   \centering
   \caption{Per-step goodput change (\%) by refinement lever and model
     (excludes steps whose predecessor had zero goodput).}
-  \label{tab:results-rq2-summary}
+  \label{tab:results-rq3-summary}
   \small
   \begin{tabular}{@{}l|rrr|rrr@{}}
     \toprule
@@ -255,7 +474,7 @@ a way code refinement's is not: mildly positive for
 \texttt{claude-opus-4-8} ($+3.3\%$) and \texttt{gpt-5.5} ($+1.2\%$), but
 sharply negative for \texttt{glm-5.2} ($-10.4\%$), pulled down by spec
 steps that drive a working deployment to zero goodput outright
-(Section~\ref{sec:results-rq6} details one such case). For all three
+(Section~\ref{sec:results-rq7} details one such case). For all three
 models, code refinement's mean now exceeds deployment refinement's;
 \texttt{claude-opus-4-8}'s spec mean dropped from exceeding its code mean
 to trailing it once one cell,
@@ -294,9 +513,9 @@ decision stage phrases deployment changes rather than a property of
 deployment refinement as a lever in general.
 
 
-% ----- §5.4 RQ3 -----
-\section{RQ3: How Do the Models Compare?}
-\label{sec:results-rq3}
+% ----- §5.5 RQ4 -----
+\section{RQ4: How Do the Models Compare?}
+\label{sec:results-rq4}
 
 \paragraph{Evidence.}
 All three evaluated models are frontier-tier and comparatively expensive
@@ -309,10 +528,10 @@ completion equal across the board, the more informative comparison is
 what each model actually achieves and what that costs.
 
 \texttt{gpt-5.5} reaches the highest absolute goodput of the three, a
-median best-iteration value of $31{,}590.2$\,req/s
+geometric-mean best-iteration value of $32{,}817$\,req/s
 (Table~\ref{tab:results-rq1-summary}, Figure~\ref{fig:results-baseline-vs-best}),
-roughly double \texttt{claude-opus-4-8}'s $15{,}565.2$ and
-\texttt{glm-5.2}'s $13{,}946.2$, which are close to each other.
+roughly double \texttt{claude-opus-4-8}'s $13{,}382$ and
+\texttt{glm-5.2}'s $12{,}630$, which are close to each other.
 
 \paragraph{Cost.} Despite comparable per-cell iteration budgets
 (Section~\ref{sec:setup-procedure}), the three models differ substantially
@@ -338,12 +557,13 @@ rate, cache-hit ratio).
 \end{table}
 
 Reading cost and goodput together gives a sharper comparison than either
-alone. \texttt{gpt-5.5} reaches roughly double the median goodput of the
-other two, at a per-cell cost within 8\% of \texttt{claude-opus-4-8}'s, so
-its higher achieved goodput is not simply bought with proportionally
-higher spend. \texttt{glm-5.2} reaches essentially the same median goodput
-as \texttt{claude-opus-4-8} ($13{,}946.2$ vs.\ $15{,}565.2$) at under a
-fifth of the cost per cell (\$1.36 vs.\ \$6.35).
+alone. \texttt{gpt-5.5} reaches roughly double the geometric-mean goodput
+of the other two, at a per-cell cost within 8\% of
+\texttt{claude-opus-4-8}'s, so its higher achieved goodput is not simply
+bought with proportionally higher spend. \texttt{glm-5.2} reaches
+essentially the same geometric-mean goodput as \texttt{claude-opus-4-8}
+($12{,}630$ vs.\ $13{,}382$) at under a fifth of the cost per cell (\$1.36
+vs.\ \$6.35).
 
 \paragraph{Interpretation.}
 On the evidence collected here, \texttt{gpt-5.5} is the strongest model in
@@ -363,67 +583,81 @@ whether the deployment is throughput-constrained or budget-constrained,
 not on which model is more capable in some single sense.
 
 
-% ----- §5.5 RQ4 -----
-\section{RQ4: Does Framework/Language Choice Affect Achievable Goodput?}
-\label{sec:results-rq4}
+% ----- §5.6 RQ5 -----
+\section{RQ5: Does Framework/Language Choice Affect Achievable Goodput?}
+\label{sec:results-rq5}
 
 \begin{figure}[htbp]
   \centering
   \includegraphics[width=0.85\linewidth]{figures/eval/framework_comparison.pdf}
   \caption{Best goodput reached per framework (symlog $y$-axis), split by
     model. Each dot is one scenario cell; the horizontal bar is the
-    per-model median for that framework.}
+    per-model geometric mean for that framework. Cells with zero goodput
+    throughout are excluded from the bar, not shown at $0$.}
   \label{fig:results-framework-comparison}
 \end{figure}
 
 \paragraph{Evidence.}
-\textsc{Python-Flask} trails the other two frameworks for all three models
-(medians $10{,}436.2$\,req/s for \texttt{claude-opus-4-8}, $22{,}318.1$ for
-\texttt{gpt-5.5}, $12{,}069.6$ for \texttt{glm-5.2}), consistent with the
-expected throughput ceiling of a single-process WSGI stack under
-\texttt{gunicorn}, even after the agent tunes replica count and
-worker/pool sizing. Every model now has full, seven-of-seven coverage on
-every framework, so all three framework medians per model rest on the
-same number of cells. For \texttt{claude-opus-4-8}, \textsc{Go-net-http}
-leads clearly ($26{,}125.5$ vs.\ $15{,}565.2$\,req/s median for
-\textsc{Rust-Actix}, the latter now including the
-\textsc{BranchWeave}$\times$\textsc{Rust-Actix} cell that ends at zero,
-Section~\ref{sec:results-rq1}, which pulls this median down from what it
-would be without that cell); for \texttt{gpt-5.5}, the same ordering
-holds ($55{,}118.4$ vs.\ $30{,}978.2$). For \texttt{glm-5.2}, the two
-compiled frameworks are effectively tied, with \textsc{Rust-Actix}
-marginally ahead ($14{,}351.6$ vs.\ $13{,}946.2$\,req/s, a 3\% difference),
-the one case in this dataset where \textsc{Go-net-http} is not the single
-highest-median framework.
+Every model has seven-of-seven coverage on every framework except two
+cells that never reach positive goodput (\texttt{glm-5.2}'s
+\textsc{TransitPulseDelayReporter}$\times$\textsc{Go-net-http} and
+\texttt{claude-opus-4-8}'s \textsc{ClickCount}$\times$\textsc{Python-Flask},
+both already excluded in Section~\ref{sec:results-rq1}), so all but two of
+the nine per-model framework geometric means rest on seven cells, those
+two on six. \textsc{Go-net-http} reaches the highest geometric-mean
+goodput for \emph{every} model: $28{,}170.1$\,req/s for
+\texttt{claude-opus-4-8}, $51{,}626.2$ for \texttt{gpt-5.5}, $17{,}167.7$
+for \texttt{glm-5.2}. Below that, the ordering is not consistent. For
+\texttt{gpt-5.5} and \texttt{glm-5.2}, \textsc{Rust-Actix} is second
+($40{,}870.9$ and $12{,}485.4$) ahead of \textsc{Python-Flask}
+($16{,}749.4$ and $9{,}820.8$). For \texttt{claude-opus-4-8} the order
+inverts: \textsc{Python-Flask} ($10{,}465.7$) is \emph{ahead} of
+\textsc{Rust-Actix} ($7{,}847.5$), the lowest framework geometric mean for
+any model in this dataset.
+
+That inversion is not simply ``\textsc{Python-Flask} is the slow one
+here'': two of \texttt{claude-opus-4-8}'s seven \textsc{Rust-Actix} cells
+are exceptionally low, \textsc{Petstore} at $286.7$\,req/s and
+\textsc{ClickCount} at $2{,}916.9$, both cells whose trajectory never
+improves past its first success (\textsc{Petstore}$\times$\textsc{Rust-Actix}
+shows the same $1.0\times$ stall for \texttt{gpt-5.5} too, at a far higher
+absolute goodput of $27{,}853$\,req/s); the other five \textsc{Rust-Actix}
+cells are in the same range as \texttt{claude-opus-4-8}'s other
+frameworks. A geometric mean is considerably more sensitive to a couple
+of low values than a median over the same seven cells, which is exactly
+why this pattern did not show up under a median-based version of this
+comparison.
 
 \paragraph{Interpretation.}
-The consistent pattern across all three models is
-\textsc{Python-Flask}\ $<$ \{\textsc{Go-net-http}, \textsc{Rust-Actix}\},
-i.e.\ an interpreted, single-process stack sets a materially lower ceiling
-than either compiled runtime under CPU-bound load. The ordering
-\emph{between} the two compiled frameworks is not fixed across models:
-\textsc{Go-net-http} is ahead for \texttt{claude-opus-4-8} and
-\texttt{gpt-5.5}, but statistically indistinguishable from
-\textsc{Rust-Actix} for \texttt{glm-5.2} given a 3\% median gap at seven
-cells per framework. Framework sets a ceiling that refinement operates
-within rather than around, but that ceiling does not always resolve the
-same way between two compiled runtimes, and a single cell's late-trajectory
-regression (Section~\ref{sec:results-rq1}) is enough to move a
-seven-cell median noticeably, a reminder of how much weight each
-individual cell carries at this sample size.
+\textsc{Go-net-http} setting the highest ceiling for every model is now a
+clean, model-independent finding. What is model-dependent is not which
+framework is \emph{best}, but which is \emph{worst}: for \texttt{gpt-5.5}
+and \texttt{glm-5.2}, \textsc{Python-Flask}'s single-process WSGI ceiling
+under \texttt{gunicorn} is the limiting factor; for \texttt{claude-opus-4-8},
+two specific \textsc{Rust-Actix} cells that stall at their first
+successful iteration pull that framework's typical performance below
+\textsc{Python-Flask}'s, even though most of its \textsc{Rust-Actix}
+cells are unremarkable. This is a property of the underlying data, not an
+artefact of the statistic used to summarise it, but \emph{which}
+statistic is used determines whether it is visible at all: a robust
+central-tendency measure such as a median can hide exactly the kind of
+collapse this thesis's RQ7 failure analysis is otherwise built to
+surface.
 
 \paragraph{Conclusion.}
 \textbf{Framework sets an achievable-goodput ceiling that refinement
-operates within, not around}, with \textsc{Python-Flask} clearly behind
-both compiled frameworks for every model. The ordering between
-\textsc{Go-net-http} and \textsc{Rust-Actix} is model-dependent rather than
-universal, and for \texttt{glm-5.2} the two are close enough that this
-dataset cannot call a clear winner between them.
+operates within, not around, and \textsc{Go-net-http} sets the highest
+ceiling for every model.} Which framework sets the \emph{lowest} ceiling
+is not universal: \textsc{Python-Flask} for \texttt{gpt-5.5} and
+\texttt{glm-5.2}, but \textsc{Rust-Actix} for \texttt{claude-opus-4-8},
+the latter driven by two cells that stall at their first successful
+iteration rather than by a general weakness of that framework for this
+model.
 
 
-% ----- §5.6 RQ5 -----
-\section{RQ5: What Deployment Parameters Does the Agent Converge To?}
-\label{sec:results-rq5}
+% ----- §5.7 RQ6 -----
+\section{RQ6: What Deployment Parameters Does the Agent Converge To?}
+\label{sec:results-rq6}
 
 \paragraph{Evidence.}
 Spec prompts intentionally omit recommended numeric ranges
@@ -438,7 +672,7 @@ remains \texttt{gpt-5.5} on \textsc{ClickCount}$\times$\textsc{Go-net-http}
   \centering
   \caption{Spec-knob trajectory for \texttt{gpt-5.5}, \textsc{ClickCount},
     \textsc{Go-net-http} (selected iterations).}
-  \label{tab:results-rq5-clickcount}
+  \label{tab:results-rq6-clickcount}
   \footnotesize
   \begin{tabular}{@{}rrrrrrr@{}}
     \toprule
@@ -468,8 +702,8 @@ observed gain in this dataset (RQ1), though a full knob-by-knob trajectory
 is not reproduced here.
 
 Not every spec-refinement decision pays off, however:
-Section~\ref{sec:results-rq6} gives a case where the stated rationale is
-reasonable but the resulting deployment regresses to zero goodput, and RQ2
+Section~\ref{sec:results-rq7} gives a case where the stated rationale is
+reasonable but the resulting deployment regresses to zero goodput, and RQ3
 above shows this is not a one-off: \texttt{glm-5.2}'s spec-refinement mean
 is net-negative across 66 steps, and \texttt{claude-opus-4-8}'s
 \textsc{BranchWeave}$\times$\textsc{Rust-Actix} cell
@@ -491,16 +725,16 @@ shape rather than one model's idiosyncratic behaviour.
 \textbf{The agent converges on workload-appropriate deployment parameters
 when given the room to iterate}, corroborated on the same scenario by two
 different models, but this chapter reports one detailed trajectory, not a
-systematic per-cell audit; RQ6's counter-example, and RQ2's model-level
+systematic per-cell audit; RQ7's counter-example, and RQ3's model-level
 spec statistics, show this is a tendency, not a guarantee, and RQ1's
 \textsc{BranchWeave}$\times$\textsc{Rust-Actix} cell shows the downside
 case can be severe enough to end a trajectory rather than just cost it a
 few iterations.
 
 
-% ----- §5.7 RQ6 -----
-\section{RQ6: Failure Modes and Case Studies}
-\label{sec:results-rq6}
+% ----- §5.8 RQ7 -----
+\section{RQ7: Failure Modes and Case Studies}
+\label{sec:results-rq7}
 
 \begin{figure}[htbp]
   \centering
@@ -651,7 +885,7 @@ changed three spec fields at once, which is consistent with the
 single-lever-per-iteration design (Section~\ref{sec:methods-workflow}) but
 does not prevent \emph{multiple fields within one lever} from changing
 simultaneously, which limits attribution within a spec-refinement step the
-same way mixing code and spec changes would across steps. RQ2's finding
+same way mixing code and spec changes would across steps. RQ3's finding
 that \texttt{glm-5.2}'s spec-refinement mean is net-negative across 66
 steps suggests this is not a one-off either for this cell or this model.
 
@@ -688,7 +922,7 @@ capture a trajectory ending at zero goodput when every individual
 iteration is a harness-level success.
 
 
-% ----- §5.8 Cross-Cutting Synthesis -----
+% ----- §5.9 Cross-Cutting Synthesis -----
 \section{Cross-Cutting Synthesis}
 \label{sec:results-synthesis}
 
@@ -697,8 +931,8 @@ patterns recur consistently enough to generalise beyond any single cell:
 
 \begin{itemize}
   \item \textbf{Correctness gates deployment, consistently.} The largest
-        single source of attrition (RQ6, 74\% of recorded failures) and
-        the largest single-step goodput gains (RQ2) both trace back to
+        single source of attrition (RQ7, 74\% of recorded failures) and
+        the largest single-step goodput gains (RQ3) both trace back to
         code correctness, not deployment tuning. This holds across every
         model and is exactly the class of bug BaxBench's original
         single-container evaluation cannot observe
@@ -706,33 +940,33 @@ patterns recur consistently enough to generalise beyond any single cell:
   \item \textbf{Deployment refinement is real, bounded, and carries a
         downside risk that is not exclusive to one model.} Across every
         model, spec refinement's median per-step effect is small; its
-        mean is now the smaller of the two levers for every model (RQ2),
+        mean is now the smaller of the two levers for every model (RQ3),
         sharply negative for \texttt{glm-5.2} and, in one new
         \texttt{claude-opus-4-8} cell, severe enough to end a trajectory
-        at zero goodput outright (RQ1, RQ6).
+        at zero goodput outright (RQ1, RQ7).
   \item \textbf{The three models are equally reliable but not equally
         capable or costly.} Every model completes its full budget on
         100\% of its 21 cells, so the meaningful comparison is achieved
         goodput against cost: \texttt{gpt-5.5} reaches roughly double the
         median goodput of the other two without costing proportionally
         more, while \texttt{glm-5.2} matches \texttt{claude-opus-4-8}'s
-        goodput at under a fifth of its cost (RQ3). \textsc{Python-Flask}
+        goodput at under a fifth of its cost (RQ4). \textsc{Python-Flask}
         sets a clearly lower ceiling than either compiled framework for
         every model, while the ordering between the two compiled
-        frameworks is close and model-dependent (RQ4).
+        frameworks is close and model-dependent (RQ5).
   \item \textbf{The cluster-execution path is close to, but not quite, a
         failure-free component, and the failure taxonomy itself has
         blind spots.} Deploy-phase failures remain a small fraction of the
-        total (RQ6), and the same static validation that occasionally
+        total (RQ7), and the same static validation that occasionally
         misses a scheduling infeasibility also demonstrably catches it,
         twice, in the node-over-commit cases documented in
-        Section~\ref{sec:results-rq6}; separately, a trajectory that ends
+        Section~\ref{sec:results-rq7}; separately, a trajectory that ends
         at zero goodput through two ordinary-looking spec decisions
         generates no failure record at all.
 \end{itemize}
 
 
-% ----- §5.9 Summary -----
+% ----- §5.10 Summary -----
 \section{Summary}
 \label{sec:results-summary}
 
@@ -749,28 +983,28 @@ Across all three models and all 63 scenario/framework cells:
         all three as well, dominated by fixes to bugs that only manifest
         under load and cluster topology; deployment refinement is smaller
         on median for all three, positive on average for two of three,
-        and net-negative for \texttt{glm-5.2} (RQ2);
+        and net-negative for \texttt{glm-5.2} (RQ3);
   \item \textbf{all three models complete every cell}, so the meaningful
         comparison is achieved goodput against cost: \texttt{gpt-5.5}
         reaches the highest absolute goodput without costing
         proportionally more, while \texttt{glm-5.2} matches
         \texttt{claude-opus-4-8}'s goodput at under a fifth of the cost
-        (RQ3);
+        (RQ4);
   \item \textsc{Python-Flask} sets a clearly lower achievable-goodput
         ceiling than either compiled framework for all three models; the
         ordering between \textsc{Go-net-http} and \textsc{Rust-Actix} is
-        close and not the same for every model (RQ4);
+        close and not the same for every model (RQ5);
   \item where it converges, the agent's deployment-spec trajectory tracks
         workload characteristics sensibly, corroborated across two models
-        on the same scenario (RQ5), though not every individual
+        on the same scenario (RQ6), though not every individual
         spec-refinement decision improves the outcome, even when the
         stated rationale is sound, and in one case the downside is severe
-        enough to end the trajectory (RQ6);
+        enough to end the trajectory (RQ7);
   \item nearly all \emph{genuine} attrition happens at the
         code-correctness gate the agent is responsible for; the
         cluster-execution path is nearly, not entirely, failure-free, and
         the failure taxonomy itself has a blind spot for trajectories that
-        end at zero goodput without a harness-level failure (RQ6).
+        end at zero goodput without a harness-level failure (RQ7).
 \end{itemize}
 
 These findings are discussed further, including limitations and threats

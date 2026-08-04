@@ -63,22 +63,22 @@ workload's actual scaling characteristics, favouring horizontal fan-out
 over per-pod headroom for a near-stateless workload without ever being
 told that heuristic, and two different models converged on the same
 qualitative decision on the same scenario
-(Section~\ref{sec:results-rq5}). Keeping code and deployment refinement
+(Section~\ref{sec:results-rq6}). Keeping code and deployment refinement
 mutually exclusive per iteration turned out to be more than a bookkeeping
 convenience: the two levers measurably specialise in practice, with code
 refinement carrying almost all of the largest single-step recoveries and
 deployment refinement acting as a smaller, more model-dependent capacity
-adjustment (Section~\ref{sec:results-rq2}).
+adjustment (Section~\ref{sec:results-rq3}).
 
 \paragraph{What did not work.} Deployment refinement, taken on its own,
 was occasionally counterproductive: a well-reasoned response to correct
 diagnostics regressed a healthy deployment to zero goodput, because
 nothing prevents one refinement step from changing several
 deployment-spec fields whose interaction it cannot fully anticipate
-(Section~\ref{sec:results-rq6}). For one model, \texttt{glm-5.2}, this was
+(Section~\ref{sec:results-rq7}). For one model, \texttt{glm-5.2}, this was
 not a one-off: its deployment-refinement steps are net negative on average
 across 66 steps, the only one of the three models where this lever is a
-net liability rather than a net gain (Section~\ref{sec:results-rq2}). A
+net liability rather than a net gain (Section~\ref{sec:results-rq3}). A
 second, more severe instance of the same failure mode shows up on
 \texttt{claude-opus-4-8}: one cell recovers from a dead baseline, peaks at
 $3\times$ that baseline, and then loses everything again to two
@@ -91,7 +91,7 @@ would later prove impossible to schedule, and the taxonomy that records
 those failures uses inconsistent labels for what reads as the same
 underlying symptom, and is blind entirely to a trajectory that ends at
 zero goodput without a single harness-level failure along the way
-(Section~\ref{sec:results-rq6}).
+(Section~\ref{sec:results-rq7}).
 
 \paragraph{What surprised us.} The multiplicative gain from refinement
 turned out to depend much more on how badly under-provisioned the
@@ -103,7 +103,7 @@ models (Section~\ref{sec:results-rq1}). A second surprise was in the
 failure taxonomy rather than in goodput: every recorded
 \texttt{docker\_build} failure in this dataset, all 14 of them, is a
 \textsc{Rust-Actix} compile failure, twelve of them \texttt{glm-5.2}'s
-across six different scenarios (Section~\ref{sec:results-rq6}), a
+across six different scenarios (Section~\ref{sec:results-rq7}), a
 concentrated, framework-specific correctness signal that a
 single-container, single-framework evaluation would not surface as
 clearly. Also unexpected, though smaller: the deployment-and-cluster path
@@ -114,7 +114,7 @@ be deployed as intended, recorded under two different failure-kind labels
 for what reads as the same underlying symptom, and a third instance of the
 same label turned out on inspection to be a different root cause entirely,
 an application crash loop rather than a scheduling shortfall
-(Section~\ref{sec:results-rq6}); the same static validation is also
+(Section~\ref{sec:results-rq7}); the same static validation is also
 documented, on two separate cells, correctly rejecting an infeasible
 proposal before it was ever applied.
 
@@ -124,7 +124,7 @@ tuning at all, but whether the generated code was correct enough to
 survive real load in the first place, including failure modes (a
 connection pooler's transaction-mode incompatibility with server-side
 prepared statements) that a single-container functional-test suite
-structurally cannot observe (Section~\ref{sec:results-rq6}). Evaluating a
+structurally cannot observe (Section~\ref{sec:results-rq7}). Evaluating a
 deployment-optimisation agent in isolation from code correctness would
 have missed this; the two are entangled in practice, even though the
 framework deliberately separates them as levers.
@@ -154,10 +154,10 @@ optimisation is comparatively well studied
 (Section~\ref{sec:rw-llm-perf}), behaved as a genuine, if bounded and
 model-dependent, optimisation signal: spec trajectories moved toward
 workload-appropriate configurations without being given target ranges
-(Section~\ref{sec:results-rq5}), and static validation plus the
+(Section~\ref{sec:results-rq6}), and static validation plus the
 framework's failure routing kept bad deployment decisions from silently
 compounding in most, though not all, observed cases
-(Section~\ref{sec:results-rq6}).
+(Section~\ref{sec:results-rq7}).
 
 The qualification matters as much as the answer. What this thesis cannot
 yet say is whether the result generalises beyond seven database-backed
@@ -210,7 +210,7 @@ explicitly target other bottleneck classes, compute-bound work
 or aggregations), or coordination-bound work (locking, queues,
 multi-step transactions spanning several requests), would test whether
 the code/deployment division of labour observed here
-(Section~\ref{sec:results-rq2}) is a general property of the two levers or
+(Section~\ref{sec:results-rq3}) is a general property of the two levers or
 an artefact of the scenario shapes chosen. The same generation pipeline
 could also be pushed toward larger, less crude application shapes, more
 resources and relationships per scenario, and multi-step business
@@ -232,9 +232,9 @@ functional-and-security check) otherwise leaves open.
 \paragraph{Strengthen spec validation and functional-test depth.} Two
 separate validation surfaces could plausibly be doing more than they do
 now. Static spec validation (Section~\ref{sec:methods-spec}) currently
-checks a fixed set of structural and capacity properties; RQ6's
+checks a fixed set of structural and capacity properties; RQ7's
 \texttt{unschedulable}/\texttt{namespace\_cleanup} gap
-(Section~\ref{sec:results-rq6}) shows at least one class of deployment
+(Section~\ref{sec:results-rq7}) shows at least one class of deployment
 failure it does not catch, and it is not obvious that the current check
 set is complete rather than simply the set that was implemented first.
 Separately, functional-test generation (Section~\ref{sec:methods-code})
@@ -248,7 +248,7 @@ raise the bar an implementation has to clear before it is trusted, at the
 cost of a stricter, more expensive generation pipeline.
 
 \paragraph{Constrain or measure within-lever attribution.} The backfire
-case in Section~\ref{sec:results-rq6} shows that a single spec-refinement
+case in Section~\ref{sec:results-rq7} shows that a single spec-refinement
 step can change several fields at once, which limits attribution the same
 way mixing code and spec changes would. Future work could either constrain
 spec-refinement steps to one field at a time and measure whether that
@@ -270,7 +270,7 @@ the reason a good result is lost rather than a stable measure of it.
 
 \paragraph{Investigate the \textsc{Rust-Actix} build-failure concentration.}
 Every \texttt{docker\_build} failure recorded in this dataset is a
-\textsc{Rust-Actix} compile failure (Section~\ref{sec:results-rq6}), most
+\textsc{Rust-Actix} compile failure (Section~\ref{sec:results-rq7}), most
 of them \texttt{glm-5.2}'s. Whether this reflects the model's Rust
 proficiency specifically, an interaction with this scenario suite's API
 shapes, or something about the build toolchain itself is not yet
@@ -288,7 +288,7 @@ space match a larger slice of real deployment topologies rather than the
 database-and-pooler-centric one evaluated here. Second, repeating even a
 subset of cells on a cluster an order of magnitude larger or smaller, or
 with a different node/network topology, would show whether the
-deployment decisions the agent converges to (Section~\ref{sec:results-rq5})
+deployment decisions the agent converges to (Section~\ref{sec:results-rq6})
 are tuned to the workload or partly to this specific cluster's capacity
 envelope.
 
@@ -301,7 +301,7 @@ running the same refinement loop under a spike or surge profile, sudden,
 short-lived traffic bursts well above the sustained rate, rather than a
 gradually ramping one, would test a different and arguably more realistic
 production concern than steady-state capacity, and would show whether the
-deployment decisions favoured for sustained goodput (Section~\ref{sec:results-rq5})
+deployment decisions favoured for sustained goodput (Section~\ref{sec:results-rq6})
 still hold up, or trade away, burst headroom. No such profile exists in
 this framework yet; building one is a prerequisite for this direction,
 not just a configuration change.

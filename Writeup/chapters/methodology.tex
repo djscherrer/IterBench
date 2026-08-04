@@ -881,19 +881,28 @@ performance feedback.
 Produce \texttt{spec.yaml}, a structured description of the desired
 Kubernetes deployment. This stage is central to the thesis's contribution:
 the agent never writes Kubernetes manifests directly; it fills in a bounded
-schema, and the framework alone turns that schema into manifests (Deploy,
-below). This design serves three purposes. First, it avoids asking the agent
-to author large, verbose manifests from scratch on every turn. Second, it
-keeps the search space bounded and comparable across models and iterations,
-so comparisons stay about deployment \emph{decisions} rather than
-YAML-authoring skill. Third, it lowers generation cost, since only the
-fields that can genuinely differ between iterations need to be produced at
-all. It also keeps purely cluster-specific mechanics, the exact image
-reference, port, or namespace, out of the agent's responsibility entirely:
-even though a sufficiently detailed prompt could in principle supply these,
-omitting them removes an entire failure mode, a manifest broken by an
-incidental detail rather than a deployment decision, from the outcome being
-measured.
+schema, and the framework alone turns that schema into manifests (the
+Deploy stage, Section~\ref{sec:methods-deploy}). This design serves three
+purposes:
+\begin{itemize}
+  \item It avoids asking the agent to author large, verbose manifests from
+    scratch on every turn, since only the fields that can genuinely differ
+    between iterations need to be produced at all; this both lowers
+    generation cost and keeps the conversation history concise.
+  \item It keeps the search space bounded and comparable across models and
+    iterations, so comparisons stay about deployment \emph{decisions}
+    rather than YAML-authoring skill.
+  \item It keeps purely cluster-specific mechanics, the exact image
+    reference, port, namespace, and settings the agent has no way of
+    knowing are unsupported in this particular cluster, out of the agent's
+    responsibility entirely. Even though a sufficiently detailed prompt
+    could in principle supply these, omitting them removes an entire
+    failure mode, a manifest broken by an incidental or unsupported
+    detail rather than a deployment decision, from the outcome being
+    measured: this stage is meant to test whether the agent can reason
+    about which cluster specification suits a given workload, not how
+    correctly it can hand-write Kubernetes manifests.
+\end{itemize}
 
 \paragraph{Inputs.}
 The stage receives the cluster's allocatable worker capacity
@@ -1079,77 +1088,169 @@ probe.
 \label{sec:methods-bench}
 
 \paragraph{Purpose.}
-Measure the deployed candidate's maximal sustained goodput under load, and
-close the iteration by turning that measurement into the next iteration's
-decision context. Bench always runs after a successful deploy, for baseline
-and every refinement iteration alike.
+Measure the deployed candidate's maximal sustained goodput under load.
+Alongside this, aggregate the cluster's utilisation metrics collected
+during the run. The goal is a feedback record containing both the
+sustained goodput and the cluster utilisation, so the next iteration's
+decision stage can refine the candidate accordingly. Bench runs after
+every successful deployment, for the baseline and every refinement
+iteration alike.
 
 \paragraph{Inputs.}
-The deploy probe record (namespace, target, port); this iteration's
-\texttt{spec.yaml}, read only to configure which diagnostics collectors to
-attach (for example, whether a pooler or read replica is present); the
-scenario's Locust task definitions, the same API surface exercised by
-functional tests; and the experiment's load-profile parameters
+The deploy probe record (namespace, target, port). This iteration's
+\texttt{spec.yaml}, read to configure which diagnostics collectors to
+attach (for example, whether a pooler or read replica is present). The
+scenario's Locust task definitions. The experiment's load-profile parameters
 (Appendix~\ref{ch:appendix-config}).
 
 \paragraph{Processing.}
 A fresh liveness check against the backend Service runs first, since pods
-can die in the gap between deploy and bench; then a distributed Locust run
-driven by the adaptive controller below, with optional diagnostics
-collectors sampling in parallel.
+can die in the gap between deploy and bench. Then a distributed Locust
+run, driven by the adaptive controller below, while the diagnostics
+collectors sample in parallel.
 
 \subsubsection{Adaptive Load Profile}
 \label{sec:methods-load-profile}
 
-Fixed request rates require per-application tuning and do not automatically
-find the capacity knee. The framework instead uses an adaptive load profile
-that searches for sustainable throughput in three phases, \emph{explore},
-\emph{recovery}, and \emph{refine}, after an initial health-gated warm-up.
+A deployment's behaviour under offered load is bounded by a capacity
+knee: below it, the deployment generally keeps up with demand, but once
+load is pushed past it, the deployment tends to collapse outright rather
+than merely slow down. The maximum throughput a deployment can sustain
+therefore sits at, or just below, this knee. Finding that sustained level
+means locating the knee itself, reaching it within a reasonable amount of
+time without overshooting it so far that the deployment collapses in the
+way just described. Preliminary experiments show the knee varies by
+orders of magnitude across different experiments, from a few hundred
+requests per second to the tens of thousands. A profile that advances in
+fixed steps, holding each level long enough to let the deployment
+stabilise and to measure it accurately before advancing, would either
+need an impractically long run when its steps are small, or risk
+overshooting the knee when they are large. To address this, the
+framework uses an adaptive load profile that begins with a health-gated
+warm-up, then increases load exponentially in search of the knee
+(\emph{explore}), drops to and stabilises at a lower, healthy load level
+once the knee is found (\emph{recovery}), and finally searches upward
+again in smaller steps to home in on the actual sustained-throughput
+level (\emph{refine}); each phase is detailed further below.
+
+Across all four phases, the controller reads p95 latency, failure rate,
+and goodput from the same rolling measurement window over recently
+completed requests, in this implementation Locust's own approximately
+10-second trailing window, applied uniformly to the percentile and to
+the request/failure rate. Every simulated user also waits exactly
+$1$\,s between completing one task and starting the next, approximating
+the pacing of a real user rather than issuing requests back to back. The
+whole run is also bounded by a hard ceiling shared across every phase: a
+maximum wall-clock duration of $1800$\,s ($30$\,min) and a user ceiling
+of $100{,}000$, either of which stops the bench outright regardless of
+which phase is active at the time.
+Every threshold, ratio, and duration named
+below is itself a configurable parameter of the profile; the specific
+values given here are the ones used for every experiment in this thesis,
+chosen because preliminary experiments showed them to work well across
+the deployments evaluated. Table~\ref{tab:appendix-load-profile}
+(Appendix~\ref{ch:appendix-config}) collects the full parameter set.
+
+\begin{figure}[htbp]
+  \centering
+  \includegraphics[width=\linewidth]{figures/methods/iteration-protocol-and-stage-contracts/load-profile-example-trajectory.png}
+  \caption{The controller's own diagnostic plot for one real bench run
+    (\texttt{claude-opus-4-8}, \textsc{BranchWeave}$\times$\textsc{Rust-Actix},
+    iteration 007; the same run RQ1, Section~\ref{sec:results-rq1}, reports
+    as peaking at $3\times$ its baseline), generated automatically for
+    every bench and stored alongside it. Explore ramps users
+    exponentially until goodput plateaus and p95 latency (purple) starts
+    to spike; recovery drops back to a healthy level; refine climbs
+    again in efficiency-scaled steps, each preceded by the amber trim
+    window, to the sustained estimate ultimately reported for this
+    iteration, $25{,}327.3$\,req/s.}
+  \label{fig:load-profile-example}
+\end{figure}
 
 \paragraph{Warm-up.}
-The controller holds a fixed initial user count for 30\,s and checks that the
-deployment is minimally healthy: active users present, requests observed, and
-failure rate below threshold.  If this check fails, the bench stops
-immediately and \textbf{sustained goodput is recorded as exactly $0$}, even
-though some requests may have been served during the failed window: the run
-never reaches the explore phase.  This is the mechanism behind the cells in
+The controller holds a fixed initial user count for 30\,s and checks three
+conditions: at least one virtual user is actually active, at least one
+request has landed in the rolling measurement window (not merely that
+users are connected), and the failure rate in that window is at or below
+$2\%$. If any of these fails, the bench stops
+prematurely and sustained goodput is recorded as exactly $0$, even though
+some requests may have already been served: the run never reaches the
+explore phase. This is one of two mechanisms behind the cells in
 Chapter~\ref{ch:results} whose baseline reports $0$\,req/s despite the
-deployment technically coming up.
+deployment technically coming up; the other, detailed in the Recovery
+paragraph below, is when recovery cannot return the deployment to
+health.
 
 \paragraph{Explore.}
-Once warm-up passes, virtual users ramp upward in steps sized at $4\%$ of the
-current level (floored at 20 users), spaced by a p95-latency-adaptive
-interval so faster deployments are probed more often.  Explore tracks the
-best rolling goodput observed so far and stops the ramp when \emph{any} of:
+Once warm-up passes, the controller repeatedly increases the virtual-user
+count by a multiplicative step: $4\%$ of the current level, floored at
+20 users so early steps remain meaningful while the level is still low.
+We observed that p95 latency tends to rise
+as a deployment approaches its capacity knee, so between successive steps
+the controller waits an interval that adapts to the deployment's current
+p95 latency: the currently measured p95 in milliseconds is divided by
+$50$ and rounded up to the next whole second, floored at $1$\,s, so a
+deployment sitting at or below $50$\,ms waits $1$\,s between steps, one
+between $50$ and $100$\,ms waits $2$\,s, and so on. The wait therefore
+grows as p95 rises, so the ramp advances quickly while the deployment
+looks comfortably below its capacity knee and slows down once it does
+not. Letting the deployment run at a level for longer
+lets it stabilise more fully at that higher load (for example, letting
+request queues fill to their steady-state depth), which in turn lets the
+controller observe the deployment's behaviour at that level more
+accurately rather than judging it from a single, possibly optimistic
+reading taken immediately after the step. This makes it possible to
+detect the onset of collapse earlier, and with less overshoot, than a
+faster ramp would allow: it limits how far past the knee the ramp goes
+before the controller notices, giving a better chance of not
+overshooting it by too much. This does not guarantee that the knee is
+located exactly, nor that recovery, once triggered, always succeeds.
+
+Explore tracks the best goodput observed so far in the phase and stops
+the ramp once \emph{any} of the following holds:
 \begin{itemize}
-  \item failure rate $> 2\%$;
-  \item p95 latency $> 1000$\,ms;
-  \item goodput falls below $95\%$ of the best value seen so far for three
-        consecutive checks (collapse);
+  \item the failure rate exceeds $2\%$;
+  \item p95 latency exceeds $1000$\,ms;
+  \item goodput falls below $95\%$ of the phase's best value for 3
+        consecutive checks (\emph{collapse});
   \item the user ceiling ($100{,}000$) is reached.
 \end{itemize}
 Explore locates an approximate overload boundary; it is not itself a
 measurement of sustainable throughput.
 
 \paragraph{Recovery.}
-The controller drops to $75\%$ of the explore-phase peak user count and holds
-for 45\,s.  If the deployment is healthy at that level (failure rate and p95
-within threshold), recovery hands off to refine.  If not, it drops a further
-$15\%$ and re-settles, up to three attempts.  If the deployment is still
-unhealthy after the retry budget is exhausted, the bench stops and refine is
-never reached: a second, distinct way for a bench to legitimately report
-sustained goodput of $0$ (or near-$0$) despite explore having found a
-working region earlier in the same run.
+The controller drops to $75\%$ of the explore-phase peak user count and
+holds for 45\,s. If the deployment is healthy at that level (failure rate
+and p95 within the same $2\%$/$1000$\,ms thresholds explore uses),
+recovery hands off to refine. If not, it drops a further $15\%$ and
+re-settles, up to three attempts. If the deployment is still unhealthy
+after the retry budget is exhausted, the bench stops and refine is never
+reached: a second, distinct way for a bench to report sustained goodput
+of exactly $0$, despite explore having found a substantive, non-zero
+peak goodput earlier in the same run. This typically happens when
+explore has pushed the deployment far enough past its capacity knee that
+dropping load afterward is no longer enough to let it recover.
 
 \paragraph{Refine.}
-From the recovered healthy level, the controller searches upward in
-efficiency-scaled steps: each step is the marginal goodput efficiency of the
-previous step, times a cap of $5\%$ of the recovery-entry user count, so
-steps shrink automatically as the deployment approaches saturation.  A user
-level is accepted once ten consecutive 1\,s goodput samples lie within $5\%$
-of their mean (stable).  Refine stops as soon as a settled level fails to
-beat the previous best (stall), the failure-rate threshold is exceeded, or
-the user ceiling is reached, and reports its best accepted level.
+Entering refine, the controller records the recovery-entry (healthy)
+user level and caps every step at $5\%$ of that level; the first step
+uses this full cap, since there is no prior step yet to compare it
+against. From the second step onward, the step size is instead scaled by
+the marginal goodput efficiency of the previous step, the ratio of the
+relative gain in goodput to the relative gain in users: for example, a
+step that increases users by $10\%$ but goodput by only $5\%$ has an
+efficiency of $0.5$, so the following step is capped at half of the
+$5\%$ maximum. A deployment closer to saturation yields a smaller
+goodput gain for the same relative increase in users, so the measured
+efficiency, and with it the step size, tends to shrink automatically as
+the deployment approaches saturation. At each new level, the controller
+first trims
+10\,s before measuring, so the transition from the previous level does
+not pollute the measurement window, then samples goodput for 10
+consecutive seconds; a level is accepted once those samples lie within
+$5\%$ of their mean (stable). Refine stops as soon as a settled level
+fails to beat the previous best (stall), the failure rate exceeds $2\%$,
+or the user ceiling is reached, and reports its best accepted level.
 
 \paragraph{Primary metric: goodput.}
 \textbf{Goodput} is the sustained rate of \emph{successful} HTTP responses
@@ -1165,31 +1266,41 @@ recovery, and refine steps (useful for adaptive-ramp plots), and
 the primary cross-iteration comparison metric. A bench that never reaches
 refine, because warm-up or recovery failed its health check, reports
 sustained goodput $=0$.
-The profile enforces a maximum run time of $1800$\,s ($30$\,min) and a user
-ceiling of $100{,}000$; full parameter values are given in
-Appendix~\ref{ch:appendix-config}.
 
 \subsubsection{Diagnostics}
 
-Bench collects two complementary kinds of evidence.  First, Locust records
-the adaptive-ramp events and an endpoint-level request table: request and
-failure counts, failure percentage, median, mean, minimum, maximum, p95 and
-p99 latency, request rate, and failure rate.  Its HTTP-error
-excerpt preserves the client-visible symptoms.  Second, run-scoped cluster
-diagnostics collect application and database log excerpts; pod health and
-cluster events; pod and node CPU and memory observations; PostgreSQL
-connection, transaction, and activity-state statistics; and, when enabled,
-replication, PgBouncer, and cache statistics.
+Bench collects two complementary kinds of evidence, one from the load
+test itself and one from the cluster it ran on.
 
-The report is produced deterministically from these recorded files, not by
-an additional model call.  It first converts the adaptive-controller log
-into a short warm-up/explore/recovery/refine narrative, including stopping
-reason, peak step, and accepted sustained level.  It then renders the
-Locust endpoint table and error excerpt.  Finally, it groups periodic
-diagnostic samples by the relevant component (and, for resource data, by
-tier, pod, and node).  Bursty numeric series are reduced to
-\emph{minimum / median / arithmetic mean / p95 / maximum}; counters such as
-deadlocks and rollbacks are reported as their run-level change.  This
+\paragraph{Load test report.}
+Locust produces the first: the adaptive-ramp events already described
+above, plus an endpoint-level request table, request and failure counts,
+failure percentage, median, mean, minimum, maximum, p95 and p99 latency,
+request rate, and failure rate, and an HTTP-error excerpt that preserves
+the client-visible symptoms of any failure. This is Locust's own output,
+collected without any additional instrumentation, and is what this
+thesis refers to as the load test report throughout.
+
+\paragraph{Cluster diagnostics.}
+The second kind of evidence covers what the load test itself cannot see,
+organised here by the scope each collector targets. At the pod and node
+level: CPU and memory observations, tracked per tier, per pod, and per
+node, alongside pod health and cluster-wide Kubernetes events. Specific
+to the database: PostgreSQL connection, transaction, and
+activity-state statistics, together with application and database log
+excerpts. And, only when the deployment enables them: replication,
+PgBouncer, and cache statistics.
+
+The report is produced deterministically from these recorded files, not
+by an additional model call. It first converts the adaptive-controller
+log into a short warm-up/explore/recovery/refine narrative, including
+stopping reason, peak step, and accepted sustained level. It then
+renders the Locust endpoint table and error excerpt from the load test
+report above. Finally, it groups the periodic cluster diagnostic samples
+by the relevant component (and, for resource data, by tier, pod, and
+node). Bursty numeric series are reduced to
+\emph{minimum / median / arithmetic mean / p95 / maximum}; counters such
+as deadlocks and rollbacks are reported as their run-level change. This
 preserves both typical and near-worst-case pressure without placing raw
 per-second telemetry in the decision prompt.
 
@@ -1240,57 +1351,45 @@ reference point instead.
 \section{Outcome Measures and Analysis}
 \label{sec:methods-metrics}
 
-The adaptive benchmark produces one primary performance metric together with
-diagnostic and process measures. Keeping this distinction explicit prevents a
-high raw request rate, a transient overload point, or a low-latency but
-error-prone run from being mistaken for an improvement in the objective.
-
-\paragraph{Primary metric.}
-The primary metric is \textbf{sustained goodput}: the best settled rate of
-successful HTTP responses reached in the refine phase of the adaptive load
-profile. A run that stops during warm-up or recovery before reaching refine
-records sustained goodput as exactly $0$, as described in
-Section~\ref{sec:methods-bench}.
-Peak step goodput is retained for describing the ramp trajectory, but it is
-not the primary cross-iteration score because it may be transient or occur at
-an unhealthy failure rate.
-
-\paragraph{Diagnostic measures.}
-The benchmark also records endpoint-level latency and failure statistics,
-including p50, p95, p99, request counts, and failure rates. Cluster diagnostics
-include CPU and memory utilisation, pod health, database and pooler activity,
-replication state, cache statistics when enabled, and relevant cluster events.
-These measurements do not replace sustained goodput; they explain why a
-candidate reached its score and provide the evidence used by the next agent
-decision.
+Section~\ref{sec:methods-bench} defines sustained goodput and the
+diagnostics recorded for a single bench run. What follows is how those
+per-run measurements are assembled into experiment-level trajectories and
+compared across iterations, levers, and models.
 
 \paragraph{Trajectory and process measures.}
 For each experiment, the recorded trajectory includes the baseline score,
-the score after every iteration, the selected refinement lever, the resulting
-artifact versions, the iteration outcome, and any failure records. We also
-track deployment-specification parameters and LLM expenditure. Together,
-these data support the questions of whether refinement helps, which lever was
-used, how deployment choices changed, where the workflow failed, and what
-cost was incurred to obtain the result.
+the score after every iteration, the selected refinement lever, the
+resulting code and deployment-specification artifact versions, the
+iteration outcome, and any failure records. We also track LLM expenditure.
+Together, these data support the questions of whether refinement helps,
+which lever was used, how deployment choices changed, where the workflow
+failed, and what cost was incurred to obtain the result.
 
 \paragraph{Comparisons.}
-The main comparison is between the baseline and the best subsequent sustained
-goodput within the same experiment. Iteration-level comparisons preserve the
-order of decisions and failures rather than reducing a trajectory to one
-final number. Deployment and load-test configuration are supplied by the
-experiment profile rather than assembled from ad-hoc values in the prompt, so
-every cell and model is evaluated under identical execution conditions. Where
-results compare code-only, deployment-only, and agent-selected refinement,
-the same benchmark and scoring rule are used; only the permitted decision
-policy changes.
+The main comparison is between each experiment's first iteration with
+positive sustained goodput, since the baseline itself can record exactly
+$0$, and that same experiment's own best sustained goodput reached in any
+later iteration. Iteration-level comparisons preserve the order of
+decisions and failures rather than reducing a trajectory to one final
+number. Deployment and load-test configuration are supplied by the
+experiment profile rather than assembled from ad-hoc values in the prompt,
+so every cell and model is evaluated under identical execution conditions.
 
 \paragraph{Statistical treatment.}
-Repeated samples of a cell would be needed to estimate variation caused by
-stochastic generation and execution. The experiments reported here use one
-sample per cell because a complete refinement trajectory is costly. Results
-are therefore descriptive: they show individual trajectories, changes from
-baseline, and aggregate summaries where appropriate, but they do not support
-significance-tested claims about population-level differences.
+Repeated samples of a cell would let us estimate directly, rather than
+assume, the variance introduced by stochastic code and deployment
+generation. The experiments reported in this thesis use one sample per
+cell instead, because a complete ten-iteration refinement trajectory is
+costly; this is a property of the specific experiments run here, not a
+constraint of the method itself. We assume that some of this variance is
+already absorbed by the refinement process itself: an unhealthy baseline
+or an unlucky single iteration is not necessarily fatal, since later
+iterations have further opportunities to recover from it
+(Section~\ref{sec:results-rq1} reports several cells that do exactly
+this). This assumption is not independently verified here. Results are
+therefore descriptive: they show individual trajectories, changes from
+baseline, and aggregate summaries where appropriate, but they do not
+support significance-tested claims about population-level differences.
 
 Concrete models, scenarios, iteration budgets, cluster settings, and sample
 counts are specified in Chapter~\ref{ch:setup}. Prompt templates and detailed

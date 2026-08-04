@@ -20,40 +20,40 @@ model-level difference.} The clearest pattern across all six research
 questions is not a capability gap between models, but a division of
 labour between the two refinement levers. The largest source of attrition
 (functional-test and docker-build failures, 74\% of recorded failures,
-Section~\ref{sec:results-rq6}) and the largest single-step goodput
-recoveries (Section~\ref{sec:results-rq2}) both trace to code correctness,
+Section~\ref{sec:results-rq7}) and the largest single-step goodput
+recoveries (Section~\ref{sec:results-rq3}) both trace to code correctness,
 not deployment tuning, and this holds for every model with data. Where
 model differences do appear, they concentrate in a narrower place than a
 first glance at raw completion counts would suggest: every model that
 reaches a working baseline completes its full refinement budget
-(Section~\ref{sec:results-rq3}), so the interesting variation in this
+(Section~\ref{sec:results-rq4}), so the interesting variation in this
 dataset is not \emph{whether} a model finishes, but how it uses the two
 levers once it starts.
 
 \paragraph{What can and cannot be said about cost.} \texttt{glm-5.2} is
 roughly an order of magnitude cheaper per cell than \texttt{gpt-5.5} or
-\texttt{claude-opus-4-8} (Section~\ref{sec:results-rq3}), and that
+\texttt{claude-opus-4-8} (Section~\ref{sec:results-rq4}), and that
 advantage does not come at the expense of either completion reliability
 or achieved goodput: it reaches baseline and finishes its budget on every
 one of its 21 cells, and its median best-iteration goodput sits close to
 \texttt{claude-opus-4-8}'s. Where its profile does look different is in
 how its two refinement levers behave once it is running: its
 deployment-refinement steps are net negative on average
-(Section~\ref{sec:results-rq2}), and its code-side failure profile leans
+(Section~\ref{sec:results-rq3}), and its code-side failure profile leans
 more heavily on \textsc{Rust-Actix} build failures than the other two
-models' do (Section~\ref{sec:results-rq6}). Cost, completion reliability,
+models' do (Section~\ref{sec:results-rq7}). Cost, completion reliability,
 achieved goodput, and refinement-lever quality are separate axes in this
 data, and \texttt{glm-5.2} only underperforms on the last of them.
 
 \paragraph{Deployment-specification versus code refinement.} The division
-of labour in Section~\ref{sec:results-rq2}, code refinement carrying
+of labour in Section~\ref{sec:results-rq3}, code refinement carrying
 correctness-adjacent fixes with a heavy positive tail, deployment
 refinement acting as a smaller and, for one model, occasionally negative
 capacity knob, is consistent with what each lever can structurally see. A
 spec-refinement step can move replicas, resources, and database topology,
 but it cannot change what the running application \emph{does}; if the
 bottleneck is a connection-handling bug
-(Section~\ref{sec:results-rq6}), no amount of deployment tuning reaches
+(Section~\ref{sec:results-rq7}), no amount of deployment tuning reaches
 it. The reverse is not quite symmetric: code refinement \emph{can}, in
 principle, work around a deployment problem by changing application
 behaviour (for example, reducing per-request work), which may explain why
@@ -61,7 +61,7 @@ code refinement's observed effect is not just larger on average but more
 variable in both directions than deployment refinement's.
 
 \paragraph{Convergence patterns.} Where a trajectory has enough successful
-iterations to work with, Section~\ref{sec:results-rq5}'s
+iterations to work with, Section~\ref{sec:results-rq6}'s
 \textsc{ClickCount} evidence, corroborated across two different models on
 the same scenario, shows deployment parameters moving in a consistent,
 workload-appropriate direction across several iterations rather than
@@ -70,7 +70,7 @@ per-pod headroom for a near-stateless workload, later spec iterations
 continue in that direction rather than re-deriving it from scratch, which
 is the behaviour the append-only conversational memory of
 Section~\ref{sec:methods-workflow} is designed to support. The backfire
-case in Section~\ref{sec:results-rq6} is the counter-example: convergence
+case in Section~\ref{sec:results-rq7} is the counter-example: convergence
 toward a \emph{locally} reasonable decision is not the same as convergence
 toward a good one, particularly when one refinement step is free to change
 several spec fields whose interaction it cannot fully anticipate.
@@ -93,7 +93,7 @@ division of labour holds for CPU-bound workloads is untested.
 refinement budget (Section~\ref{sec:setup-procedure}). Several
 trajectories in Chapter~\ref{ch:results} were still improving, or had just
 recovered from a regression, at iteration 010; a larger budget could
-change both the achieved goodput ceiling and the RQ2 code-vs-spec split,
+change both the achieved goodput ceiling and the RQ3 code-vs-spec split,
 since which lever a decision stage reaches for next may depend on how many
 refinement rounds it has already spent recovering from earlier failures.
 This is not only a hypothetical concern: one cell in this dataset
@@ -131,7 +131,7 @@ never recover within their ten-iteration budget are recorded the same way
 throughout. A goodput of $0$ at the \emph{end} of an otherwise-healthy
 trajectory is scored identically again, even though it is a different
 phenomenon (Section~\ref{sec:results-rq1}): the failure taxonomy
-(Section~\ref{sec:results-rq6}) does not flag it at all, since every
+(Section~\ref{sec:results-rq7}) does not flag it at all, since every
 individual iteration still completed as a harness-level success.
 
 \paragraph{Stochastic LLM behaviour.} Temperature was fixed at $0.2$
@@ -149,7 +149,7 @@ topology and one hardware profile (Section~\ref{sec:setup-infrastructure}).
 ``Fixed infrastructure constraints'' in the thesis research question
 (Section~\ref{sec:intro-missing}) is therefore fixed to \emph{one} specific
 capacity envelope; whether the same deployment decisions (e.g.\ the
-replica-count/CPU-request trade-off of Section~\ref{sec:results-rq5})
+replica-count/CPU-request trade-off of Section~\ref{sec:results-rq6})
 would be reachable, or would be the right decisions, on a cluster an order
 of magnitude larger or smaller is untested.
 
@@ -160,18 +160,18 @@ of magnitude larger or smaller is untested.
 
 \paragraph{For agentic software optimisation.} The clearest transferable
 result is the code/deployment division of labour itself
-(Section~\ref{sec:results-rq2}): when an agent can act on two levers that
+(Section~\ref{sec:results-rq3}): when an agent can act on two levers that
 address different failure classes, keeping them mutually exclusive per
 step (Section~\ref{sec:methods-workflow}) is what makes it possible to
 attribute a measured change to a cause at all, and this thesis's data
 suggests the two levers really do specialise in practice, not just by
 construction. Systems that let an agent freely mix implementation and
 configuration changes in one step should expect the attribution problem
-Section~\ref{sec:results-rq6}'s backfire case illustrates \emph{within} a
+Section~\ref{sec:results-rq7}'s backfire case illustrates \emph{within} a
 single lever, only worse.
 
 \paragraph{For Kubernetes deployment optimisation.} The
-\textsc{ClickCount} evidence (Section~\ref{sec:results-rq5}), reproduced
+\textsc{ClickCount} evidence (Section~\ref{sec:results-rq6}), reproduced
 qualitatively by two different models on the same scenario, is more than a
 single existence proof that an LLM agent, given only a schema and raw
 load-test feedback, can rediscover a standard scaling heuristic (favour
@@ -189,7 +189,7 @@ performance-tuning agents purely on their tuning behaviour in isolation:
 in this dataset, the single largest lever on final goodput was not a
 tuning decision at all, but whether the code was correct enough to deploy
 under load in the first place, a class of bug that, as
-Section~\ref{sec:results-rq6}'s pooling case study shows, a
+Section~\ref{sec:results-rq7}'s pooling case study shows, a
 single-container functional-test suite cannot even see. A second,
 narrower caution follows from the same section's
 \texttt{unschedulable}/\texttt{namespace\_cleanup} finding: a failure
