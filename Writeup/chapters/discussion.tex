@@ -38,10 +38,11 @@ or achieved goodput: it reaches baseline and finishes its budget on every
 one of its 21 cells, and its geometric-mean best-iteration goodput sits
 close to \texttt{claude-opus-4-8}'s. Where its profile does look different is in
 how its two refinement levers behave once it is running: its
-deployment-refinement steps are net negative on average
-(Section~\ref{sec:results-rq3}), and its code-side failure profile leans
-more heavily on \textsc{Rust-Actix} build failures than the other two
-models' do (Section~\ref{sec:results-rq7}). Cost, completion reliability,
+deployment-refinement steps collapse a working deployment to zero goodput
+more often than any other model's do (Section~\ref{sec:results-rq3}), and
+its code-side failure profile leans more heavily on \textsc{Rust-Actix}
+build failures than the other two models' do (Section~\ref{sec:results-rq7}).
+Cost, completion reliability,
 achieved goodput, and refinement-lever quality are separate axes in this
 data, and \texttt{glm-5.2} only underperforms on the last of them.
 
@@ -199,8 +200,8 @@ before making a strong model-level claim from the combined aggregate.
 
 \paragraph{User-ceiling censoring.} The load profile has a hard ceiling of
 $100{,}000$ virtual users (Section~\ref{sec:methods-load-profile}). The
-explore phase reached that ceiling in 31 of the 582 runs that passed warm-up
-($5.3\%$; $4.9\%$ of all 631 parsed bench runs), so those runs do not identify
+explore phase reached that ceiling in 31 of the 589 runs that passed warm-up
+($5.3\%$; $4.9\%$ of all 632 parsed bench runs), so those runs do not identify
 where the deployment would eventually saturate above the ceiling. Their
 reported goodput remains a valid observation at the tested load, but the
 capacity search is right-censored: a ceiling hit should be read as ``at least
@@ -217,6 +218,21 @@ general workload population: scenarios and frameworks are deliberately
 structured, and each cell has only one stochastic sample. Model- and
 framework-level aggregates should therefore be read as summaries of this
 grid, not as population estimates with conventional inferential guarantees.
+
+\paragraph{Concurrent-sweep image caching.} The recurring
+\texttt{docker tag failed: ... No such image} error documented in
+Section~\ref{sec:results-rq7} traces to a disk-management routine that runs
+at the start of every sample's preflight and clears unused container
+images from the shared build host, so that a spec-only iteration reusing
+an image built earlier in the same cell can find it already evicted if
+another cell's preflight happened to run in between. Because experiments
+in this dataset were collected with multiple cells running concurrently,
+this is a genuine race rather than a one-off transient error. Its effect
+was contained to the two cells and iteration pairs Section~\ref{sec:results-rq7}
+records: both fail cleanly before reaching deploy or bench, so no goodput
+value in this dataset is affected, but each pair consumes two iterations
+of the fixed ten-iteration budget without the decision stage's choice for
+those iterations ever being evaluated.
 
 
 % ----- §6.3 Practical Implications -----
@@ -255,11 +271,4 @@ in this dataset, the single largest lever on final goodput was not a
 tuning decision at all, but whether the code was correct enough to deploy
 under load in the first place, a class of bug that, as
 Section~\ref{sec:results-rq7}'s pooling case study shows, a
-single-container functional-test suite cannot even see. A second,
-narrower caution follows from the same section's
-\texttt{unschedulable}/\texttt{namespace\_cleanup} finding: a failure
-taxonomy's own kind labels can conflate genuinely different root causes
-(a resource-scheduling shortfall and an application crash loop both
-surfaced under \texttt{unschedulable} here), which matters for anyone
-building automated triage on top of a similar label set rather than
-reading the underlying diagnostic each time.
+single-container functional-test suite cannot even see.

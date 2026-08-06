@@ -76,20 +76,20 @@ diagnostics regressed a healthy deployment to zero goodput, because
 nothing prevents one refinement step from changing several
 deployment-spec fields whose interaction it cannot fully anticipate
 (Section~\ref{sec:results-rq7}). For one model, \texttt{glm-5.2}, this was
-not a one-off: its deployment-refinement steps are net negative on average
-across 66 steps, the only one of the three models where this lever is a
-net liability rather than a net gain (Section~\ref{sec:results-rq3}). A
-second, more severe instance of the same failure mode shows up on
+not a one-off: its deployment-refinement steps collapse a working
+deployment to zero goodput more often than any other model/lever
+combination in this dataset (Section~\ref{sec:results-rq3}). A second,
+more severe instance of the same failure mode shows up on
 \texttt{claude-opus-4-8}: one cell starts from a healthy baseline, peaks at
 $3\times$ that baseline, and then loses everything again to two
 consecutive deployment-refinement regressions with no iterations left in
 its budget to recover (Section~\ref{sec:results-rq1}), so the same
-occasional-backfire pattern is not confined to the one model whose average
-is net negative. Separately, and closer to a framework finding than a
-model one: static spec validation did not catch every deployment that
-would later prove impossible to schedule, and the taxonomy that records
-those failures uses inconsistent labels for what reads as the same
-underlying symptom, and is blind entirely to a trajectory that ends at
+occasional-backfire pattern is not confined to the one model with the
+highest collapse count. Separately, and closer to a framework finding than a
+model one: a proposal that passes static validation can still fail at
+apply time for reasons validation was never designed to catch (an
+application crash loop, or pods that never pass their readiness probe),
+and the failure taxonomy is blind entirely to a trajectory that ends at
 zero goodput without a single harness-level failure along the way
 (Section~\ref{sec:results-rq7}).
 
@@ -109,12 +109,9 @@ single-container, single-framework evaluation would not surface as
 clearly. Also unexpected, though smaller: the deployment-and-cluster path
 was \emph{nearly}, but not quite, invisible as a source of failure. A
 handful of spec-refinement iterations, across cells from two different
-models, produced deployments that passed static validation but could not
-be deployed as intended, recorded under two different failure-kind labels
-for what reads as the same underlying symptom, and a third instance of the
-same label turned out on inspection to be a different root cause entirely,
-an application crash loop rather than a scheduling shortfall
-(Section~\ref{sec:results-rq7}); the same static validation is also
+models, produced deployments that passed static validation but then
+either crash-looped or never passed their readiness probe within the wait
+window (Section~\ref{sec:results-rq7}); the same static validation is also
 documented, on two separate cells, correctly rejecting an infeasible
 proposal before it was ever applied.
 
@@ -186,7 +183,7 @@ sampling variance; overlap between scenario generation and model evaluation
 which is checked in Section~\ref{sec:results-rq4} but does not make generated
 and original scenarios interchangeable; a subset of load runs using the
 lower-bandwidth control network rather than the experiment LAN; a hard
-$100{,}000$-user ceiling reached by 31 of the 582 warm-up survivors, which
+$100{,}000$-user ceiling reached by 31 of the 589 warm-up survivors, which
 right-censors that tail of the capacity search; a single scalar (sustained
 goodput under one adaptive load profile) as the sole optimisation signal,
 which does not distinguish a dead baseline from a trajectory that recovered
@@ -239,10 +236,11 @@ functional-and-security check) otherwise leaves open.
 separate validation surfaces could plausibly be doing more than they do
 now. Static spec validation (Section~\ref{sec:methods-spec}) currently
 checks a fixed set of structural and capacity properties; RQ7's
-\texttt{unschedulable}/\texttt{namespace\_cleanup} gap
-(Section~\ref{sec:results-rq7}) shows at least one class of deployment
-failure it does not catch, and it is not obvious that the current check
-set is complete rather than simply the set that was implemented first.
+crashloop and timeout deploy-phase failures
+(Section~\ref{sec:results-rq7}) are outside what any structural check
+could catch, since they are runtime application behaviour rather than a
+static property of the spec, so closing that gap would mean a different
+kind of check entirely, not a larger version of the current one.
 Separately, functional-test generation (Section~\ref{sec:methods-code})
 could be pushed from today's single-behaviour checks (change one thing,
 assert the resulting state) toward layered coverage: keep the small,
@@ -259,7 +257,8 @@ step can change several fields at once, which limits attribution the same
 way mixing code and spec changes would. Future work could either constrain
 spec-refinement steps to one field at a time and measure whether that
 improves reliability, particularly for \texttt{glm-5.2}, whose
-spec-refinement mean is net negative in this dataset, or instrument enough
+spec-refinement steps collapse a working deployment to zero goodput more
+often than any other model's in this dataset, or instrument enough
 to attribute outcomes to individual fields \emph{post hoc} without
 constraining the agent's search space.
 

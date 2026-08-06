@@ -32,9 +32,11 @@ Code refinement contributes the largest single-step recoveries, dominated
 by correctness bugs invisible to single-container testing, and its mean
 effect exceeds deployment refinement's for every model. Deployment
 refinement is a smaller capacity knob that tracks workload characteristics
-without target ranges, but its net effect is model-dependent: negative on
-average for one model, and in one cell severe enough to end a trajectory
-at zero goodput once its budget ran out mid-regression. All three models
+without target ranges, but carries a distinct downside risk: it collapses
+a working deployment to zero goodput more often than code refinement
+does, most severely for one model, and in one cell severe enough to end a
+trajectory at zero goodput once its budget ran out mid-regression. All
+three models
 reach baseline and complete their full budget on every cell, so
 completion rate does not differentiate them. LLM-guided deployment
 optimisation is a viable, bounded complement to code-level optimisation,
