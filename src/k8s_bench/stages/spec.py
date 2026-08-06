@@ -112,7 +112,6 @@ def run_spec_stage(
             capacity=capacity,
             refinement=not is_baseline,
             validation_feedback=validation_feedback,
-            max_validation_retries=3 if is_baseline else 1,
             attempt_index=attempt,
             enable_attempts=enable_attempts,
             iteration_index=plan.iteration_index,

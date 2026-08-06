@@ -240,7 +240,7 @@ targets.
 
 [[... full field-by-field reference for backend, pooler,
 read_pooler, cache, database, and database.tuning; condensed in
-the deployment-specification schema table (Table 3.4) ...]]
+the deployment-specification schema table (Table 4.4) ...]]
 
 ## Tuning heuristics (from benchmark feedback)
 - **Primary saturated, replicas idle** -> app must use
@@ -265,7 +265,7 @@ backend:
     memory_limit: <quantity>
 [[... full YAML skeleton: optional pooler, read_pooler, cache,
 database (incl. tuning, placement); condensed in
-the deployment-specification schema table (Table 3.4) ...]]
+the deployment-specification schema table (Table 4.4) ...]]
 </SPEC>
 \end{verbatim}
 \normalsize
@@ -324,7 +324,7 @@ Write ONLY the Locust script inside the <LOCUST_SCRIPT> tags.
 \end{verbatim}
 \normalsize
 
-Stage~0 extracts the tagged response, compiles the Python source, and checks
+Stage~1 extracts the tagged response, compiles the Python source, and checks
 that the script directly defines a \texttt{FastHttpUser}. If a check fails,
 the continuing conversation receives a typed diagnostic and is asked for one
 corrected complete script. The repair prompt is intentionally short because
@@ -340,8 +340,8 @@ conversation; do not repeat them in prose.
 \end{verbatim}
 \normalsize
 
-After a script clears the deterministic smoke gate, the load-review prompt
-supplies the per-implementation results. It asks the author to distinguish a
+After a script clears the Stage~2 coverage gate, the Stage~3 load-review
+prompt supplies the per-implementation results. It asks the author to distinguish a
 shared script defect from a reference-implementation defect or incidental
 noise:
 

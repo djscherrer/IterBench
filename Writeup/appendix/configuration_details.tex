@@ -8,6 +8,9 @@ parameters used for every experiment reported in this thesis
 (Section~\ref{sec:setup-procedure}); Table~\ref{tab:appendix-load-profile}
 gives the full \texttt{k8s-explore-refine} load-profile parameters
 introduced in Section~\ref{sec:methods-load-profile};
+Table~\ref{tab:appendix-spec-validation} gives the static-validation rules
+applied to every deployment specification in the Spec stage
+(Section~\ref{sec:methods-spec});
 Table~\ref{tab:appendix-scenarios} gives the endpoint and functional-test
 counts for the seven evaluated scenarios introduced in
 Section~\ref{sec:setup-scenarios}.
@@ -33,13 +36,6 @@ Section~\ref{sec:setup-scenarios}.
       10 &
       Max outer spec-generation attempts before aborting the sample
       (Section~\ref{sec:methods-spec}) \\
-    Spec internal retries, baseline &
-      3 &
-      Internal LLM re-prompts per outer spec attempt, to fix a parse or
-      validation error \\
-    Spec internal retries, refinement &
-      1 &
-      No internal retry; fail-fast \\
     LLM call retries &
       3 &
       Exponential backoff with jitter, applied to every LLM call (decision,
@@ -60,6 +56,38 @@ Section~\ref{sec:setup-scenarios}.
 
 \begin{table}[htbp]
   \centering
+  \caption{Static-validation rules applied to every deployment
+    specification before deployment (Section~\ref{sec:methods-spec}).
+    \texttt{alloc} denotes a worker's allocatable capacity; \emph{requests}
+    are the pod's resource requests.}
+  \label{tab:appendix-spec-validation}
+  \small
+  \begin{tabular}{@{}p{0.24\linewidth}p{0.68\linewidth}@{}}
+    \toprule
+    \textbf{Check} & \textbf{Rule (must hold for the specification to pass)} \\
+    \midrule
+    Per-node fit &
+      Every pod the schema can request (backend, Postgres primary, read
+      replicas, both poolers, both Redis caches) has requests
+      $\leq 90\%$ of \texttt{alloc} on at least one allowed worker. \\
+    Cluster-wide fit &
+      The sum of all pods' requests $\leq 85\%$ of the workers' combined
+      \texttt{alloc}. \\
+    Connection budget &
+      Checked only when \texttt{backend.env.DB\_POOL\_SIZE} is set
+      (otherwise skipped, with a warning). Without a pooler:
+      $\text{backend.replicas} \times \text{pool\_size} \leq
+      \text{database.max\_connections}$, directly against Postgres. With a
+      pooler: the same client-connection estimate must instead fit the
+      pooler's \texttt{max\_client\_conn}; symmetrically for
+      \texttt{read\_pooler}, which additionally requires
+      \texttt{database.replicas}~$>1$. \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\begin{table}[htbp]
+  \centering
   \caption{\texttt{k8s-explore-refine} load-profile parameters
     (Section~\ref{sec:methods-load-profile}).}
   \label{tab:appendix-load-profile}
@@ -74,6 +102,7 @@ Section~\ref{sec:setup-scenarios}.
     Failure-rate threshold & 2.0\% \\
     Overload p95 latency & 1000\,ms \\
     Wait time between tasks & 1\,s (fixed) \\
+    Controller sample interval & 1\,s \\
     Measurement window (Locust rolling) & $\approx$10\,s \\
     \addlinespace
     Explore warm-up duration & 30\,s \\
@@ -84,8 +113,8 @@ Section~\ref{sec:setup-scenarios}.
     \addlinespace
     Recovery floor & 75\% of explore-phase peak \\
     Recovery settle duration & 45\,s \\
-    Recovery retry drop & 15\% \\
-    Recovery max retries & 3 \\
+    Recovery drop per retry & 15\% of current level \\
+    Recovery max settle attempts (incl.\ floor) & 3 \\
     \addlinespace
     Refine max step & 5\% of recovery-entry users \\
     Refine min step & 10 users \\
@@ -139,7 +168,7 @@ Section~\ref{sec:setup-scenarios}.
       Submit transit delay reports per station and route, query
       per-station summaries and a rider's own reports &
       5 & 3 &
-      smallest surface of the four generated scenarios \\
+      among the smallest of the four generated scenarios \\
     \bottomrule
   \end{tabular}
 \end{table}

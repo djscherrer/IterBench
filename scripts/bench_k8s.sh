@@ -30,13 +30,16 @@ set -euo pipefail
 # one entry as "model:provider" rather than setting PROVIDER globally, so
 # different models can use different providers in the same run:
 #   MODELS="openai/gpt-5.5-2026-04-23 anthropic/claude-opus-4-8 z.ai/glm-5.2:openrouter"
-MODELS="openai/gpt-5.5-2026-04-23" # z.ai/glm-5.2:openrouter openai/gpt-5.5-2026-04-23 anthropic/claude-opus-4-8 (temp deprecated) z.ai/glm-5.2:openrouter
+# Final three-model comparison reported in the thesis (Chapter 5). glm-5.2 needs
+# an explicit ":openrouter" provider suffix since its prefix is not auto-detected.
+MODELS="openai/gpt-5.5-2026-04-23 anthropic/claude-opus-4-8 z.ai/glm-5.2:openrouter"
 PROVIDER=""           # openai | anthropic | together_ai | openrouter | swissai | vllm
                                 # fallback for MODELS entries with no ":provider" suffix
 ONLY_SAMPLES="0"                # e.g. "0"; empty → N_SAMPLES
 N_SAMPLES=""
-ENVS="Python-Flask Go-net/http Rust-Actix"               # Go-net/http
-SCENARIOS="Petstore Recipes ClickCount TextWeaver_WordCountDatasets BranchWeave_InteractiveStoryGraph" # Recipes LexiTally_WordCountDatasets BranchWeave_InteractiveStoryGraph TextWeaver_WordCountDatasets BranchWeave_Petstore goes to 5k users
+ENVS="Python-Flask Go-net/http Rust-Actix"
+# Final seven-scenario set reported in the thesis (Chapter 5).
+SCENARIOS="ClickCount Recipes BranchWeave_InteractiveStoryGraph Petstore ParcelPinLockerPickup SplitNestSharedExpenseLedger TransitPulseDelayReporter"
 TEMPERATURE="0.2"
 SAFETY_PROMPT="high_performance"
 RESULTS_DIR=""                  # empty → default results path

@@ -152,6 +152,15 @@ and~\ref{sec:methods-scenario-gen-locust}); as with every reference
 implementation in this thesis, none of the three is itself a candidate in
 the later model-evaluation experiments.
 
+This creates a potential \emph{provenance bias}: an evaluated model could
+benefit from having authored part of the scenarios or from having supplied a
+reference implementation used to calibrate their tests. The setup therefore
+does not make the three model comparisons fully provenance-independent. The
+evaluation checks this threat by separating original from generated
+scenarios (Section~\ref{sec:results-rq4}); the remaining construct-validity
+caveat and the limits of that check are discussed in
+Section~\ref{sec:discussion-limitations}.
+
 Endpoint counts below are unique OpenAPI paths, not operations
 (\textsc{Petstore}'s 8 paths, for example, carry 13 operations across the
 four HTTP methods they use); a compact reference table with the same
@@ -207,11 +216,13 @@ architecture described in Section~\ref{sec:methods-architecture}:
         plane, the BaxBench orchestrator, and the private image registry.
   \item \textbf{Kubernetes workers (4 hosts).} Candidate deployments
         (application pods, databases, poolers, caches) are scheduled only
-        onto these nodes, which in total expose 128 CPU cores and
-        approximately 251\,GiB of memory to Kubernetes. This capacity is
-        measured live from the cluster every time a deployment
-        specification is generated or validated (Section~\ref{sec:methods-spec}),
-        not assumed once and cached.
+        onto these nodes, whose four d430 hosts contribute 128 CPU cores
+        and approximately 251\,GiB of memory in total. Static validation
+        enforces the nodes' \emph{allocatable} capacity, that is, what
+        remains after Kubernetes' own system reservations, which is somewhat
+        below this raw figure and is read live from the cluster every time a
+        deployment specification is generated or validated
+        (Section~\ref{sec:methods-spec}) rather than assumed once and cached.
   \item \textbf{Locust load generation (4 hosts).} One host runs the Locust
         master process, collocated with 16 of its own worker processes; the
         remaining three hosts each run 32 worker processes. All four are
@@ -220,11 +231,24 @@ architecture described in Section~\ref{sec:methods-architecture}:
         (Section~\ref{sec:methods-architecture}).
 \end{itemize}
 
-This measured worker capacity is exactly what the spec-schema static
-validation (Section~\ref{sec:methods-spec}) checks candidate deployments
-against, and it is fixed for the whole evaluation, which is what makes
-``fixed infrastructure constraints'' in the thesis research question
-concrete.
+\paragraph{Network-path caveat.} The intended high-volume load path uses the
+Emulab experiment LAN: the harness resolves the Kubernetes NodePort target
+and the distributed Locust addresses to the experiment-network interfaces
+rather than sending benchmark traffic over the shared control network. A
+subset of earlier archived runs nevertheless used the control-network path
+before this routing was made consistent; later runs used the experiment LAN.
+Because the two networks do not provide the same bandwidth, this is a
+potential measurement confound in the affected runs, independent of the
+deliberate CPU separation between load hosts and Kubernetes workers. The
+network metadata is retained for the repeatability analysis in
+Section~\ref{sec:results-rq2}; its implications for comparability and model-
+level claims are discussed in Section~\ref{sec:discussion-limitations}.
+
+This measured allocatable capacity, minus the validation reserves
+(Section~\ref{sec:methods-spec}), is exactly what the spec-schema static
+validation checks candidate deployments against, and it is fixed for the
+whole evaluation, which is what makes ``fixed infrastructure constraints''
+in the thesis research question concrete.
 
 
 % ----- §4.4 Evaluation Procedure -----
@@ -246,10 +270,15 @@ concrete budget values used throughout Chapter~\ref{ch:results}.
         compounded by each experiment's long wall-clock runtime (typically
         2 to 3 hours end to end for the full ten-iteration budget), so
         repeated sampling across the cells evaluated here was not
-        affordable within this thesis's compute budget. Its consequence
-        for how results are read is stated explicitly in
-        Section~\ref{sec:methods-metrics} and repeated where it matters in
-        Chapter~\ref{ch:results}.
+        affordable within this thesis's compute budget. Its consequence is
+        statistical uncertainty: it provides no repeated draws from which
+        within-cell variance or significance can be estimated. Model- and
+        framework-level aggregates are therefore descriptive summaries of
+        this fixed grid, not estimates based on independently sampled cells.
+        The measurement and inference consequences are stated in
+        Section~\ref{sec:methods-metrics}, revisited where relevant in
+        Chapter~\ref{ch:results}, and consolidated in
+        Section~\ref{sec:discussion-limitations}.
   \item \textbf{Experiments.} One experiment per sample, i.e.\ one
         refinement trajectory per cell; no re-runs under different
         budgets/profiles were kept for the cells reported here.

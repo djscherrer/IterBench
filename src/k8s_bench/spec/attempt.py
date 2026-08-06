@@ -171,7 +171,7 @@ def generate_k8s_workload_spec(
     session: "Prompter",
     refinement: bool = False,
     validation_feedback: str | None = None,
-    max_validation_retries: int = 3,
+    attempt_index: int = 1,
     sample_dir: pathlib.Path | None = None,
     iteration_path: pathlib.Path | None = None,
     iteration_index: int = 0,
@@ -183,146 +183,105 @@ def generate_k8s_workload_spec(
     base_delay: float = 1.0,
     max_delay: float = 128.0,
 ) -> tuple[K8sWorkloadSpec, str, list[str]]:
-    """Call the configured LLM and return (spec, raw_response, validation_warnings).
+    """Run one generation--validation pass and return the resulting spec.
+
+    Each invocation makes exactly one LLM call (apart from transport retries),
+    then parses, normalises, and statically validates the response.  Any outer
+    retry is owned by :func:`run_spec_stage`.
 
     When ``enable_attempts`` is ``True`` on the outer :func:`run_spec_attempt`,
     failed attempts are rotated into ``03-spec/attempts/<NNN>/`` before retry.
     This function always writes prompt/response to the phase top level.
     """
-    last_raw = ""
-    validation_hint = validation_feedback
-    last_errors: list[str] = []
-    last_warnings: list[str] = []
-    for attempt in range(1, max_validation_retries + 1):
-        prompt = build_k8s_spec_prompt(
-            env=env,
-            scenario=scenario,
-            safety_prompt=safety_prompt,
-            capacity=capacity,
-            iteration_id=iteration_id,
-            iteration_index=iteration_index,
-            total_iterations=total_iterations,
-            refinement=refinement,
-            validation_feedback=validation_hint,
-            artifact_pointers=artifact_pointers,
-        )
-
-        # Write prompt/response at the phase top level; failed outer attempts are
-        # rotated into ``attempts/<NNN>/`` by the stage loop (move-on-fail).
-        if iteration_path is not None:
-            spec_dir = iteration_spec_dir(iteration_path)
-            spec_dir.mkdir(parents=True, exist_ok=True)
-            (spec_dir / PROMPT_LOG_FILENAME).write_text(
-                prompt + "\n", encoding="utf-8"
-            )
-        if sample_dir is not None:
-            from ..llm_cost import check_k8s_llm_budget, record_k8s_llm_call
-
-            check_k8s_llm_budget(
-                sample_dir,
-                experiment_id=experiment_id,
-                max_cost_usd=llm_max_cost_usd,
-            )
-
-        spec_call_type = "spec_refinement" if refinement else "baseline_spec_generation"
-        empty_response_error = "LLM returned no completion for k8s spec generation"
-        try:
-            last_raw = send_with_retries(
-                session,
-                prompt,
-                logger,
-                max_retries=max_retries,
-                base_delay=base_delay,
-                max_delay=max_delay,
-                log_label="K8s spec generation",
-            )
-        except RuntimeError as exc:
-            if "no completion" in str(exc).lower():
-                raise RuntimeError(empty_response_error) from exc
-            raise
-        if sample_dir is not None:
-            record_k8s_llm_call(
-                prompter=session,
-                call_type=spec_call_type,
-                sample_dir=sample_dir,
-                logger=logger,
-                artifact_dir=(
-                    iteration_spec_dir(iteration_path) if iteration_path else None
-                ),
-                iteration_id=iteration_id,
-                note=f"validation_round={attempt}",
-                experiment_id=experiment_id,
-                max_cost_usd=llm_max_cost_usd,
-            )
-        if iteration_path is not None:
-            (iteration_spec_dir(iteration_path) / RESPONSE_LOG_FILENAME).write_text(
-                last_raw + "\n", encoding="utf-8"
-            )
-        try:
-            fragment = parse_spec_fragment(last_raw)
-            spec = merge_fragment_into_spec(
-                fragment,
-                iteration_id=iteration_id,
-                app_port=env.port,
-                needs_db=scenario.needs_db,
-                labels={},
-                experiment_id=experiment_id,
-            )
-        except ValueError as parse_exc:
-            validation_hint = (
-                f"Your previous response could not be parsed as a <SPEC> "
-                f"YAML fragment: {parse_exc}. Re-emit the spec inside a "
-                "single <SPEC>...</SPEC> block."
-            )
-            logger.warning(
-                "spec validation attempt %d/%d failed (parse): %s",
-                attempt,
-                max_validation_retries,
-                parse_exc,
-            )
-            continue
-
-        # Resolve placement names in the spec.
-        spec, placement_errors = normalize_spec_placement(spec, capacity)
-        if placement_errors:
-            validation_hint = SpecValidationError(placement_errors).to_prompt_text()
-            logger.warning(
-                "spec validation attempt %d/%d failed (placement): %s",
-                attempt,
-                max_validation_retries,
-                placement_errors,
-            )
-            continue
-
-        # Validate the spec against the cluster capacity and scheduling rules.
-        result = validate_spec_against_cluster(spec, capacity)
-        if result.errors:
-            last_errors = list(result.errors)
-            last_warnings = list(result.warnings)
-            validation_hint = SpecValidationError(result.errors, result.warnings).to_prompt_text()
-            logger.warning(
-                "spec validation attempt %d/%d failed: %s",
-                attempt,
-                max_validation_retries,
-                result.errors,
-            )
-            continue
-
-        if attempt > 1:
-            logger.info("spec validation passed on attempt %d", attempt)
-        return spec, last_raw, result.warnings
-
-    if last_errors:
-        raise SpecValidationError(
-            [f"Spec still invalid after {max_validation_retries} generation attempt(s)."]
-            + last_errors,
-            last_warnings,
-        )
-    raise SpecValidationError(
-        [f"Spec still invalid after {max_validation_retries} generation attempt(s)."]
-        + [ln for ln in (validation_hint or "").splitlines() if ln.strip()][-8:],
-        last_warnings,
+    prompt = build_k8s_spec_prompt(
+        env=env,
+        scenario=scenario,
+        safety_prompt=safety_prompt,
+        capacity=capacity,
+        iteration_id=iteration_id,
+        iteration_index=iteration_index,
+        total_iterations=total_iterations,
+        refinement=refinement,
+        validation_feedback=validation_feedback,
+        artifact_pointers=artifact_pointers,
     )
+
+    # Write prompt/response at the phase top level; failed outer attempts are
+    # rotated into ``attempts/<NNN>/`` by the stage loop (move-on-fail).
+    if iteration_path is not None:
+        spec_dir = iteration_spec_dir(iteration_path)
+        spec_dir.mkdir(parents=True, exist_ok=True)
+        (spec_dir / PROMPT_LOG_FILENAME).write_text(prompt + "\n", encoding="utf-8")
+    if sample_dir is not None:
+        from ..llm_cost import check_k8s_llm_budget, record_k8s_llm_call
+
+        check_k8s_llm_budget(
+            sample_dir,
+            experiment_id=experiment_id,
+            max_cost_usd=llm_max_cost_usd,
+        )
+
+    spec_call_type = "spec_refinement" if refinement else "baseline_spec_generation"
+    empty_response_error = "LLM returned no completion for k8s spec generation"
+    try:
+        raw_response = send_with_retries(
+            session,
+            prompt,
+            logger,
+            max_retries=max_retries,
+            base_delay=base_delay,
+            max_delay=max_delay,
+            log_label="K8s spec generation",
+        )
+    except RuntimeError as exc:
+        if "no completion" in str(exc).lower():
+            raise RuntimeError(empty_response_error) from exc
+        raise
+    if sample_dir is not None:
+        record_k8s_llm_call(
+            prompter=session,
+            call_type=spec_call_type,
+            sample_dir=sample_dir,
+            logger=logger,
+            artifact_dir=(
+                iteration_spec_dir(iteration_path) if iteration_path else None
+            ),
+            iteration_id=iteration_id,
+            note=f"attempt={attempt_index}",
+            experiment_id=experiment_id,
+            max_cost_usd=llm_max_cost_usd,
+        )
+    if iteration_path is not None:
+        (iteration_spec_dir(iteration_path) / RESPONSE_LOG_FILENAME).write_text(
+            raw_response + "\n", encoding="utf-8"
+        )
+
+    try:
+        fragment = parse_spec_fragment(raw_response)
+        spec = merge_fragment_into_spec(
+            fragment,
+            iteration_id=iteration_id,
+            app_port=env.port,
+            needs_db=scenario.needs_db,
+            labels={},
+            experiment_id=experiment_id,
+        )
+    except ValueError as parse_exc:
+        raise SpecValidationError(
+            [f"Spec response could not be parsed: {parse_exc}"]
+        ) from parse_exc
+
+    # Resolve placement names in the spec.
+    spec, placement_errors = normalize_spec_placement(spec, capacity)
+    if placement_errors:
+        raise SpecValidationError(placement_errors)
+
+    # Validate the spec against the cluster capacity and scheduling rules.
+    result = validate_spec_against_cluster(spec, capacity)
+    if result.errors:
+        raise SpecValidationError(result.errors, result.warnings)
+
+    return spec, raw_response, result.warnings
 
 
 def write_spec_generation_artifacts(
@@ -417,7 +376,6 @@ def run_spec_attempt(
     capacity: ClusterCapacity,
     refinement: bool = False,
     validation_feedback: str | None = None,
-    max_validation_retries: int = 1,
     attempt_index: int = 1,
     iteration_index: int = 0,
     total_iterations: int = 0,
@@ -432,7 +390,7 @@ def run_spec_attempt(
     Run one spec generation attempt: LLM → parse → validate → write artifacts.
 
     Returns :class:`SpecAttemptResult` with ``spec_path`` on success or
-    ``error`` when static validation fails after ``max_validation_retries``.
+    ``error`` when parsing or static validation fails.
     """
     sample_dir = task.get_sample_dir(results_dir, sample)
     from ..prompt_helpers import resolve_artifact_pointers
@@ -458,7 +416,7 @@ def run_spec_attempt(
             logger=logger,
             refinement=refinement,
             validation_feedback=validation_feedback,
-            max_validation_retries=max_validation_retries,
+            attempt_index=attempt_index,
             sample_dir=sample_dir,
             iteration_path=iteration_path,
             iteration_index=iteration_index,
@@ -497,7 +455,7 @@ def run_spec_attempt(
             kind="spec_validation",
             iteration_id=iteration_id,
             attempt=attempt_index,
-            summary="static spec validation failed",
+            summary="spec response could not be parsed or failed static validation",
             errors=tuple(exc.errors),
             warnings=tuple(getattr(exc, "warnings", []) or ()),
         )
@@ -539,4 +497,3 @@ def run_spec_attempt(
             logger=logger,
         )
         return SpecAttemptResult(error=msg, failure=failure)
-

@@ -16,6 +16,7 @@ plot, where they denote actual run status, not an arbitrary 3rd category.
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import matplotlib.pyplot as plt
@@ -86,8 +87,21 @@ def _env_color(env: str, fallback_idx: int) -> str:
     return _ENV_COLORS.get(env, _CATEGORICAL[fallback_idx % len(_CATEGORICAL)])
 
 
+_MODEL_DISPLAY = {
+    "anthropic-claude-opus-4-8": "claude-opus-4-8",
+    "openai-gpt-5.5-2026-04-23": "gpt-5.5",
+    "z-ai-glm-5.2": "glm-5.2",
+}
+
+
 def _short_model(name: str) -> str:
-    return name.replace("openai-", "").replace("z-ai-", "").replace("deepseek-", "")
+    """Prose model name for axis/legend labels (matches the thesis text):
+    drop the provider prefix and any trailing dated snapshot."""
+    if name in _MODEL_DISPLAY:
+        return _MODEL_DISPLAY[name]
+    short = re.sub(r"^(anthropic|openai|z-ai|google|deepseek)-", "", name)
+    short = re.sub(r"-\d{4}-\d{2}-\d{2}$", "", short)
+    return short
 
 
 _SCENARIO_SHORT = {
@@ -290,11 +304,6 @@ def plot_baseline_vs_best_by_model(
     ax.set_xticks(x)
     ax.set_xticklabels([_short_model(m) for m in models])
     ax.set_ylabel("Sustained goodput (successful req/s, symlog)")
-    ax.set_title(
-        "First-non-zero-goodput vs. best-refined goodput per model\n"
-        "(box: quartiles and full range; diamond: geometric mean, as reported\n"
-        "in the text; dots: individual scenario×framework cells)"
-    )
     _style_axes(ax)
     legend_handles = [
         Patch(facecolor=_KIND_COLORS["baseline"], alpha=0.5, label="first non-zero-goodput iteration"),
@@ -368,11 +377,6 @@ def plot_framework_comparison(
     ax.set_xticks(range(len(envs)))
     ax.set_xticklabels(envs)
     ax.set_ylabel("Best goodput reached (successful req/s, symlog)")
-    ax.set_title(
-        "Best goodput reached per framework\n"
-        "(dot: one scenario cell; bar: per-model geometric mean;\n"
-        "cells with zero goodput throughout are excluded)"
-    )
     _style_axes(ax)
     ax.legend(frameon=False, loc="center left", bbox_to_anchor=(1.01, 0.5))
     fig.tight_layout()
@@ -396,8 +400,11 @@ def plot_code_vs_spec_delta(
     rng = np.random.default_rng(3)
 
     fig, ax = plt.subplots(figsize=(5.2, 4.5))
-    lo, hi = df["delta_goodput_pct"].quantile([0.02, 0.98])
-    pad = max(5.0, 0.1 * (hi - lo))
+    # Use the full data range so the heavy positive tail the text highlights
+    # (single-step recoveries up to a few hundred percent) is visible rather
+    # than clipped at a percentile cutoff.
+    lo, hi = df["delta_goodput_pct"].min(), df["delta_goodput_pct"].max()
+    pad = max(5.0, 0.05 * (hi - lo))
 
     for i, kind in enumerate(kinds):
         sub = df[df["refinement_kind"] == kind]["delta_goodput_pct"]
@@ -433,7 +440,6 @@ def plot_code_vs_spec_delta(
     ax.set_xticks(range(len(kinds)))
     ax.set_xticklabels(["code refinement", "deployment (spec) refinement"])
     ax.set_ylabel("Δ goodput vs. previous successful iteration (%)")
-    ax.set_title("Per-step goodput change by refinement lever\n(only steps where the previous iteration was already serving traffic)")
     _style_axes(ax)
     fig.tight_layout()
     return _save(fig, out_dir, stem)
@@ -495,7 +501,6 @@ def plot_completion_funnel(
     ax.set_xticks(x)
     ax.set_xticklabels([_short_model(m) for m in models])
     ax.set_ylabel("Number of scenario×framework cells")
-    ax.set_title("Run completion status per model")
     _style_axes(ax)
     ax.legend(frameon=False, loc="upper center", bbox_to_anchor=(0.5, -0.12), ncol=1)
     fig.tight_layout()
@@ -529,7 +534,6 @@ def plot_failure_taxonomy(
         ax.text(v + max(grouped["count"]) * 0.01, y, str(int(v)), va="center", fontsize=8, color=_INK_SECONDARY)
 
     ax.set_xlabel("Occurrences across all iterations")
-    ax.set_title(f"Top {len(grouped)} failure kinds by phase")
     _style_axes(ax)
     ax.grid(True, axis="x", linestyle="-", linewidth=0.6, alpha=0.7)
     ax.grid(False, axis="y")

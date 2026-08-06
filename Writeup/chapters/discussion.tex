@@ -16,7 +16,7 @@
 \label{sec:discussion-interpretation}
 
 \paragraph{Correctness gates deployment more consistently than any
-model-level difference.} The clearest pattern across all six research
+model-level difference.} The clearest pattern across all seven research
 questions is not a capability gap between models, but a division of
 labour between the two refinement levers. The largest source of attrition
 (functional-test and docker-build failures, 74\% of recorded failures,
@@ -35,8 +35,8 @@ roughly an order of magnitude cheaper per cell than \texttt{gpt-5.5} or
 \texttt{claude-opus-4-8} (Section~\ref{sec:results-rq4}), and that
 advantage does not come at the expense of either completion reliability
 or achieved goodput: it reaches baseline and finishes its budget on every
-one of its 21 cells, and its median best-iteration goodput sits close to
-\texttt{claude-opus-4-8}'s. Where its profile does look different is in
+one of its 21 cells, and its geometric-mean best-iteration goodput sits
+close to \texttt{claude-opus-4-8}'s. Where its profile does look different is in
 how its two refinement levers behave once it is running: its
 deployment-refinement steps are net negative on average
 (Section~\ref{sec:results-rq3}), and its code-side failure profile leans
@@ -80,6 +80,12 @@ several spec fields whose interaction it cannot fully anticipate.
 \section{Limitations}
 \label{sec:discussion-limitations}
 
+The points below are best understood as limitations and threats to validity:
+some restrict how broadly the results can be generalised, while others affect
+the comparability or interpretation of individual measurements. They do not
+invalidate the evaluation, but they delimit the claims that can be made from
+it.
+
 \paragraph{Scenario coverage.} Seven of \textsc{BaxBench}'s 28 scenarios
 were evaluated (Section~\ref{sec:setup-scenarios}), chosen to span a range
 of workload shapes rather than to be a representative sample in a
@@ -88,6 +94,23 @@ the way an image-processing or cryptographic scenario would be, so the
 deployment-tuning story this thesis tells is specifically a
 \emph{database-and-network-bound} story. Whether the same code/deployment
 division of labour holds for CPU-bound workloads is untested.
+
+\paragraph{Scenario provenance.} Two of the three evaluated models also
+took part in building the scenario suite: \texttt{gpt-5.5} served as the
+orchestration model for the four generated scenarios, and
+\texttt{glm-5.2} supplied one of the three reference implementations their
+tests were calibrated against (Section~\ref{sec:setup-scenarios}). This
+overlap between artifact author and evaluated candidate is a
+construct-validity threat to the model comparison.
+The generated and original scenarios are not therefore interchangeable
+workloads: their absolute goodput levels differ. Section~\ref{sec:results-rq4}
+nevertheless examines the threat directly, splitting each model's cells into
+authored and unauthored scenarios. The model ordering is unchanged across the
+two subsets, and neither model has a larger relative advantage on the subset
+that it helped construct; this gives no evidence that provenance, rather than
+model capability, drives the ranking. It is recorded here as a known and
+checked threat rather than an unexamined one, bounded by the same
+single-sample caveat as every other comparison.
 
 \paragraph{Iteration budget.} Every experiment used a fixed $N{=}10$
 refinement budget (Section~\ref{sec:setup-procedure}). Several
@@ -98,7 +121,7 @@ since which lever a decision stage reaches for next may depend on how many
 refinement rounds it has already spent recovering from earlier failures.
 This is not only a hypothetical concern: one cell in this dataset
 (\texttt{claude-opus-4-8}'s \textsc{BranchWeave}$\times$\textsc{Rust-Actix},
-Section~\ref{sec:results-rq1}) recovers from its dead baseline, peaks at
+Section~\ref{sec:results-rq1}) starts from a healthy baseline, peaks at
 $3\times$ that baseline, and then ends its fixed budget at zero goodput
 after two consecutive late regressions it never gets a further iteration
 to correct. A one- or two-iteration longer budget might well have changed
@@ -109,10 +132,15 @@ underlying behaviour.
 (Section~\ref{sec:setup-procedure}). A single code-generation seed can be
 unusually lucky or unlucky, and Chapter~\ref{ch:results} already flags
 several ratios (Section~\ref{sec:results-rq1}) that rest on 7-to-15
-healthy-baseline cells per model. Every comparative number in this thesis
-should be read as a single-draw estimate, not a distribution; nothing here
-has been significance-tested against sampling variance, because there is
-no repeated-sample data to test it against.
+healthy-baseline cells per model. Per-cell numbers should therefore be
+read as single-draw estimates, not distributions. Model- and
+framework-level summaries average over 21 cells each and so damp the
+influence of any one unlucky generation
+(Section~\ref{sec:methods-metrics}), but no comparative number here has
+been significance-tested against sampling variance, because there is no
+repeated-sample data to test it against; the load profile's own
+run-to-run measurement variance is a separate axis, treated in
+Section~\ref{sec:results-rq2}.
 
 \paragraph{Benchmark methodology.} Sustained goodput
 (Section~\ref{sec:methods-load-profile}) is a single scalar chosen to make
@@ -152,6 +180,43 @@ capacity envelope; whether the same deployment decisions (e.g.\ the
 replica-count/CPU-request trade-off of Section~\ref{sec:results-rq6})
 would be reachable, or would be the right decisions, on a cluster an order
 of magnitude larger or smaller is untested.
+
+\subsection{Measurement and comparability caveats}
+\label{sec:discussion-measurement-caveats}
+
+\paragraph{Network-path comparability.} The load path was not identical for
+every archived run. A subset of the earlier runs used the shared Emulab
+control network for part of the Locust--NodePort path, whereas later runs
+used the higher-bandwidth experiment LAN intended for sustained benchmark
+traffic (Section~\ref{sec:methods-architecture}). The separation of load
+hosts from Kubernetes workers still prevents CPU contention, but it does not
+remove this network-path confound: a control-network bottleneck can make a
+candidate appear to have a lower capacity than it would on the experiment
+LAN. The affected observations are not balanced across models and scenarios,
+so they should not be treated as exchangeable with the later observations;
+network-stratified or leave-one-network-out sensitivity results are needed
+before making a strong model-level claim from the combined aggregate.
+
+\paragraph{User-ceiling censoring.} The load profile has a hard ceiling of
+$100{,}000$ virtual users (Section~\ref{sec:methods-load-profile}). The
+explore phase reached that ceiling in 31 of the 582 runs that passed warm-up
+($5.3\%$; $4.9\%$ of all 631 parsed bench runs), so those runs do not identify
+where the deployment would eventually saturate above the ceiling. Their
+reported goodput remains a valid observation at the tested load, but the
+capacity search is right-censored: a ceiling hit should be read as ``at least
+this much offered load was reached,'' not as evidence that the measured value
+is the deployment's maximum. Increasing the ceiling, or reporting ceiling
+hits separately in every aggregate, would make this tail of the workload
+distribution more informative.
+
+\paragraph{Aggregation across the scenario grid.} Aggregating over the
+scenario--framework grid is useful as a descriptive summary of the fixed
+benchmark suite, and it reduces the visual influence of any one cell. It does
+not, however, turn the 21 cells per model into 21 independent draws from a
+general workload population: scenarios and frameworks are deliberately
+structured, and each cell has only one stochastic sample. Model- and
+framework-level aggregates should therefore be read as summaries of this
+grid, not as population estimates with conventional inferential guarantees.
 
 
 % ----- §6.3 Practical Implications -----

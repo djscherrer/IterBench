@@ -31,15 +31,15 @@ code and cluster specifications). Successive iterations produce candidates,
 each consisting of
 application code and a Kubernetes deployment specification. After validation
 and a successful deploy on the cluster, each candidate undergoes a performance
-test that measures its maximal sustained goodput.
+test that measures its sustained goodput.
 
 \paragraph{What we optimise.}
-The primary objective is \textbf{sustained goodput}: the rate of
-\emph{successful} HTTP responses the system sustains as load increases. It is
-measured under an adaptive Locust load profile that raises or lowers offered
-load using live failure-rate, latency, and goodput statistics until the
-system approaches saturation (Section~\ref{sec:methods-bench}). We compare
-iterations by the maximal sustained goodput reached on that test, rather than
+The conceptual distinction between throughput, goodput, and sustained goodput
+is defined in Section~\ref{sec:background-goodput}. Operationally, this thesis
+measures the objective with an adaptive Locust load profile that raises or
+lowers offered load using live failure-rate, latency, and goodput statistics
+until the system approaches saturation (Section~\ref{sec:methods-bench}). We
+compare iterations by the sustained goodput reached on that test, rather than
 by raw request rate at an arbitrarily chosen load.
 
 \paragraph{Road map.}
@@ -832,8 +832,12 @@ this stage adds is the attempt structure around it.
         pointer; the image is not rebuilt, since the code did not change.
 \end{itemize}
 Functional tests gate every path that can produce a new image; only a
-passing build is ever deployed. Example baseline and refinement prompts are
-given in Appendix~\ref{ch:appendix-prompts}.
+passing build is ever deployed. Code builds and tests the image locally; it
+does not publish the image to Kubernetes. The later Deploy stage prepares
+that passing image for the cluster by pushing it to the configured registry,
+or by tagging and distributing it to the workers when no registry is used,
+and then records the resulting cluster image reference. Example baseline and
+refinement prompts are given in Appendix~\ref{ch:appendix-prompts}.
 
 \paragraph{Outputs.}
 On success, the stage yields a tested application image and its source
@@ -890,18 +894,16 @@ purposes:
     between iterations need to be produced at all; this both lowers
     generation cost and keeps the conversation history concise.
   \item It keeps the search space bounded and comparable across models and
-    iterations, so comparisons stay about deployment \emph{decisions}
-    rather than YAML-authoring skill.
-  \item It keeps purely cluster-specific mechanics, the exact image
-    reference, port, namespace, and settings the agent has no way of
-    knowing are unsupported in this particular cluster, out of the agent's
-    responsibility entirely. Even though a sufficiently detailed prompt
-    could in principle supply these, omitting them removes an entire
-    failure mode, a manifest broken by an incidental or unsupported
-    detail rather than a deployment decision, from the outcome being
-    measured: this stage is meant to test whether the agent can reason
-    about which cluster specification suits a given workload, not how
-    correctly it can hand-write Kubernetes manifests.
+    iterations.
+  \item It limits avoidable failure modes and keeps the stage focused on
+    reasoning about deployment \emph{decisions} rather than YAML-authoring
+    skill. By keeping purely cluster-specific mechanics, such as the exact
+    image reference, port, namespace, and settings whose validity depends on
+    the cluster, out of the agent's responsibility, it prevents failures
+    caused by incidental or unsupported manifest details rather than by a
+    deployment decision. Although a sufficiently detailed prompt could in
+    principle supply these mechanics, omitting them keeps that failure mode
+    outside the outcome being measured.
 \end{itemize}
 
 \paragraph{Inputs.}
@@ -915,58 +917,67 @@ selected instead, the current validated specification is simply carried
 forward unchanged (Section~\ref{sec:methods-artifacts}).
 
 \paragraph{Processing.}
-\emph{Generation and normalisation.} The LLM returns a YAML fragment
-(Table~\ref{tab:spec-schema}) covering \texttt{backend}, optional
-\texttt{pooler}/\texttt{read\_pooler}/\texttt{cache}, and \texttt{database};
-it is a \emph{fragment} because it covers only the agent-controlled subset
-of the deployment, not a complete manifest. The framework merges this
-fragment onto the fields it always controls itself, the container image
-reference, listening port, namespace, and database connection variables,
-filling those in only later, when Deploy renders the final Kubernetes
-manifests (Section~\ref{sec:methods-deploy}). It also resolves named
-node-placement constraints: the agent may name a worker by a short
-identifier (for example \texttt{node3}), which the framework matches
-against the cluster's actual worker hostnames.
+As in Code generation, processing depends on whether this is the baseline or
+a refinement iteration and, during refinement, whether the Decision stage
+selected Code or Deployment.
+\begin{itemize}
+  \item \textbf{Baseline:} up to a configured number of attempts
+        (Appendix~\ref{ch:appendix-config}). Each attempt asks the LLM for a
+        specification fragment and processes it through the three phases
+        below; the loop stops at the first valid specification. Exhausting
+        the budget aborts the sample because there is no valid deployment
+        specification to carry forward.
+  \item \textbf{Code refinement:} no new specification is generated. The
+        current validated \texttt{spec.yaml} is copied from the latest
+        specification lineage unchanged.
+  \item \textbf{Deployment refinement:} exactly one attempt, fail-fast. The
+        LLM proposes a new fragment using the current specification and
+        available feedback, and the framework processes that attempt through
+        the phases below.
+\end{itemize}
+For baseline and deployment-refinement attempts, the sequence is:
 
-Baseline generation receives a configured number of outer attempts
-(Appendix~\ref{ch:appendix-config}), each a fresh generation call informed
-by the previous attempt's failure record. Within one outer attempt, the
-framework may additionally re-prompt the LLM a small number of times, each
-re-prompt quoting the specific parse or validation error, to correct a
-malformed or invalid response before that attempt is recorded as failed;
-this inner correction loop has no equivalent in Code, where a parse failure
-simply ends the attempt (Section~\ref{sec:methods-code}). Refinement
-receives exactly one outer attempt with no inner retry either, matching the
-code stage's fail-fast refinement behaviour.
-
-The prompt documents field semantics, hard scheduling constraints, and a
-small set of qualitative diagnostic heuristics. For example, idle read
-replicas alongside a saturated primary may indicate that the application
-does not issue reads to the replica. It does not suggest a concrete numeric
-target such as a replica count or CPU request. Specific values in the
-resulting specification must therefore be inferred from capacity and prior
-feedback rather than copied from the prompt. An example is given in
+\emph{Generation.}
+The LLM returns a YAML fragment (Table~\ref{tab:spec-schema}) covering
+\texttt{backend}, optional
+\texttt{pooler}/\texttt{read\_pooler}/\texttt{cache}, and \texttt{database}.
+It is a \emph{fragment}, not a complete manifest: it contains only the
+agent-controlled fields. The framework supplies the cluster-specific
+remainder later, when the Deploy stage renders the final manifests
+(Section~\ref{sec:methods-deploy}). The prompt documents field semantics,
+hard scheduling constraints, and a small set of qualitative diagnostic
+heuristics, such as the possibility that idle read replicas alongside a
+saturated primary indicate that the application does not issue reads to the
+replica. It does not suggest a concrete numeric target such as a replica
+count or CPU request, so specific values must be inferred from capacity and
+prior feedback rather than copied from the prompt. An example is given in
 Appendix~\ref{ch:appendix-prompts}.
 
-\emph{Static validation.} The framework validates every pod type the schema
-can request
-(backend, Postgres primary, Postgres read replicas, both poolers, and both
-Redis caches): each pod's resource \emph{requests} fit on at least one
-allowed worker; the cluster-wide sum of requests stays within advertised
-capacity after a fixed reserve; and, whenever the agent sets
-\texttt{backend.env.DB\_POOL\_SIZE} (the check is skipped, with a warning,
-if it does not), a connection-budget check whose exact form depends on
-whether a pooler is in the spec: without one,
-$\text{backend.replicas} \times \text{pool\_size} \leq
-\text{database.max\_connections}$ must hold directly against Postgres; with
-one, the same client-connection estimate must instead fit the pooler's own
-\texttt{max\_client\_conn}, and symmetrically for \texttt{read\_pooler} when
-enabled (which additionally requires \texttt{database.replicas}~$>1$).
+\smallskip
+\emph{Normalisation.}
+The framework parses the fragment, merges it with framework-supplied context
+and defaults, and resolves named node-placement constraints before
+validation. For example, a short worker identifier such as \texttt{node3} is
+matched against the cluster's actual worker hostname. The resulting object is
+still only a validated workload specification; it is not applied to the
+cluster or expanded into Kubernetes manifests at this stage.
 
-Static validation is the \emph{only} check performed by this stage before
-deployment: it never applies anything to the cluster. A specification that
-passes is schedulable on paper, but is not yet known to start or become
-reachable. That is what the Deploy stage checks next
+\smallskip
+\emph{Static validation.}
+Before anything is deployed, the framework applies the specification's hard
+schema and scheduling rules against the cluster's allocatable capacity. In
+particular, every pod type the schema can request must fit on at least one
+allowed worker, the cluster-wide sum of resource requests must fit the
+workers' combined budget, and explicit backend connection-pool settings must
+remain consistent with the Postgres or pooler connection ceiling. The
+validators also check component dependencies and configuration constraints,
+including backend environment variables, poolers, caches, and PostgreSQL
+tuning. Warnings are recorded but do not reject the specification. The exact
+capacity budgets and connection formulas are listed in
+Table~\ref{tab:appendix-spec-validation}. These checks are purely on paper:
+they never apply anything to the cluster. A specification that passes is
+schedulable in principle but not yet known to start or become reachable,
+which is what the Deploy stage checks next
 (Section~\ref{sec:methods-deploy}).
 
 \begin{table}[t]
@@ -1046,24 +1057,63 @@ refinement iteration, regardless of which lever was refined.
 \end{table}
 
 \paragraph{Inputs.}
-This iteration's validated deployment specification and tested application image,
-whether newly generated or carried forward, plus framework-owned runtime
-settings such as image wiring, service exposure, and experiment isolation.
+This iteration's validated deployment specification and tested application
+image, whether newly generated or carried forward from the validated
+lineage. The specification supplies the agent-controlled deployment plan:
+replica counts, resource requests and limits, placement, and any optional
+database poolers or caches. The framework then adds the deploy-time wiring:
+it makes the image available to Kubernetes and injects its concrete image
+reference, supplies framework-managed application and database connection
+settings, exposes the backend through a Kubernetes Service, and assigns the
+iteration its BaxBench namespace.
 
 \paragraph{Processing.}
-The framework renders and applies the specification in a fresh, isolated
-deployment context; agent-controlled planning fields remain distinct from
-framework-owned runtime wiring. It then verifies that each requested
-workload is ready, that the backend is reachable through its Service, and
-that required database services expose endpoints. Deploy is deliberately a
-single attempt in both baseline and refinement iterations: it tests whether
-this specific candidate can run rather than masking a deployment outcome
-with unobserved retries.
+The framework takes the validated \texttt{03-spec/spec.yaml} and combines
+its plan with that deploy-time overlay in memory, without rewriting the
+agent artifact. It renders Kubernetes manifests, including a namespace, the
+requested workloads, and their Services, and applies the resulting
+deployment blueprint. The namespace is derived from the experiment and
+iteration (for example, \texttt{baxbench-<experiment>-iteration-003}); under
+the default cleanup policy, BaxBench-owned namespaces are removed before
+deployment and after benchmarking, giving the iteration an isolated
+resource scope. The framework then verifies that each
+requested workload is ready, that the backend Service has ready endpoints,
+and that required database Services expose endpoints. Deploy is deliberately
+a single attempt in both baseline and refinement iterations: it tests
+whether this deployment can run rather than masking the outcome with
+unobserved retries.
 
 \paragraph{Outputs.}
-A deployment record identifying the reachable backend target and the
-resolved runtime configuration. Bench uses this record to test exactly the
-candidate that passed readiness.
+The successful deploy probe is persisted as \texttt{04-deploy/probe.json}.
+It records the concrete runtime facts for this deployment: its namespace,
+the image reference made available to Kubernetes, the backend port, cluster
+context, rendered manifest, and the Kubernetes wait details from the
+readiness checks. Here, the backend port is the application's Service port
+and container target port; it is distinct from the externally assigned
+NodePort. Deploy uses it when resolving the NodePort, and Bench carries it
+into the Locust configuration, although the already-resolved NodePort URL is
+what determines where requests go. The backend and required database
+endpoint checks are additional pass/fail gates: a successful probe implies
+that they passed, whereas a failure record carries their diagnostic
+messages. The probe also records \texttt{backend\_service\_url}, the
+internal Service address, and \texttt{nodeport\_target}, the externally
+reachable NodePort target. The internal Service address is the in-cluster
+DNS name; it is retained for provenance but current Bench code does not use
+it directly. Bench checks the backend by Service name within the recorded
+namespace, and diagnostics likewise construct their namespaced service
+addresses. The NodePort target is the actual
+\texttt{http://<node-address>:<node-port>} URL used by the external Locust
+hosts. Kubernetes routes requests arriving at that NodePort through the
+backend Service to one of its ready backend pods. Bench reads this probe as
+the hand-off from Deploy. It uses the recorded namespace to check the
+backend Service and scope diagnostics, the recorded backend port to configure
+Locust, and the recorded NodePort target for load traffic. The persisted
+image reference is useful for provenance and the Bench run's configuration
+snapshot, but Bench does not use it to launch or select the workload again;
+the workload is already running. Likewise, the rendered manifest and
+Kubernetes context document what was applied and where, while the readiness
+wait details provide the evidence recorded for the rollout checks. Bench does
+not re-render the deployment or select a different target.
 
 \paragraph{Failure Modes.}
 Heuristically classified from \texttt{kubectl} output and cluster
@@ -1088,7 +1138,7 @@ probe.
 \label{sec:methods-bench}
 
 \paragraph{Purpose.}
-Measure the deployed candidate's maximal sustained goodput under load.
+Measure the deployed candidate's sustained goodput under load.
 Alongside this, aggregate the cluster's utilisation metrics collected
 during the run. The goal is a feedback record containing both the
 sustained goodput and the cluster utilisation, so the next iteration's
@@ -1097,7 +1147,8 @@ every successful deployment, for the baseline and every refinement
 iteration alike.
 
 \paragraph{Inputs.}
-The deploy probe record (namespace, target, port). This iteration's
+The deploy probe record (namespace, externally reachable NodePort target, and
+backend port). This iteration's
 \texttt{spec.yaml}, read to configure which diagnostics collectors to
 attach (for example, whether a pooler or read replica is present). The
 scenario's Locust task definitions. The experiment's load-profile parameters
@@ -1134,10 +1185,10 @@ again in smaller steps to home in on the actual sustained-throughput
 level (\emph{refine}); each phase is detailed further below.
 
 Across all four phases, the controller reads p95 latency, failure rate,
-and goodput from the same rolling measurement window over recently
-completed requests, in this implementation Locust's own approximately
-10-second trailing window, applied uniformly to the percentile and to
-the request/failure rate. Every simulated user also waits exactly
+and goodput from Locust's own trailing statistics over recently completed
+requests, an approximately 10-second window that Locust maintains
+internally for both the latency percentile and the request and failure
+rates. Every simulated user also waits exactly
 $1$\,s between completing one task and starting the next, approximating
 the pacing of a real user rather than issuing requests back to back. The
 whole run is also bounded by a hard ceiling shared across every phase: a
@@ -1175,11 +1226,11 @@ users are connected), and the failure rate in that window is at or below
 $2\%$. If any of these fails, the bench stops
 prematurely and sustained goodput is recorded as exactly $0$, even though
 some requests may have already been served: the run never reaches the
-explore phase. This is one of two mechanisms behind the cells in
-Chapter~\ref{ch:results} whose baseline reports $0$\,req/s despite the
-deployment technically coming up; the other, detailed in the Recovery
-paragraph below, is when recovery cannot return the deployment to
-health.
+explore phase. This is the earliest of the ways a bench can report a
+sustained goodput of exactly $0$ despite the deployment technically
+coming up, and it accounts for several of the $0$\,req/s baselines in
+Chapter~\ref{ch:results}; the remaining ways, a failed recovery and a
+refine phase that never settles a level, are described below.
 
 \paragraph{Explore.}
 Once warm-up passes, the controller repeatedly increases the virtual-user
@@ -1220,12 +1271,15 @@ measurement of sustainable throughput.
 
 \paragraph{Recovery.}
 The controller drops to $75\%$ of the explore-phase peak user count and
-holds for 45\,s. If the deployment is healthy at that level (failure rate
+holds for 45\,s. This initial floor settle is the first of at most three
+settle attempts. If the deployment is healthy at that level (failure rate
 and p95 within the same $2\%$/$1000$\,ms thresholds explore uses),
-recovery hands off to refine. If not, it drops a further $15\%$ and
-re-settles, up to three attempts. If the deployment is still unhealthy
-after the retry budget is exhausted, the bench stops and refine is never
-reached: a second, distinct way for a bench to report sustained goodput
+recovery hands off to refine. If not, it drops the current level by a
+further $15\%$ and re-settles, so at most two more drops follow the
+initial floor, giving a floor sequence of roughly $75\%$, then $64\%$,
+then $54\%$ of the explore peak. If the deployment is still unhealthy
+after the third settle attempt, the bench stops and refine is never
+reached: another way for a bench to report sustained goodput
 of exactly $0$, despite explore having found a substantive, non-zero
 peak goodput earlier in the same run. This typically happens when
 explore has pushed the deployment far enough past its capacity knee that
@@ -1248,9 +1302,13 @@ first trims
 10\,s before measuring, so the transition from the previous level does
 not pollute the measurement window, then samples goodput for 10
 consecutive seconds; a level is accepted once those samples lie within
-$5\%$ of their mean (stable). Refine stops as soon as a settled level
-fails to beat the previous best (stall), the failure rate exceeds $2\%$,
-or the user ceiling is reached, and reports its best accepted level.
+$5\%$ of their mean (stable). Any non-zero efficiency-scaled step is
+floored at a minimum of 10 users. Refine reports its best accepted level
+and stops as soon as any of four conditions holds: a settled level fails
+to beat the previous best (stall); the failure rate exceeds $2\%$; the
+user ceiling is reached; or the efficiency-scaled step rounds down to zero
+users, which means the marginal goodput gain has effectively vanished and
+is also treated as a stall.
 
 \paragraph{Primary metric: goodput.}
 \textbf{Goodput} is the sustained rate of \emph{successful} HTTP responses
@@ -1263,9 +1321,11 @@ Two related quantities are reported: \textbf{peak step goodput}, the
 maximum per-step goodput observed anywhere in the run across explore,
 recovery, and refine steps (useful for adaptive-ramp plots), and
 \textbf{sustained goodput}, the best settled refine-phase level, which is
-the primary cross-iteration comparison metric. A bench that never reaches
-refine, because warm-up or recovery failed its health check, reports
-sustained goodput $=0$.
+the primary cross-iteration comparison metric. A bench reports sustained
+goodput $=0$ whenever refine never accepts a level: either because warm-up
+or recovery failed its health check and refine was never entered, or
+because refine was entered but no level was ever accepted, for instance
+when the first refine level already exceeds the $2\%$ failure threshold.
 
 \subsubsection{Diagnostics}
 
@@ -1324,9 +1384,10 @@ tables, while the complete raw run remains available for audit.
 A completed load test that simply reports low goodput, including exactly
 $0$, is a \emph{successful} bench outcome for orchestration purposes: its
 score and diagnostics become the prior feedback for a free decision.
-Sustained goodput of $0$ specifically arises when the run stops during
-warm-up or recovery before ever reaching refine
-(Section~\ref{sec:methods-load-profile}); this is distinct from a genuine,
+Sustained goodput of $0$ arises whenever refine never accepts a stable
+level, most often when the run stops during warm-up or recovery before
+reaching refine (Section~\ref{sec:methods-load-profile}); this is distinct
+from a genuine,
 harness-level \textbf{bench failure}, which is one of: a Locust
 infrastructure crash (master, worker, or generator), a target-unreachable
 error (DNS, connection refused, or timeout to the service), a timeout or
@@ -1381,15 +1442,38 @@ assume, the variance introduced by stochastic code and deployment
 generation. The experiments reported in this thesis use one sample per
 cell instead, because a complete ten-iteration refinement trajectory is
 costly; this is a property of the specific experiments run here, not a
-constraint of the method itself. We assume that some of this variance is
-already absorbed by the refinement process itself: an unhealthy baseline
-or an unlucky single iteration is not necessarily fatal, since later
-iterations have further opportunities to recover from it
-(Section~\ref{sec:results-rq1} reports several cells that do exactly
-this). This assumption is not independently verified here. Results are
-therefore descriptive: they show individual trajectories, changes from
-baseline, and aggregate summaries where appropriate, but they do not
-support significance-tested claims about population-level differences.
+constraint of the method itself.
+
+Two distinct sources of variance bear on how these single-sample results
+should be read. The first is \emph{generation} variance, the run-to-run
+spread introduced by stochastic code and deployment-specification
+generation at a fixed cell. One sample cannot estimate it within a cell,
+but every model- or framework-level summary in Chapter~\ref{ch:results}
+is an aggregate over many cells (21 per model, spanning seven scenarios
+and three frameworks) and therefore averages over that many
+semi-independent generation draws, so no single unlucky or lucky
+generation dominates a geometric mean taken across the set. The aggregate
+comparisons that RQ1, RQ4, and RQ5 rest on are in this sense better
+supported than any individual cell, even though each cell is drawn once.
+We also assume that some generation variance is absorbed by refinement
+itself: an unhealthy baseline or an unlucky single iteration is not
+necessarily fatal, since later iterations have further opportunities to
+recover from it (Section~\ref{sec:results-rq1} reports several cells that
+do exactly this), an assumption not independently verified here. The
+second source is \emph{measurement} variance, the run-to-run spread the
+load profile itself introduces when the same fixed deployment is
+benchmarked more than once. Averaging over cells does not cancel this,
+because it is present in every cell alike rather than varying
+independently across them; it is instead examined directly, holding code,
+specification, and deployment fixed, in Section~\ref{sec:results-rq2}.
+
+Results are therefore descriptive: aggregate summaries over cells damp
+generation variance but are not significance-tested against it, single-cell
+and single-trajectory observations (such as the case studies of
+Section~\ref{sec:results-rq7}) carry no such averaging and are read as
+individual evidence rather than as population-mean estimates, and
+measurement variance is reported separately rather than folded into these
+comparisons.
 
 Concrete models, scenarios, iteration budgets, cluster settings, and sample
 counts are specified in Chapter~\ref{ch:setup}. Prompt templates and detailed

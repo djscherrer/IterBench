@@ -43,9 +43,26 @@ scripts/
 tests/                    # pytest unit tests (pure-logic modules only, e.g. k8s_bench/reverify/); `pytest` from repo root
 docs/                     # design notes for the k8s pipeline (approach, prompt design, failure taxonomy, Locust pipeline)
 results/                  # generated code + logs, one dir per model (gitignored)
+results_reverified/       # deploy-only repeated measurements (gitignored)
 results_aggregate/        # cross-run aggregate tables/figures (gitignored)
 gen_scenarios/            # scenario_builder's own artifacts/ + results/ (gitignored) — see
                           #   "Generating new scenarios" below
+```
+
+To stream a remote re-verification tree into an archive, use
+`scripts/fetch_results.sh USER@HOST REMOTE_REPO LOCAL_OUTPUT_DIR
+REMOTE_RESULTS_DIR`; the last argument defaults to `results_reverified`.
+Extract the archive in the repository root so it creates the separate
+`results_reverified/` tree alongside the original `results/`.
+
+To compare the two trees after extraction (including sustained-goodput
+deviation, peak-versus-sustained gaps, persisted NodePort targets, Locust
+master-network evidence, and byte-identical rows that were not re-run), use:
+
+```bash
+.venv/bin/python scripts/analysis/load_profile_repeatability.py \
+  --original-root results --reverified-root results_reverified \
+  --out-dir results_aggregate/repeatability
 ```
 
 ## Installation

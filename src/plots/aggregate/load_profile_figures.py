@@ -60,7 +60,6 @@ def plot_phase_durations(
     ax.set_xticks(range(len(phases)))
     ax.set_xticklabels([f"{label}\n(n={len(s)})" for (label, _), s in zip(phases, series)])
     ax.set_ylabel("Phase duration (s, log scale)")
-    ax.set_title("Wall-clock duration by load-profile phase\n(one box run across all parsed bench runs)")
     _style_axes(ax)
     fig.tight_layout()
     return _save(fig, out_dir, stem)
@@ -98,10 +97,6 @@ def plot_peak_vs_sustained(
     ax.set_ylim(lo, hi)
     ax.set_xlabel("Explore-phase peak goodput (req/s, log scale)")
     ax.set_ylabel("Refine-phase sustained goodput (req/s, log scale)")
-    ax.set_title(
-        f"Explore peak vs. refined sustained estimate (n={len(sub)})\n"
-        f"{100 * above.mean():.0f}% of runs settle above their own recorded explore peak"
-    )
     _style_axes(ax)
     ax.legend(frameon=False, loc="upper left", fontsize=8)
     fig.tight_layout()

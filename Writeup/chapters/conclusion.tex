@@ -80,7 +80,7 @@ not a one-off: its deployment-refinement steps are net negative on average
 across 66 steps, the only one of the three models where this lever is a
 net liability rather than a net gain (Section~\ref{sec:results-rq3}). A
 second, more severe instance of the same failure mode shows up on
-\texttt{claude-opus-4-8}: one cell recovers from a dead baseline, peaks at
+\texttt{claude-opus-4-8}: one cell starts from a healthy baseline, peaks at
 $3\times$ that baseline, and then loses everything again to two
 consecutive deployment-refinement regressions with no iterations left in
 its budget to recover (Section~\ref{sec:results-rq1}), so the same
@@ -182,13 +182,19 @@ statistically representative sample; a fixed 10-iteration refinement
 budget, which this dataset shows can end a trajectory at zero goodput
 purely because it runs out before a late regression is corrected; $n=1$
 sample per cell, so no comparative claim here has been tested against
-sampling variance; a single scalar (sustained goodput under one adaptive
-load profile) as the sole optimisation signal, which does not distinguish
-a dead baseline from a trajectory that recovered and later collapsed
-again; temperature-$0.2$ but still stochastic LLM behaviour with no
-repeated draws to quantify it; and a single cluster topology and hardware
-profile, so ``fixed infrastructure constraints'' in this thesis means one
-specific capacity envelope, not infrastructure constraints in general.
+sampling variance; overlap between scenario generation and model evaluation
+which is checked in Section~\ref{sec:results-rq4} but does not make generated
+and original scenarios interchangeable; a subset of load runs using the
+lower-bandwidth control network rather than the experiment LAN; a hard
+$100{,}000$-user ceiling reached by 31 of the 582 warm-up survivors, which
+right-censors that tail of the capacity search; a single scalar (sustained
+goodput under one adaptive load profile) as the sole optimisation signal,
+which does not distinguish a dead baseline from a trajectory that recovered
+and later collapsed again; temperature-$0.2$ but still stochastic LLM
+behaviour with no repeated draws to quantify it; and a single cluster
+topology and hardware profile, so ``fixed infrastructure constraints'' in
+this thesis means one specific capacity envelope, not infrastructure
+constraints in general.
 
 
 % ----- §7.5 Future Work -----
@@ -258,7 +264,7 @@ to attribute outcomes to individual fields \emph{post hoc} without
 constraining the agent's search space.
 
 \paragraph{Protect against a trajectory ending on a regression.} This
-dataset now contains one cell that recovers from a dead baseline, peaks
+dataset now contains one cell that starts from a healthy baseline, peaks
 well above it, and then loses everything to two consecutive late
 regressions with no budget left to recover (Section~\ref{sec:results-rq1}).
 A cheap mitigation worth testing is reporting, or even deploying, the best

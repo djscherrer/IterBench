@@ -304,6 +304,18 @@ def rows_for_cell(key: CellKey, exp_dir: Path) -> list[dict[str, Any]]:
             "iteration_id": child.name,
             **vars(parsed),
         }
+        peak = parsed.explore_peak_goodput_rps
+        sustained = parsed.sustained_goodput_rps
+        row["peak_sustained_gap_rps"] = (
+            peak - sustained
+            if peak is not None and sustained is not None
+            else None
+        )
+        row["peak_sustained_gap_pct"] = (
+            100.0 * (peak - sustained) / sustained
+            if peak is not None and sustained is not None and sustained > 0
+            else None
+        )
         rows.append(row)
     return rows
 
@@ -360,6 +372,17 @@ def main() -> int:
     if len(among_refine):
         print(f"  refine produced an estimate:   {int((among_refine['refine_success'] == True).sum())} "  # noqa: E712
               f"({100 * (among_refine['refine_success'] == True).mean():.1f}% of those reaching refine)")  # noqa: E712
+
+    gap = df["peak_sustained_gap_pct"].dropna()
+    if not gap.empty:
+        print("\n== Explore peak vs. refine sustained goodput ==")
+        print(
+            f"runs with both values:              {len(gap)}"
+            f"\nmedian gap (peak - sustained):       {gap.median():.1f}%"
+            f"\nIQR:                                  {gap.quantile(0.25):.1f}--{gap.quantile(0.75):.1f}%"
+            f"\nsample variance of gap:              {gap.var(ddof=1):.1f} percentage-points²"
+            f"\nrefine above explore peak:           {int((gap < 0).sum())} ({100 * (gap < 0).mean():.1f}%)"
+        )
 
     return 0
 

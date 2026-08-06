@@ -618,7 +618,7 @@ def iteration_code_attempts_dir(iteration_path: Path) -> Path:
 
 
 def iteration_spec_attempts_dir(iteration_path: Path) -> Path:
-    """``03-spec/attempts/`` — one numbered subdir per spec LLM call / probe round."""
+    """``03-spec/attempts/`` — one numbered subdir per outer spec attempt."""
     return iteration_spec_dir(iteration_path) / ATTEMPTS_DIRNAME
 
 

@@ -2,45 +2,154 @@ This glossary summarises the terminology and visual cues used consistently
 throughout the pipeline and benchmark figures. The methodology chapter defines
 the corresponding procedures in detail.
 
+\section*{Key Terms}
+
+{\footnotesize
+\renewcommand{\arraystretch}{1.15}
+\begin{tabularx}{\linewidth}{@{}p{0.28\linewidth}X@{}}
+  \toprule
+  \textbf{Term} & \textbf{Meaning} \\
+  \midrule
+  \textbf{Scenario} &
+    The fixed application task and OpenAPI contract exercised by the
+    benchmark. \\
+  \rowcolor{gray!12}
+  \textbf{Framework} &
+    The implementation language/library stack and evaluation harness used to
+    build, deploy, and measure a candidate. \\
+  \textbf{Model configuration} &
+    The assessed LLM together with generation settings such as temperature
+    and budget. \\
+  \rowcolor{gray!12}
+  \textbf{Workload} &
+    The verified Locust script together with the load profile that controls
+    offered traffic during a benchmark. \\
+  \textbf{Cell} &
+    One point of the experimental design, a
+    (scenario, framework, model) tuple; 63 in total
+    (Section~\ref{sec:methods-workflow}). \\
+  \rowcolor{gray!12}
+  \textbf{Sample} &
+    One independent execution trajectory of a cell; here $n=1$ per cell. \\
+  \textbf{Experiment} &
+    The execution and evaluation settings for a sample, i.e.\ one
+    refinement trajectory. \\
+  \rowcolor{gray!12}
+  \textbf{Iteration} &
+    One pass through the refinement pipeline. The baseline is
+    iteration~\texttt{000}; refinement iterations run
+    \texttt{001}--\texttt{010}. \\
+  \textbf{Baseline} &
+    The iteration~\texttt{000} that generates both the code image and the
+    deployment specification for the first candidate. \\
+  \rowcolor{gray!12}
+  \textbf{Candidate} &
+    The deployable pair of a validated container image and a validated
+    \texttt{spec.yaml}. \\
+  \textbf{Sustained goodput} &
+    The primary metric: the best settled rate of \emph{successful} HTTP
+    responses the refine phase can hold just short of saturation
+    (Section~\ref{sec:methods-load-profile}). \\
+  \rowcolor{gray!12}
+  \textbf{Goodput} &
+    Successful HTTP responses per second at the currently offered load;
+    sustained goodput is the selected settled value used to score a
+    candidate. \\
+  \textbf{Warm-up / health gate} &
+    The fixed initial load period that checks active users, observed
+    requests, and failure rate before adaptive probing begins. \\
+  \rowcolor{gray!12}
+  \textbf{Dead / unhealthy baseline} &
+    A baseline that reports sustained goodput~$0$, having failed the
+    warm-up or recovery health gate (Section~\ref{sec:results-rq1}). \\
+  \textbf{Capacity knee} &
+    The offered-load level past which a deployment tends to collapse
+    rather than merely slow down. \\
+  \rowcolor{gray!12}
+  \textbf{Explore / recovery / refine} &
+    The three active phases of the adaptive load profile after warm-up
+    (Section~\ref{sec:methods-load-profile}). \\
+  \textbf{Failure routing} &
+    The stage-specific policy that sends a failure record back to the
+    responsible regeneration or decision stage. \\
+  \rowcolor{gray!12}
+  \textbf{Latest successful-\allowbreak benchmark reference} &
+    The most recent iteration with a completed benchmark, carried forward
+    as the feedback reference point (Section~\ref{sec:methods-outcome}). \\
+  \bottomrule
+\end{tabularx}
+\par}
+
+\section*{Diagram Notation}
+
+% The icons are exported from DiagramCreation and kept in both SVG (source)
+% and PDF (LaTeX) form under Writeup/icons/.
+\newlength{\iconunit}
+\setlength{\iconunit}{1.2em}
+\newlength{\iconslotwidth}
+\setlength{\iconslotwidth}{2.7em}
+\newcommand{\gicon}[1]{%
+  \makebox[\iconunit][c]{%
+    \raisebox{-0.22\height}{%
+      \includegraphics[width=\iconunit,height=\iconunit,keepaspectratio]{icons/#1.pdf}}%
+  }%
+}
+\newcommand{\giconone}[1]{%
+  \makebox[\iconslotwidth][l]{\gicon{#1}}%
+}
+\newcommand{\giconpair}[2]{%
+  \makebox[\iconslotwidth][l]{\gicon{#1}\hspace{0.15em}\gicon{#2}}%
+}
+\newcommand{\iconcell}[1]{\hfil#1\hfil}
+
 {\footnotesize
 \renewcommand{\arraystretch}{1.05}
-\begin{tabularx}{\linewidth}{@{}p{0.31\linewidth}X@{}}
+\begin{tabularx}{\linewidth}{@{}p{0.17\linewidth}p{0.24\linewidth}X@{}}
   \toprule
-  \textbf{Term and diagram cue} & \textbf{Meaning} \\
+  \textbf{Icon} & \textbf{Term} & \textbf{Meaning} \\
   \midrule
-  \textbf{LLM agent}\newline
-    \emph{Agent glyph; speech bubbles indicate a continuing conversation} &
-    The assessed model or an offline authoring agent. Speech bubbles mean
-    that the agent retains its preceding conversation context. \\
-  \textbf{Scenario contract}\newline
-    \emph{Light bulb and \texttt{API}} &
+  \iconcell{\giconpair{colored/llm-agent}{colored/conversation}} &
+    \textbf{LLM agent} &
+    The assessed model or an offline authoring agent. A continuing conversation
+    retains the preceding context. \\
+  \rowcolor{gray!12}
+  \iconcell{\giconpair{colored/scenario-idea}{colored/scenario-api}} &
+    \textbf{Scenario contract} &
     The scenario idea together with its OpenAPI contract; the fixed
     application task provided to the benchmark. \\
-  \textbf{Functional-test suite}\newline
-    \emph{Checklist} &
+  \iconcell{\giconone{colored/functional-test}} &
+    \textbf{Functional-test suite} &
     Executable API tests used to validate generated application code. \\
-  \textbf{Container image}\newline
-    \emph{Docker glyph} &
+  \rowcolor{gray!12}
+  \iconcell{\giconone{colored/docker}} &
+    \textbf{Container image} &
     The validated package containing the generated application and its
     runtime dependencies. \\
-  \textbf{Deployment specification}\newline
-    \emph{Kubernetes glyph} &
+  \iconcell{\giconone{colored/kubernetes}} &
+    \shortstack[l]{\textbf{Deployment}\\\textbf{specification}} &
     The agent-proposed deployment configuration, statically validated by the
     framework before deployment. \\
-  \textbf{Candidate}\newline
-    \emph{Container image plus deployment specification} &
+  \rowcolor{gray!12}
+  \iconcell{\giconpair{colored/docker}{colored/kubernetes}} &
+    \textbf{Candidate} &
     The deployable pair of the latest validated image and deployment
     specification. \\
-  \textbf{Locust workload}\newline
-    \emph{Locust glyph} &
+  \iconcell{\giconone{colored/locust}} &
+    \textbf{Locust workload} &
     The generated load-test script that exercises the scenario under the
     configured load profile. \\
-  \textbf{Feedback report}\newline
-    \emph{Blue report glyph} &
+  \rowcolor{gray!12}
+  \iconcell{\giconone{colored/feedback-report}} &
+    \textbf{Feedback report} &
     The completed benchmark's load-test results and system-utilisation
     diagnostics, used to inform the next refinement. \\
-  \textbf{Failure record}\newline
-    \emph{Red failure glyph} &
+  \iconcell{\giconpair{colored/locust-statistics}{colored/cluster-diagnostics}} &
+    \shortstack[l]{\textbf{Benchmark}\\\textbf{diagnostics}} &
+    The load-test statistics and cluster observations that make up the
+    feedback report. \\
+  \rowcolor{gray!12}
+  \iconcell{\giconone{colored/failure-record}} &
+    \textbf{Failure record} &
     Structured evidence from an unsuccessful stage, used for failure routing
     and, where appropriate, repair. \\
   \bottomrule

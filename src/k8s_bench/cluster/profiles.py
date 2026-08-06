@@ -92,7 +92,8 @@ K8S_CLUSTER_REGISTRY: dict[str, K8sClusterProfile] = {
         name="baxbench-emulab",
         description=(
             "Emulab: node0 control+BaxBench+registry :5000; "
-            "node1 Locust master + 30 workers, node2 32 workers; workers node3–5."
+            "node1 Locust master + 16 workers, node2/node3/node4 32 workers each; "
+            "k8s workers node5-8."
         ),
         kube_context="kubernetes-admin@kubernetes",
         kubeconfig_path="/tmp/dscherre/.kube/config-baxbench-emulab",

@@ -9,7 +9,7 @@
 %    §2.5  Functional correctness versus runtime performance
 %    §2.6  Measuring performance under load
 %    §2.7  Iterative refinement as an agentic improvement pattern
-%    §2.8  Deployment optimisation as a problem distinct from code generation
+%    §2.8  Conceptual model: code and deployment as coupled levers
 % =============================================================
 
 \chapter{Background}
@@ -17,383 +17,311 @@
 
 Chapter~\ref{ch:introduction} motivated the problem this thesis addresses and
 stated its central research question. This chapter introduces the technical
-background needed to follow the remainder of the thesis, and, unlike
-Chapter~\ref{ch:related-work}, does so without comparing to or positioning
-against prior systems.
+concepts and assumptions needed to follow the remainder of the thesis. It is
+selective rather than encyclopaedic: each concept is included because it is
+used to define the benchmark, interpret a result, or understand a design
+choice. Chapter~\ref{ch:related-work} instead compares this work with prior
+systems.
 
 Section~\ref{sec:background-codegen} introduces \textsc{BaxBench}, the
-code-generation benchmark this thesis extends. Section~\ref{sec:background-containerization}
-explains why evaluating a generated application in a single container, as
-\textsc{BaxBench} does, cannot reveal how it behaves once deployed.
-Sections~\ref{sec:background-kubernetes} and~\ref{sec:background-deployment-levers}
-introduce Kubernetes and the specific deployment decisions that determine a
-deployment's performance. Sections~\ref{sec:background-correctness-vs-performance}
-and~\ref{sec:background-goodput} separate functional correctness from runtime
-performance and introduce the vocabulary, throughput, latency, and goodput,
-used to measure the latter. Section~\ref{sec:background-iterative-refinement}
-introduces the general pattern of iterative, feedback-driven refinement that
-this thesis's own method instantiates, and Section~\ref{sec:background-synthesis}
-closes by stating why deployment optimisation is a problem in its own right,
-distinct from code generation.
+code-generation benchmark this thesis extends, and briefly explains the role
+of \textsc{AutoBaxBuilder} in constructing scenarios. Section
+\ref{sec:background-containerization} explains why an isolated container is
+not a model of a deployed service. Sections~\ref{sec:background-kubernetes}
+and~\ref{sec:background-deployment-levers} introduce Kubernetes and the
+deployment decisions exposed to the agent. Sections
+\ref{sec:background-correctness-vs-performance} and
+\ref{sec:background-goodput} distinguish correctness from runtime performance
+and define the load-testing vocabulary used later. Section
+\ref{sec:background-iterative-refinement} describes the general
+feedback-driven improvement loop, and Section~\ref{sec:background-synthesis}
+states the conceptual model that connects code, deployment, workload, and
+cluster capacity.
 
 
 % ----- §2.1  BaxBench -----
-\section{LLM-Based Code Generation and the BaxBench Benchmark}
+\section{BaxBench and LLM Code Generation}
 \label{sec:background-codegen}
 
-Large language models have progressed from completing individual
-functions~\cite{chen2021humaneval} to resolving real-world software
-engineering issues across entire repositories~\cite{jimenez2024swebench}, and
-now routinely generate complete, multi-file backend applications spanning a
-web framework, a database layer, and an authentication scheme. Evaluating this
-capability requires a benchmark that specifies a realistic application-level
-task and checks the generated system against it, rather than checking an
-isolated function or patch.
+Large language models can now produce complete, multi-file backend
+applications rather than isolated functions or patches. Evaluating such
+systems requires an application-level contract: a description of the
+behaviour to implement and executable checks that determine whether the
+resulting service satisfies it.
 
-\textsc{BaxBench}~\cite{vero2025baxbench} is such a benchmark, and the one
-this thesis builds on. It defines 392 tasks across 28 \emph{scenarios}, each
-scenario a fixed backend workload specified by an API contract (for example, a
-recipe-sharing service with upload, comment, and rating endpoints); every
-scenario is additionally specified against 14 \emph{frameworks}, combinations
-of a programming language and a web or application framework (six languages
-in total), so the same scenario can be implemented, and compared, across
-different technology stacks. Given a scenario and a framework, a model
-generates a complete application, which \textsc{BaxBench} then checks in two
-independent ways: a \emph{functional test suite} exercises the API contract
-end to end and checks that responses match the expected behaviour, and a
-separate \emph{security test suite} attempts to exploit the same application
-for a fixed set of known vulnerability classes (for example, SQL injection or
-broken authentication). \textsc{BaxBench}'s results show that even the
-best-performing models reach only around 62\% functional correctness, and
-that roughly half of the implementations that do pass functional testing
-remain exploitable, establishing that correctness and security are still open
-problems at the level of a complete application, before deployment is even
-considered.
+\textsc{BaxBench}~\cite{vero2025baxbench} is the benchmark this thesis builds
+on. It defines 392 tasks across 28 \emph{scenarios}. A scenario describes a
+fixed backend workload through an API contract; a recipe-sharing service with
+upload, comment, and rating endpoints is one example. Each scenario is paired
+with 14 \emph{frameworks}, combinations of a programming language and a web
+or application framework, spanning six languages. The same scenario can
+therefore be implemented and compared across different technology stacks.
 
-Authoring a \textsc{BaxBench} scenario by hand, an API contract, a matching
-functional-test suite, and a set of security exploits targeting known
-vulnerability classes, is itself a substantial engineering effort, which
-bounds how quickly the benchmark's task set can grow.
-\textsc{AutoBaxBuilder}~\cite{vonarx2025autobaxbuilder} automates this
-construction with an LLM-driven pipeline of three stages. First, an
-orchestrating LLM proposes a new scenario, an application idea together with
-its OpenAPI-style schema, at a configurable difficulty (roughly, its number
-of endpoints), and a separate solution LLM produces one or more reference
-implementations against it. Second, the orchestrator generates a functional
-test suite for the scenario and iteratively refines both the tests and the
-reference solutions against each other, tests that reveal an ambiguous or
-incorrect scenario specification cause the specification to be revised, while
-tests that reveal a genuine solution bug cause the solution to be revised,
-until solutions and tests agree. Third, the orchestrator identifies plausible
-vulnerability classes for the scenario, generates a candidate exploit for each,
-and refines every exploit against the reference solutions until it reliably
-triggers the intended weakness without false-positively flagging correct
-behaviour. Every stage persists its own versioned snapshot of the evolving
-scenario (Section~\ref{sec:methods-scenario-gen} details this artifact
-convention), so the benchmark's task set can grow independently of any
-specific model evaluation, and a scenario's full generation history remains
-inspectable after the fact.
+For a scenario--framework pair, a model generates a complete application.
+\textsc{BaxBench} then applies two separate forms of checking. A
+\emph{functional test suite} exercises the API contract end to end and checks
+that responses have the expected behaviour. A separate \emph{security test
+suite} probes known vulnerability classes, such as SQL injection or broken
+authentication. The distinction matters for this thesis: functional tests
+provide the correctness gate used before performance measurement, whereas
+security testing is part of the original benchmark but is not reconstructed
+as a second Kubernetes evaluation in this work.
 
-Crucially for this thesis, \textsc{BaxBench} checks every candidate the same
-way it is generated: built into a container and executed alone, on a single
-host, against its functional and security test suites. This is a natural and
-sufficient environment for the question \textsc{BaxBench} asks, whether the
-generated code is correct and secure, but it is not the environment a backend
-application actually runs in once it serves real traffic, a distinction the
-next section develops.
+\textsc{AutoBaxBuilder}~\cite{vonarx2025autobaxbuilder} addresses the cost of
+constructing such benchmark inputs. Its LLM-driven construction pipeline
+produces scenario descriptions, API contracts, functional tests, and
+calibrated reference implementations; its full form can also construct
+security checks. This thesis builds its offline scenarios on that pipeline and
+extends it with load-test generation and verification. The inherited stages,
+the adaptations made here, and the new workload stage are described in
+Section~\ref{sec:methods-scenario-gen}; the details are not needed to
+understand the benchmark's deployment model.
+
+The original \textsc{BaxBench} evaluation builds each candidate into a
+container and executes it alone on a single host. That environment is
+appropriate for asking whether generated code satisfies an application
+contract. The next section explains what it cannot reveal about the same code
+once it becomes a replicated service.
 
 
 % ----- §2.2  Containerization limits -----
 \section{Containerised Deployment and the Limits of Single-Host Evaluation}
 \label{sec:background-containerization}
 
-A container packages an application together with its runtime dependencies
-(interpreter or runtime, libraries, configuration) into a single, isolated
-unit that runs the same way regardless of the host it is placed on. Packaging
-an application this way is what makes it possible for \textsc{BaxBench}, and
-this thesis alike, to generate a backend application and execute it without
-first provisioning a bespoke environment for every scenario and framework
-combination.
+A container packages an application with its user-space runtime dependencies,
+such as its interpreter, libraries, and configuration, into a portable unit.
+This makes it possible to build and execute many scenario--framework
+combinations without provisioning a bespoke environment for each one. A
+container improves packaging consistency, but it does not make performance
+independent of the host: CPU, memory, storage, networking, and contention
+still affect the running process.
 
-Running a container alone, on a single host, answers a narrow question:
-given one instance of the application and no contention for the host's
-resources, does it behave correctly? It cannot answer questions that only
-arise once the same application is one of many replicas competing for a
-cluster's shared CPU, memory, and network capacity: whether enough replicas
-exist to absorb concurrent demand, whether the placement of those replicas
-creates network hot spots, whether a shared backing database becomes a
-bottleneck once many replicas query it at once, or whether a connection pool
-sized for one instance is still sized correctly for ten. None of these is a
-property of the application code in isolation; all of them are properties of
-the application \emph{as deployed}. A benchmark that stops at single-container,
-single-request-path testing, as \textsc{BaxBench} does
-(Section~\ref{sec:background-codegen}), is therefore structurally unable to
-observe them, independently of how thorough its functional and security
-tests are.
+Running one container on one host answers a narrow question: does one instance
+of the application behave correctly for the tested request paths? It does not
+answer questions that arise when the application is deployed as a service:
+whether enough replicas exist for concurrent demand, whether replicas compete
+for shared worker capacity, whether placement creates a hotspot, whether a
+shared database becomes the bottleneck, or whether a connection pool sized
+for one instance remains appropriate when several instances issue requests at
+once. These are properties of the application \emph{as deployed}, not of its
+source code in isolation.
 
-Production backends are not run this way. They are deployed as multiple
-replicas behind a load balancer, on a cluster of machines managed by an
-orchestration system, which is the setting the next section introduces.
+The deployment setting considered in this thesis therefore adds at least
+three elements absent from the isolated benchmark: multiple application
+replicas, shared cluster resources, and a load generator that creates
+overlapping requests. Kubernetes supplies the orchestration layer for that
+setting.
 
 
 % ----- §2.3  Kubernetes -----
 \section{Kubernetes and Container Orchestration}
 \label{sec:background-kubernetes}
 
-Kubernetes~\cite{kubernetes} is the container orchestration system this
-thesis deploys every candidate application on. It descends from Google's
-internal Borg and Omega systems~\cite{burns2016borg}, and generalises their
-core idea: an operator (human or, in this thesis, an LLM agent) declares the
-\emph{desired state} of a system, for example ``run three replicas of this
-container image, each with this much CPU and memory,'' and a control plane
-continuously reconciles the cluster's actual state toward that declaration,
-rather than the operator issuing imperative, one-off commands.
+Kubernetes~\cite{kubernetes} is the orchestration system used to deploy every
+candidate in this thesis. It follows the desired-state model developed in the
+Borg/Omega line of cluster-management systems~\cite{burns2016borg}: an
+operator declares what should be running, and a control plane continuously
+reconciles the cluster toward that state. The historical relationship is
+useful context, but the thesis depends on Kubernetes' declarative and
+resource-aware execution model rather than on Borg or Omega themselves.
 
-A small set of Kubernetes primitives recur throughout this thesis. A
-\emph{Pod} is the smallest deployable unit: one or more containers scheduled
-together onto the same machine. A \emph{Deployment} manages a set of
-identical Pod replicas, restarting or rescheduling them as needed to maintain
-a declared replica count. A \emph{Service} gives a Deployment's replicas a
-single, stable network identity and load-balances requests across whichever
-replicas are currently healthy, so callers do not need to track individual
-Pod addresses. A \emph{Namespace} scopes a set of resources into an isolated
-group, which this thesis uses to give every deployment a clean, disposable
-slice of the same cluster. Underlying all of these, every Pod carries
-\emph{resource requests and limits}: the minimum the scheduler reserves for
-it and the maximum it is allowed to consume, which is what lets the
-scheduler pack many Pods from many Deployments onto a fixed set of machines
-without any one of them starving another.
+Several Kubernetes primitives recur throughout the thesis. A \emph{Pod} is
+the smallest deployable unit, containing one or more containers scheduled
+together on a worker machine. A \emph{Deployment} manages a set of equivalent
+Pod replicas and works to maintain the declared replica count. A \emph{Service}
+provides a stable network identity and routes requests to healthy replicas.
+A \emph{Namespace} groups resources into an isolated, disposable scope, which
+the benchmark uses for each candidate deployment.
 
-The Kubernetes \emph{scheduler} is the component that turns a Deployment's
-declared replica count into a placement decision: which of the cluster's
-worker machines each replica actually runs on, subject to each machine's
-remaining allocatable capacity and any placement constraints the operator
-specifies. This is the mechanism behind pod placement as a
-performance-relevant decision, discussed next.
+Pods also declare CPU and memory \emph{requests} and \emph{limits}. Requests
+contribute to scheduler placement and capacity accounting; limits are enforced
+runtime ceilings. A CPU limit can cause throttling, while exceeding a memory
+limit can result in an out-of-memory termination. These distinctions matter
+because a specification can be schedulable while still starving or throttling
+the process under load.
+
+The Kubernetes \emph{scheduler} turns a Deployment's replica count and
+placement constraints into concrete worker-node assignments. It considers
+each node's remaining allocatable capacity and any restrictions supplied by
+the specification. Placement is therefore not merely an administrative
+detail: it determines which Pods share a machine and which network paths they
+use, and can change the performance observed by the load test.
 
 
 % ----- §2.4  Deployment levers -----
 \section{Deployment Configuration as a Performance Lever}
 \label{sec:background-deployment-levers}
 
-Declaring a correct container image is only one of the decisions that
-determine how well a backend application performs once deployed. The
-following configuration decisions, all expressed through the Kubernetes
-primitives of Section~\ref{sec:background-kubernetes}, jointly determine the
-throughput a deployment can sustain, and are the levers this thesis's agent
-is given control over (the exact schema is specified in
-Section~\ref{sec:methods-spec}).
+Once an application is deployed, its performance depends on both the code and
+the configuration of the service around it. The agent in this thesis controls
+a bounded set of deployment decisions; the exact fields and validation rules
+are specified in Section~\ref{sec:methods-spec}. They can be understood as
+four related families.
 
-\paragraph{Replica count.}
-Horizontal scale: how many identical instances of the application run behind
-its Service. Too few replicas leave incoming requests queued behind whichever
-instances are already busy, surfacing as growing latency and, eventually,
-timeouts; too many waste cluster capacity that a different Pod could have
-used, without necessarily improving throughput if some other resource is
-already the bottleneck.
+\paragraph{Application replicas.}
+Replica count determines how many instances run behind the backend Service.
+Too few replicas can leave requests queued behind busy instances. Additional
+replicas can increase parallelism until another resource becomes the
+bottleneck, but can also consume cluster capacity and multiply downstream
+load, especially database connections.
 
-\paragraph{Resource requests and limits.}
-How much CPU and memory each replica reserves and is capped at. A request
-set too low leaves an application starved of CPU time or memory under its
-own working load, degrading its latency independently of how many replicas
-exist; a limit set too low can have the container throttled or killed
-outright. Requests set far above what the application actually needs waste
-allocatable cluster capacity, reducing how many other Pods, including
-additional replicas of the same application, the cluster can schedule.
+\paragraph{Per-Pod resources.}
+CPU and memory requests affect whether and where Pods can be scheduled;
+limits constrain their runtime consumption. A request or limit that is too
+small can cause starvation, throttling, or termination. Values that are much
+larger than the workload requires waste allocatable capacity and may prevent
+useful replicas or data-tier components from being scheduled. The relevant
+quantity is therefore not a universally correct number, but the relationship
+between the workload's demand and the cluster's finite capacity.
 
 \paragraph{Placement.}
-Which worker machines a Pod is allowed to run on, and whether replicas of the
-same Deployment are spread across machines or allowed to co-locate.
-Placement affects performance indirectly: replicas co-located on one machine
-share that machine's resources and any network path leading to it, so a
-placement that concentrates load-bearing Pods onto too few machines can
-create a bottleneck that looks, from the outside, like an application or
-capacity problem.
+Placement specifies which workers a Pod may use and whether replicas should be
+spread or allowed to co-locate. Co-location can make a small deployment
+efficient, but it also makes replicas compete for the same CPU, memory, and
+network path. Spreading replicas can reduce that contention while consuming
+more of the cluster's placement budget. The best choice depends on the
+workload and on what other Pods share the cluster.
 
-\paragraph{Database topology and connection handling.}
-A backend application's database can be a single instance or a primary with
-one or more read replicas, and can be accessed directly or through a
-connection pooler that multiplexes many application-level connections onto
-fewer database-level ones. Under-provisioned database topology (a single
-primary serving both reads and writes under a read-heavy workload, or a
-connection pool sized so that replicas collectively open more connections
-than the database accepts) turns the database into the system's bottleneck
-regardless of how well the application tier itself is provisioned.
+\paragraph{Data-tier topology and connection handling.}
+The backend can use a standalone database or a primary with read replicas. It
+can connect directly or through a pooler that multiplexes application
+connections onto fewer database connections; the deployment may also enable a
+cache. These choices trade capacity, coordination overhead, and resource use.
+A read replica cannot improve throughput if the application never sends reads
+to it, and a pool or database connection ceiling can become the bottleneck
+even when the application Pods have spare CPU.
 
-Each of these levers is, in principle, tunable without touching the
-application's source code at all, which is what makes deployment
-configuration a distinct optimisation target from code generation
-(Section~\ref{sec:background-synthesis}). In current practice, tuning is
-usually manual, or delegated to reactive controllers such as the Kubernetes
-Horizontal and Vertical Pod Autoscalers~\cite{kubernetes-hpa}, which adjust
-replica count or per-Pod resource requests from live utilisation metrics
-within a fixed deployment template. These controllers close the loop on two
-of the four levers above, and only reactively: they do not reason about
-placement or database topology, cannot restructure a connection-pooling
-setup, and, because they only ever adjust the numbers inside an existing
-template rather than reasoning about the deployment as a whole, cannot
-recognise a case where the template itself, not just its parameters, is
-wrong.
+These families are tunable without rewriting the application's source code,
+which makes deployment configuration a distinct control surface. They are not
+independent of code, however: connection-pool behavior, query patterns, and
+application concurrency determine whether a deployment choice helps or hurts.
+The benchmark therefore treats code and deployment as separate levers whose
+effects must be observed in the same running system.
 
 
 % ----- §2.5  Correctness vs performance -----
 \section{Functional Correctness versus Runtime Performance}
 \label{sec:background-correctness-vs-performance}
 
-\textsc{BaxBench}'s functional and security test suites
-(Section~\ref{sec:background-codegen}), and the functional tests this thesis
-reuses as a correctness gate (Section~\ref{sec:methods-code}), share a common
-shape: each sends a small, fixed number of requests, typically one at a
-time, and checks that the response matches an expected contract or that a
-known exploit fails. Passing every such test establishes that an
-application's logic is correct for the request patterns exercised: that it
-computes the right answer, enforces the right permissions, and rejects the
-right malformed inputs.
+Functional correctness and runtime performance are related but different
+properties. A functional test sends specified requests and checks their
+responses against an expected contract: for example, whether an endpoint
+returns the right object, enforces permissions, or rejects malformed input.
+Passing such tests establishes correctness for the exercised behaviors. It
+does not establish how quickly or reliably the service responds when many
+requests overlap.
 
-None of this establishes that the same application performs acceptably once
-it must serve many such requests concurrently and continuously, which is a
-property of the running system rather than of its logic. An application can
-implement every endpoint correctly and still fail under load for reasons a
-single-request test cannot see: a database query that is correct but slow
-enough to exhaust a connection pool once several requests overlap, a lock or
-shared resource that serialises requests that could otherwise run in
-parallel, or simply too few replicas to keep pace with demand
-(Section~\ref{sec:background-deployment-levers}). These failures typically
-surface as timeouts or dropped connections: symptoms that are easy to
-mistake for a correctness bug when in fact they are a concurrency or
-capacity problem exposed only under load.
+Conversely, a service can return responses quickly while computing the wrong
+result. The load-test workload has its own request-level success and failure
+marking, but that marking is not interchangeable with the separate BaxBench
+functional-correctness verdict. This thesis therefore uses functional tests as
+a gate before performance measurement, then uses concurrent load to measure
+the running system.
 
-Functional correctness is therefore necessary but not sufficient for
-production readiness, and the two properties must be checked differently:
-correctness by a test suite exercising the application's logic, performance
-by observing the application under realistic concurrent load. The remainder
-of this chapter introduces the vocabulary for the latter.
+Under load, a correct application can still fail because a query exhausts a
+connection pool, a lock serialises requests, a database reaches its capacity,
+or the application tier has too few replicas. Such failures often appear as
+timeouts or elevated error rates, which is why performance feedback must be
+interpreted together with application and cluster diagnostics.
 
 
 % ----- §2.6  Measuring performance -----
 \section{Measuring Performance Under Load}
 \label{sec:background-goodput}
 
-Checking performance, rather than correctness, requires generating the kind
-of concurrent demand a single functional test does not: a \emph{load test}
-drives an application with many simulated clients issuing requests,
-typically ramping the number of concurrent clients upward over time, and
-records how the system responds as demand increases. This thesis uses
-Locust~\cite{locust}, a load-testing tool in which simulated users execute
-the same request patterns exercised by an application's functional tests
-(Section~\ref{sec:background-correctness-vs-performance}), so that a load
-test's traffic shape is grounded in the same API contract used to define
-correctness.
+A \emph{load test} creates concurrent demand and records how a service responds
+as that demand changes. In this thesis, Locust~\cite{locust} runs simulated
+users that follow the scenario's verified request flows, so the load workload
+is grounded in the same API contract used by the functional tests. The
+workload defines what users request; the load profile controls how the number
+of concurrent users changes over time.
 
-As offered load rises, a real system's ability to keep up is eventually
-bounded by whichever resource runs out first (CPU, memory, database
-connections, or network capacity), and further increases in offered load no
-longer translate into more completed work. This point is the system's
-\emph{saturation} point, and the resource that ran out is its
-\emph{bottleneck} at that load level. Beyond saturation, a system typically
-does not fail cleanly: latency rises as requests queue behind a full
-resource, and, past some threshold, requests begin to time out or fail
-outright rather than merely slowing down.
+Three quantities are central. \emph{Offered load} is the demand presented by
+the clients. \emph{Throughput} is the rate of completed request attempts.
+\emph{Latency} is the time from issuing a request to receiving its response,
+usually summarised with percentiles such as p50 or p95. Percentiles matter
+because a mean can hide a long tail of requests waiting behind a saturated
+resource.
 
-Three quantities characterise a system's behaviour under load.
-\emph{Throughput} is the rate at which the system completes requests,
-regardless of whether each response is correct or even successful.
-\emph{Latency} is the time between issuing a request and receiving its
-response, usually summarised by percentiles (for example, p50 or p95) rather
-than a mean, since a mean can look acceptable while a meaningful fraction of
-requests wait far longer. Neither quantity alone is a safe optimisation
-target: throughput can look high on a system that is failing a large
-fraction of requests quickly rather than serving them, and low latency is
-not meaningful for a request that fails. \textbf{Goodput} corrects for this
-by counting only \emph{successful} responses: it is the throughput a system
-sustains once failed and timed-out requests are excluded. The term is
-adopted from serving-system work that disaggregates request-processing
-stages specifically to maximise the request rate an LLM-inference system
-sustains while meeting per-request latency objectives~\cite{zhong2024distserve};
-this thesis reuses the same framing, successful throughput rather than raw
-throughput, for ordinary HTTP backends, and uses it, rather than throughput
-or latency alone, as the objective an LLM agent optimises when refining a
-deployment (its exact measurement procedure is given in
-Section~\ref{sec:methods-load-profile}). \emph{Sustained} goodput, the
-quantity this thesis compares across iterations, is the goodput a deployment
-can maintain in the stable region just short of saturation, rather than a
-transient peak observed during the ramp itself. This is the precise sense in
-which this thesis's research question (Section~\ref{sec:intro-missing}) asks
-about maximising sustainable throughput: sustained goodput is its
-operational definition.
+As offered load rises, some resource eventually becomes limiting: CPU, memory,
+network capacity, database connections, or storage. The resulting
+\emph{saturation point} is where additional offered load stops producing
+proportionally more completed work. Near that point, queues grow and latency
+often rises sharply; beyond it, requests may time out or fail rather than
+merely become slower. The limiting resource is the deployment's bottleneck at
+that load level.
+
+Raw throughput is not sufficient as an objective because a system can complete
+many requests while failing a substantial fraction of them. \textbf{Goodput}
+is the rate of successful requests, excluding failed and timed-out requests.
+In this thesis, a request is successful when the Locust workload marks it as
+such; this is a request-level runtime signal, not a replacement for the
+functional-correctness gate. The term is adopted from serving-system work that
+optimises successful request rate under latency objectives
+\cite{zhong2024distserve}, but here it is applied to ordinary HTTP backends.
+
+The benchmark maximises goodput subject to health and stability conditions,
+including failure-rate, latency, and settling checks. \emph{Sustained
+goodput} is therefore an operational measurement: the best accepted stable
+goodput level produced by the refinement phase of the load profile, rather
+than a transient peak during the exploratory ramp. Section
+\ref{sec:methods-load-profile} gives the exact phases, thresholds, and
+aggregation procedure.
 
 
 % ----- §2.7  Iterative refinement -----
 \section{Iterative Refinement as an Agentic Improvement Pattern}
 \label{sec:background-iterative-refinement}
 
-A single generation attempt is not the only way to use a language model to
-produce a working artefact. An alternative pattern treats generation as the
-first step of a loop: a candidate is produced, evaluated against some check,
-and, if that check is not satisfied (or a further improvement is sought even
-when it is), the outcome of the evaluation is fed back to the model as
-additional context for a revised attempt. This propose-evaluate-revise
-pattern is agentic in the weak sense that the model's own output at
-iteration~$n$ conditions its input at iteration~$n+1$, without requiring any
-change to the model's weights.
+Rather than treating generation as a single attempt, an iterative system
+produces a candidate, evaluates it, feeds the outcome back to the model, and
+produces a revised candidate. The model does not need to change its weights:
+the history of previous candidates and observations becomes part of the next
+input. This is a feedback loop over artifacts and measurements.
 
-Two properties of such a loop matter for what follows. First, what stops the
-loop differs by design: a \emph{correctness-gated} loop stops as soon as some
-check passes (for example, a test suite), while a \emph{performance-gated}
-loop has no such natural stopping point and instead continues to trade
-iterations for improvement against a graded objective, until a fixed budget
-is exhausted or improvement stalls. Second, the quality of the loop depends
-on the fidelity of its feedback: feedback computed in an environment that
-resembles the one the artefact will actually run in is more informative than
-feedback computed elsewhere, since it is less likely to reward a change that
-helps in the evaluation environment but not in the target one. Both
-properties recur directly in this thesis's design: refinement here is
-performance-gated, not correctness-gated
-(Section~\ref{sec:background-correctness-vs-performance} makes the
-distinction precise), and its feedback is measured on the actual target
-environment, a real Kubernetes cluster, rather than a proxy for it.
-Chapter~\ref{ch:related-work} surveys how specific prior systems have
-instantiated this general pattern, for natural-language self-critique, for
-repository-level code editing, and for infrastructure generation; this
-section states only the pattern itself.
+The stopping rule depends on the objective. A correctness-gated loop can stop
+when a test suite passes. A performance-gated loop has no unique pass
+condition, because a deployment can usually trade more iterations for a
+possible improvement. It therefore stops when improvement stalls, a budget is
+exhausted, or an external criterion is reached.
+
+Feedback fidelity is equally important. Measurements taken in an environment
+that resembles the target environment are less likely to reward a change that
+works only in a proxy. This thesis consequently measures candidates on the
+target Kubernetes cluster rather than using a local performance surrogate.
+The general pattern is distinct from the particular prior systems that
+instantiate it; those systems are reviewed in Chapter~\ref{ch:related-work}.
 
 
-% ----- §2.8  Synthesis -----
-\section{Deployment Optimisation as a Problem Distinct from Code Generation}
+% ----- §2.8  Conceptual model -----
+\section{Conceptual Model: Code and Deployment as Coupled Levers}
 \label{sec:background-synthesis}
 
-The concepts introduced in this chapter separate into two different
-optimisation targets. Code generation (Section~\ref{sec:background-codegen})
-searches over an application's source code to satisfy a functional and
-security contract; its search space is effectively unbounded (any program
-that compiles and runs) and its feedback signal is a test suite. Deployment
-optimisation searches over a small, bounded configuration schema
-(Section~\ref{sec:background-deployment-levers}) to maximise sustained
-goodput for a \emph{fixed} application under fixed cluster capacity
-(Section~\ref{sec:background-goodput}); its search space is a handful of
-numeric and structural fields, and its feedback signal is a load test rather
-than a test suite. Neither search space is a subset of the other: no amount
-of source-code editing changes how many replicas exist, and no deployment
-configuration change alters what the application's code actually computes.
+The thesis evaluates a candidate as a pair of artifacts: application code
+$c$ and deployment configuration $d$. For a fixed workload $w$ and cluster
+capacity $C$, the running system has an observed performance outcome that can
+be written conceptually as
+\[
+  G(c,d;w,C),
+\]
+where $G$ is sustained goodput under the benchmark's measurement procedure.
+The candidate must also satisfy feasibility conditions: the code must pass
+the functional gate, the deployment must be schedulable and ready, and the
+load test must meet its health and stability conditions.
 
-In practice, the two are not fully independent. Because a correctness or
-concurrency defect (Section~\ref{sec:background-correctness-vs-performance})
-and a genuine deployment shortfall can produce the same symptom under load,
-a timeout, an elevated error rate, a stalled throughput curve, attributing
-an observed performance problem to one cause or the other is not always
-immediate from the load-test result alone. This is a methodological
-consequence of treating code and deployment as related but distinct levers,
-and Chapter~\ref{ch:methods} addresses it directly, by design, rather than
-assuming it away.
+Code and deployment are distinct control surfaces. Changing source code can
+alter query patterns, concurrency, or connection usage without changing the
+replica count; changing the specification can change replicas, resources, or
+topology without changing what the application computes. They are nevertheless
+coupled through the running system. A code defect can look like a deployment
+shortfall, and a capacity bottleneck can look like an application failure.
+Consequently, the scalar goodput score is interpreted together with latency,
+failure, resource, and database diagnostics.
 
-Existing automated tooling addresses pieces of this picture but not the
-combination: reactive autoscalers (Section~\ref{sec:background-deployment-levers})
-adjust deployment parameters without ever touching code, while
-code-generation benchmarks (Section~\ref{sec:background-codegen}) evaluate
-code without any notion of deployment at all. A system that treats both
-application code and deployment configuration as levers an agent can refine,
-using measured performance as the feedback signal for both, is the object
-this thesis studies. Chapter~\ref{ch:related-work} positions this precisely
-against prior work that comes close from one side or the other;
-Chapter~\ref{ch:methods} then specifies exactly how this thesis's framework
-operationalises the concepts introduced here.
+There is also no deployment configuration that is optimal independently of its
+context. The useful choice of $d$ depends on the workload mix, the application
+framework, and the available cluster capacity $C$. The evaluation keeps those
+factors fixed within an experiment cell and asks whether feedback allows the
+agent to improve the particular system it is running. Chapter~\ref{ch:methods}
+now specifies how this conceptual model is operationalised through artifact
+validation, deployment, load measurement, and one-lever-at-a-time refinement.

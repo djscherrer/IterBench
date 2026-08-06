@@ -1,20 +1,20 @@
 % =============================================================
-%  Chapter 2 — Related Work (shortened draft)
+%  Chapter 3 — Related Work (shortened draft)
 % =============================================================
-%    §2.1  LLM code generation and backend evaluation benchmarks
-%    §2.2  Self-refinement, agentic coding, and verification-gated
+%    §3.1  LLM code generation and backend evaluation benchmarks
+%    §3.2  Self-refinement, agentic coding, and verification-gated
 %           generation
-%    §2.3  Deployment configuration and learned cluster management
+%    §3.3  Deployment configuration and learned cluster management
 %           (incl. LLM-generated infrastructure as code)
-%    §2.4  LLM-driven performance optimization
-%    §2.5  Positioning of this work
+%    §3.4  LLM-driven performance optimization
+%    §3.5  Positioning of this work
 % =============================================================
 
 \chapter{Related Work}
 \label{ch:related-work}
 
 
-% ----- §2.1  Benchmarks -----
+% ----- §3.1  Benchmarks -----
 \section{LLM Code Generation and Backend Evaluation Benchmarks}
 \label{sec:rw-benchmarks}
 
@@ -37,9 +37,17 @@ cluster resources, or load testing (Section~\ref{sec:background-containerization
 None measures \emph{sustainable throughput} when an application is deployed
 as a replicated service on Kubernetes, which is the gap our work addresses.
 
+\textsc{AutoBaxBuilder}~\cite{vonarx2025autobaxbuilder} addresses a related
+but different bottleneck: the cost of constructing new benchmark scenarios,
+API contracts, functional tests, and security checks. Its contribution is an
+LLM-driven benchmark-construction pipeline rather than a runtime evaluation
+of generated services. This thesis reuses and adapts that offline
+construction process for its scenarios and workloads; the contribution here
+is the subsequent deployment-and-performance loop.
 
-% ----- §2.2  Self-refinement, agentic coding, and verification -----
-\section{Self-Refinement, Agentic Coding, and Verification-Gated Generation}
+
+% ----- §3.2  Self-refinement, agentic coding, and verification -----
+\section{Self-Refinement and Verification-Gated Generation}
 \label{sec:rw-agentic}
 
 Section~\ref{sec:background-iterative-refinement} introduces the general
@@ -73,7 +81,7 @@ functional tests plus schema-validated specifications, is coarser but more
 scalable than constrained decoding or SMT verification.
 
 
-% ----- §2.3  Cluster tuning -----
+% ----- §3.3  Cluster tuning -----
 \section{Deployment Configuration and Learned Cluster Management}
 \label{sec:rw-cluster}
 
@@ -123,16 +131,16 @@ deploy probe plays exactly this role, but as a precondition for our loop
 rather than its objective: only after a candidate is schedulable and ready
 do we measure and refine for goodput.
 
-No prior system combines both limits: learned resource managers (FIRM,
-Autopilot, Decima, OtterTune) hold application and specification fixed and
-optimise policy instead; IaC-generation agents (\textsc{IaCGen},
-TerraFormer) refine a specification but stop at deployability.  Refining a
-constrained deployment specification \emph{and} application code, driven by
-runtime load-test goodput rather than a pass/fail deployability check, is
-the problem our framework formalises.
+These systems establish useful infrastructure-management capabilities, but
+they leave the joint problem open: learned resource managers hold the
+application and specification fixed, while IaC-generation agents refine a
+specification but stop at deployability. Refining a constrained deployment
+specification \emph{and} application code, driven by runtime load-test
+goodput rather than a pass/fail deployability check, is the problem our
+framework formalises.
 
 
-% ----- §2.4  Performance optimization -----
+% ----- §3.4  Performance optimization -----
 \section{LLM-Driven Performance Optimization}
 \label{sec:rw-llm-perf}
 
@@ -156,16 +164,14 @@ current LLMs and expert optimisers.  Both are largely \emph{one-shot}:
 neither incorporates iterative runtime feedback from a system executing
 under load.
 
-Agentic systems have begun to close that loop with measurement.
-VibeServe~\cite{kamahori2025vibeserve} synthesises bespoke LLM serving
-runtimes through a two-level multi-agent loop, an outer planner tracking
-optimisation history, an inner loop separating implementation, correctness
-judging, and performance evaluation, matching vLLM on standard Llama serving
-and achieving large speedups on non-standard hardware-workload combinations.
-Liu~et~al.~\cite{liu2025jitsystems}'s \emph{Just-in-Time Systems}
-(\textsc{Jitskit}) iterate an LLM agent through planning, coding, and
-critic-guided reflection to synthesise entire key-value stores that
-outperform FASTER, RocksDB, and Redis on all 18~configurations tested.
+Agentic systems have begun to close that loop with measurement.\par
+VibeServe~\cite{kamahori2025vibeserve} combines an outer planner with an
+inner loop for implementation, correctness, and performance, reporting
+competitive standard-Llama serving and large gains on non-standard
+hardware--workload combinations. Liu~et~al.~\cite{liu2025jitsystems}'s
+\emph{Just-in-Time Systems} (\textsc{Jitskit}) similarly iterates planning,
+coding, and critic-guided reflection to synthesise key-value stores that
+outperform established systems on its tested configurations.
 
 Our framework shares this iterative structure, propose, gate on correctness,
 benchmark, feed diagnostics forward, but at a different level of the stack:
@@ -176,7 +182,7 @@ for BaxBench backends, using \emph{goodput} as the objective under an
 adaptive load profile.
 
 
-% ----- §2.5  Positioning -----
+% ----- §3.5  Positioning -----
 \section{Positioning of This Work}
 \label{sec:rw-positioning}
 
@@ -195,19 +201,22 @@ inference-serving mechanism design.  SWE-Perf, PIE, VibeServe, and Jitskit
 demonstrate LLM-driven performance optimisation at the code or
 implementation level.
 
-Our thesis occupies the intersection these lines leave open: \emph{iterative
-deployment optimisation} of complete, LLM-generated backend applications on a
-real Kubernetes cluster, with the agent controlling both application code and
-a validated deployment specification, scored each iteration by measured
-goodput rather than static tests, self-critique, a deployability check, or a
-fixed benchmark application alone.
+The intersection these lines leave open is \emph{iterative deployment
+optimisation} of complete, LLM-generated backend applications on a real
+Kubernetes cluster. The agent controls both application code and a validated
+deployment specification, and each iteration is scored by measured goodput
+rather than by static tests, self-critique, deployability alone, or a fixed
+benchmark application. To our knowledge, no prior system combines all of
+these dimensions in one evaluation loop.
 
 \begin{table}[t]
   \centering
   \caption{Comparison of related approaches (selected dimensions).}
   \label{tab:rw-comparison}
   \small
-  \begin{tabular}{@{}l c c c c c c@{}}
+  \setlength{\tabcolsep}{1pt}
+  \resizebox{\linewidth}{!}{%
+  \begin{tabularx}{\linewidth}{@{}>{\raggedright\arraybackslash}X *{6}{>{\centering\arraybackslash}X}@{}}
     \toprule
     & \textbf{BaxBench} & \textbf{Glia} & \textbf{IaCGen} & \textbf{SWE-Perf} &
       \textbf{VibeServe} & \textbf{This work} \\
@@ -248,5 +257,6 @@ fixed benchmark application alone.
       & System code
       & Code + spec \\
     \bottomrule
-  \end{tabular}
+  \end{tabularx}%
+  }
 \end{table}

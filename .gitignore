@@ -337,6 +337,7 @@ results-all/
 results-old/
 results-05-12/
 results/
+results_reverified/
 results_custom/
 results_aggregate/
 
@@ -365,6 +366,7 @@ prompts/*
 results_distributed_bench/*
 
 baxbench-results-*.tar.gz
+baxbench-results_reverified-*.tar.gz
 
 # LaTeX build artifacts
 *.aux
