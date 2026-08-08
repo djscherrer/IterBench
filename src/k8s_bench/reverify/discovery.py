@@ -32,6 +32,8 @@ from workspace import (
     K8S_EXPERIMENTS_DIRNAME,
     ITERATIONS_DIRNAME,
     find_iteration_spec_path,
+    iteration_bench_dir,
+    iteration_deploy_dir,
     iteration_folder_is_failed,
     iteration_id_for_index,
     parse_iteration_index,
@@ -75,6 +77,10 @@ class DiscoveryFilters:
     experiments: frozenset[str] | None = None
     iterations: frozenset[str] | None = None  # normalized ids, e.g. "iteration-003"
     include_failed: bool = False
+    # Gap-fill: keep only iterations whose deploy+bench output is missing or
+    # incomplete (a bench run that was cleared but never re-run leaves just
+    # 01-decision..03-spec behind). Set by ``--only-missing-artifacts``.
+    only_missing_artifacts: bool = False
 
     def matches_task(
         self,
@@ -99,6 +105,20 @@ class DiscoveryFilters:
         if self.iterations is not None and iteration_id not in self.iterations:
             return False
         return True
+
+
+def iteration_bench_complete(iteration_path: Path) -> bool:
+    """True when this iteration already carries a finished re-bench.
+
+    "Finished" means both a ``04-deploy/`` directory and a
+    ``05-bench/bench.log`` are present. An iteration whose deploy/bench stages
+    were cleared for a re-run but never regenerated (interrupted sweep) has
+    neither, and reads as incomplete here — exactly the gap set that
+    ``--only-missing-artifacts`` targets.
+    """
+    deploy_dir = iteration_deploy_dir(iteration_path)
+    bench_dir = iteration_bench_dir(iteration_path)
+    return deploy_dir.is_dir() and (bench_dir / "bench.log").is_file()
 
 
 def _discovery_sort_key(d: DiscoveredIteration) -> tuple:
@@ -208,6 +228,16 @@ def discover_iterations(
                 report.skipped.append(SkippedIteration(child, "excluded by filter"))
                 continue
 
+            if filters.only_missing_artifacts and iteration_bench_complete(child):
+                report.skipped.append(
+                    SkippedIteration(
+                        child,
+                        "already has 04-deploy + 05-bench/bench.log "
+                        "(--only-missing-artifacts keeps only un-benched iterations)",
+                    )
+                )
+                continue
+
             report.discovered.append(
                 DiscoveredIteration(
                     path=child,
@@ -245,4 +275,5 @@ __all__ = [
     "DiscoveryFilters",
     "discover_iterations",
     "group_by_sample_experiment",
+    "iteration_bench_complete",
 ]

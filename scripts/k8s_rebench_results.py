@@ -23,6 +23,27 @@ deploy + Locust bench stages (``k8s_bench.orchestration.deploy_only``)
 against the already-generated code/spec on disk. No LLM calls, no code or
 spec regeneration, no refinement-decision routing happen in this mode.
 
+Resuming an interrupted sweep
+-----------------------------
+The manifest (``reverification_manifest.json``) is flushed to disk after
+every iteration, so an interrupted run leaves a truthful resume ledger
+rather than an empty file, and one cell raising no longer aborts the whole
+sweep. Two ways to fill the gaps left by an interrupted run:
+
+* ``--only-missing-artifacts`` (filesystem-driven, needs no manifest):
+  process ONLY iterations that lack a finished re-bench — no ``04-deploy/``
+  or no ``05-bench/bench.log``, i.e. an interrupted sweep left just
+  ``01-decision``..``03-spec`` behind. Iterations that already carry both are
+  left untouched, so this is safe to re-run and never re-clears completed
+  work. This is the reliable way to top up an incomplete tree (e.g. the slow
+  Rust-Actix builds that a wall-clock cutoff never reached).
+* the manifest ledger: without ``--force``, any iteration recorded
+  ``success`` for this ``--load-profile`` is skipped on the next run.
+
+Stale ``04-deploy``/``05-bench`` are cleared per-iteration immediately before
+that iteration re-runs (not up front for the whole cell), so an interruption
+never destroys the original bench data of iterations it never reaches.
+
 See ``docs/k8s_approach.md`` ("Bulk re-benchmarking / reverification") for
 the full write-up: dry-run, resuming, forcing, and where reports land.
 """
@@ -109,6 +130,14 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="Also consider '-failed' iteration folders (if they have a spec + resolvable code).",
     )
+    p.add_argument(
+        "--only-missing-artifacts",
+        action="store_true",
+        help="Gap-fill/resume: process ONLY iterations that lack a finished re-bench "
+        "(no 04-deploy/ or no 05-bench/bench.log — e.g. an interrupted sweep left just "
+        "01-decision..03-spec behind). Iterations that already have both are left "
+        "untouched, so this is safe to re-run and never re-clears completed work.",
+    )
     p.add_argument("--models", nargs="+", default=None, help="Filter: model directory name(s) as on disk.")
     p.add_argument("--scenarios", nargs="+", default=None, help="Filter: BaxBench scenario id(s).")
     p.add_argument("--envs", nargs="+", default=None, help="Filter: environment id(s), e.g. Go-net/http.")
@@ -152,6 +181,7 @@ def _build_filters(args: argparse.Namespace) -> DiscoveryFilters:
             else None
         ),
         include_failed=args.include_failed,
+        only_missing_artifacts=args.only_missing_artifacts,
     )
 
 
@@ -283,6 +313,7 @@ def _run_group(
     results_root: Path,
     manifest_entries: dict[str, ManifestEntry],
     manifest_lock: threading.Lock,
+    flush_manifest: Any,
     args: argparse.Namespace,
     build_run_config: Any,
     deploy_only_preflight: Any,
@@ -304,6 +335,9 @@ def _run_group(
         entry.key = key
         with manifest_lock:
             manifest_entries[key] = entry
+        # Persist after every state change so an interrupted sweep still leaves
+        # a truthful manifest (the resume ledger) rather than an empty file.
+        flush_manifest()
 
     def _already_done(d: DiscoveredIteration) -> ManifestEntry | None:
         key = manifest_key(
@@ -339,14 +373,14 @@ def _run_group(
     if not to_run:
         return
 
-    # Cleared unconditionally for anything we've decided to (re-)run: our own
-    # manifest-based check above is what plays the "skip if already done" role,
-    # so RunConfig.force is always True here — otherwise deploy_only's own
+    # RunConfig.force is always True here: our own manifest-based check above is
+    # what plays the "skip if already done" role — otherwise deploy_only's own
     # bench-dir-presence check would treat a freshly-copied original bench run
-    # as "already complete" and silently skip it on a first invocation.
-    for d in to_run:
-        clear_stale_reverify_artifacts(d.path, root=results_root)
-
+    # as "already complete" and silently skip it on a first invocation. The
+    # stale 04-deploy/05-bench are cleared per-iteration just before that
+    # iteration runs (see the loop below), not up front for the whole group: an
+    # up-front wipe means an interrupted sweep destroys the original bench data
+    # of iterations it never reaches, leaving only 01-decision..03-spec behind.
     cfg = build_run_config(
         timeout=args.timeout,
         force=True,
@@ -399,6 +433,7 @@ def _run_group(
     for d in to_run:
         run_dir = None
         try:
+            clear_stale_reverify_artifacts(d.path, root=results_root)
             run_dir = execute_deploy_only_iteration(ctx, d.path, cfg)
         except Exception as exc:  # noqa: BLE001 - surfaced into the manifest, run continues
             logger.exception("iteration %s raised while reverifying", d.path)
@@ -536,6 +571,18 @@ def main(argv: list[str] | None = None) -> int:
 
         manifest_lock = threading.Lock()
 
+        def flush_manifest() -> None:
+            """Persist the manifest to disk under the lock (called after every
+            iteration state change, so an interrupted run keeps a resume ledger)."""
+            with manifest_lock:
+                write_manifest(
+                    manifest_path,
+                    manifest_entries,
+                    results_root=results_root,
+                    cluster=args.cluster,
+                    load_profile=args.load_profile,
+                )
+
         def run_group(item: tuple[tuple[Path, str], list[DiscoveredIteration]]) -> None:
             group_key, iterations = item
             _run_group(
@@ -544,6 +591,7 @@ def main(argv: list[str] | None = None) -> int:
                 results_root=results_root,
                 manifest_entries=manifest_entries,
                 manifest_lock=manifest_lock,
+                flush_manifest=flush_manifest,
                 args=args,
                 build_run_config=build_run_config,
                 deploy_only_preflight=deploy_only_preflight,
@@ -553,14 +601,27 @@ def main(argv: list[str] | None = None) -> int:
 
         items = list(groups.items())
         max_workers = max(1, args.parallel)
+        # A single group raising (preflight, cluster readiness, postlude) must
+        # not tear down the whole sweep and strand every other in-flight cell —
+        # the old ``future.result()`` re-raise did exactly that. Isolate each
+        # group: log it, keep going, and let the per-iteration manifest flush
+        # preserve everything already done.
         if max_workers == 1:
             for item in items:
-                run_group(item)
+                try:
+                    run_group(item)
+                except Exception:  # noqa: BLE001 - isolate one cell's failure
+                    logger.exception("group %s failed; continuing with the rest", item[0])
         else:
             with ThreadPoolExecutor(max_workers=max_workers) as executor:
-                futures = [executor.submit(run_group, item) for item in items]
+                futures = {executor.submit(run_group, item): item for item in items}
                 for future in as_completed(futures):
-                    future.result()
+                    try:
+                        future.result()
+                    except Exception:  # noqa: BLE001 - isolate one cell's failure
+                        logger.exception(
+                            "group %s failed; continuing with the rest", futures[future][0]
+                        )
 
     write_manifest(
         manifest_path,

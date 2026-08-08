@@ -10,7 +10,13 @@ from k8s_bench.reverify.discovery import (
     group_by_sample_experiment,
 )
 
-from .conftest import make_iteration, make_sample_dir, iterations_root_for
+from .conftest import (
+    make_complete_bench,
+    make_iteration,
+    make_sample_dir,
+    iterations_root_for,
+)
+import shutil
 
 
 def _discover(results_root: Path, **filter_kwargs):
@@ -114,6 +120,40 @@ def test_failed_folder_excluded_by_default_included_with_flag(results_root: Path
     ]
     failed_entry = next(d for d in report_included.discovered if d.iteration_id == "iteration-001")
     assert failed_entry.is_failed_folder is True
+
+
+def test_only_missing_artifacts_keeps_gaps_and_skips_finished_benches(
+    results_root: Path,
+) -> None:
+    sample_dir = make_sample_dir(results_root)
+    it_root = iterations_root_for(sample_dir)
+    # 000: a finished re-bench (04-deploy + 05-bench/bench.log present).
+    done = make_iteration(it_root, "iteration-000-baseline")
+    make_complete_bench(done)
+    # 001: an interrupted iteration -- 04-deploy/05-bench were cleared and
+    # never regenerated, so only 01-decision..03-spec remain on disk.
+    gap = make_iteration(it_root, "iteration-001-code")
+    shutil.rmtree(gap / "04-deploy")
+    shutil.rmtree(gap / "05-bench")
+    # 002: deploy happened but the bench never produced a log (no bench.log).
+    partial = make_iteration(it_root, "iteration-002-code")
+
+    report = _discover(results_root, only_missing_artifacts=True)
+
+    assert [d.iteration_id for d in report.discovered] == [
+        "iteration-001",
+        "iteration-002",
+    ]
+    done_skip = next(s for s in report.skipped if "iteration-000" in str(s.path))
+    assert "already has 04-deploy" in done_skip.reason
+
+    # Without the flag, all three are re-benchable.
+    all_report = _discover(results_root)
+    assert [d.iteration_id for d in all_report.discovered] == [
+        "iteration-000",
+        "iteration-001",
+        "iteration-002",
+    ]
 
 
 def test_unrecognized_folder_name_is_skipped(results_root: Path) -> None:
