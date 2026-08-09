@@ -156,6 +156,22 @@ def test_only_missing_artifacts_keeps_gaps_and_skips_finished_benches(
     ]
 
 
+def test_cells_allowlist_keeps_only_listed_cells(results_root: Path) -> None:
+    keep = make_sample_dir(results_root, model="z-ai-glm-5.2")
+    drop = make_sample_dir(results_root, model="anthropic-claude-opus-4-8")
+    make_iteration(iterations_root_for(keep), "iteration-000-baseline")
+    make_iteration(iterations_root_for(drop), "iteration-000-baseline")
+
+    # cell path is <model>/<scenario>/<env> on disk (escaped env dir name)
+    report = _discover(
+        results_root, cells=frozenset({"z-ai-glm-5.2/ClickCount/Go-net-http"})
+    )
+
+    got = {str(d.sample_dir).split("results_reverified/")[-1].split("/")[0] for d in report.discovered}
+    assert got == {"z-ai-glm-5.2"}
+    assert any("cell excluded by --cells-from" in s.reason for s in report.skipped)
+
+
 def test_unrecognized_folder_name_is_skipped(results_root: Path) -> None:
     sample_dir = make_sample_dir(results_root)
     it_root = iterations_root_for(sample_dir)

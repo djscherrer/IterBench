@@ -81,6 +81,11 @@ class DiscoveryFilters:
     # incomplete (a bench run that was cleared but never re-run leaves just
     # 01-decision..03-spec behind). Set by ``--only-missing-artifacts``.
     only_missing_artifacts: bool = False
+    # Whole-cell allowlist: posix "model_dir/scenario_dir/env_dir" paths
+    # (relative to the results root) to keep; every other cell is skipped.
+    # Set by ``--cells-from``. Matched on the on-disk path, so it uses the
+    # escaped env directory name (e.g. "Go-net-http"), not the env id.
+    cells: frozenset[str] | None = None
 
     def matches_task(
         self,
@@ -162,6 +167,20 @@ def discover_iterations(
             continue
         experiment_id = experiment_root.name
         sample_dir = experiment_root.parent.parent
+
+        if filters.cells is not None:
+            # Cell = the env directory (<model>/<scenario>/<env>), two levels
+            # above the sample dir. One skip per excluded cell keeps the report
+            # readable when the allowlist is small.
+            try:
+                cell_rel = sample_dir.parent.parent.relative_to(results_root).as_posix()
+            except ValueError:
+                cell_rel = None
+            if cell_rel is None or cell_rel not in filters.cells:
+                report.skipped.append(
+                    SkippedIteration(iterations_dir, "cell excluded by --cells-from allowlist")
+                )
+                continue
 
         try:
             task = parse_task_metadata(

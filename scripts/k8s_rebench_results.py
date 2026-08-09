@@ -40,6 +40,12 @@ sweep. Two ways to fill the gaps left by an interrupted run:
 * the manifest ledger: without ``--force``, any iteration recorded
   ``success`` for this ``--load-profile`` is skipped on the next run.
 
+Restrict to specific whole cells with ``--cells-from FILE`` (one
+``<model>/<scenario>/<env>`` per line, on-disk directory names). Useful for a
+second independent re-bench of just the cells that need one, e.g. building a
+``results_reverified2/`` tree to pair against ``results_reverified/`` for a
+run-to-run variance estimate on those cells.
+
 Stale ``04-deploy``/``05-bench`` are cleared per-iteration immediately before
 that iteration re-runs (not up front for the whole cell), so an interruption
 never destroys the original bench data of iterations it never reaches.
@@ -138,6 +144,16 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "01-decision..03-spec behind). Iterations that already have both are left "
         "untouched, so this is safe to re-run and never re-clears completed work.",
     )
+    p.add_argument(
+        "--cells-from",
+        type=Path,
+        default=None,
+        help="Filter: path to a text file listing whole cells to process, one per line as "
+        "'<model_dir>/<scenario_dir>/<env_dir>' (on-disk names, e.g. "
+        "'openai-gpt-5.5-2026-04-23/ClickCount/Go-net-http'). Blank lines and '#' comments "
+        "are ignored. Every cell not listed is skipped. Combine with --only-missing-artifacts "
+        "to gap-fill just those cells.",
+    )
     p.add_argument("--models", nargs="+", default=None, help="Filter: model directory name(s) as on disk.")
     p.add_argument("--scenarios", nargs="+", default=None, help="Filter: BaxBench scenario id(s).")
     p.add_argument("--envs", nargs="+", default=None, help="Filter: environment id(s), e.g. Go-net/http.")
@@ -168,6 +184,21 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return p.parse_args(argv)
 
 
+def _load_cells_file(path: Path) -> frozenset[str]:
+    """Read a --cells-from allowlist: one '<model>/<scenario>/<env>' per line."""
+    path = path.expanduser()
+    if not path.is_file():
+        raise SystemExit(f"--cells-from file not found: {path}")
+    cells = {
+        line.strip().strip("/")
+        for line in path.read_text(encoding="utf-8").splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    }
+    if not cells:
+        raise SystemExit(f"--cells-from file is empty: {path}")
+    return frozenset(cells)
+
+
 def _build_filters(args: argparse.Namespace) -> DiscoveryFilters:
     return DiscoveryFilters(
         models=frozenset(args.models) if args.models else None,
@@ -182,6 +213,7 @@ def _build_filters(args: argparse.Namespace) -> DiscoveryFilters:
         ),
         include_failed=args.include_failed,
         only_missing_artifacts=args.only_missing_artifacts,
+        cells=_load_cells_file(args.cells_from) if args.cells_from else None,
     )
 
 
