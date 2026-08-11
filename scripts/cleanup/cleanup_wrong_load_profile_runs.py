@@ -40,7 +40,11 @@ import shutil
 import sys
 from pathlib import Path
 
-_DEFAULT_ERROR = "Unknown load profile 'explore-refine'"
+# Match the error prefix, not one exact name: the same mistake was made with
+# several spellings ('explore-refine', 'explore_refine', an unformatted
+# '{key}'), and any "Unknown load profile" means the bench never ran, so the
+# iteration is always safe to clear and re-bench.
+_DEFAULT_ERROR = "Unknown load profile"
 
 
 def _iter_bench_logs(results_dir: Path):
