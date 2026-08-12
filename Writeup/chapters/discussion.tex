@@ -16,23 +16,24 @@
 \label{sec:discussion-interpretation}
 
 \paragraph{Correctness gates deployment more consistently than any
-model-level difference.} The clearest pattern across all seven research
+model-level difference.} The clearest pattern across all six research
 questions is not a capability gap between models, but a division of
 labour between the two refinement levers. The largest source of attrition
 (functional-test and docker-build failures, 74\% of recorded failures,
-Section~\ref{sec:results-rq7}) and the largest single-step goodput
+Section~\ref{sec:results-rq6}) and the largest single-step goodput
 recoveries (Section~\ref{sec:results-rq3}) both trace to code correctness,
 not deployment tuning, and this holds for every model with data. Where
 model differences do appear, they concentrate in a narrower place than a
 first glance at raw completion counts would suggest: every model that
 reaches a working baseline completes its full refinement budget
-(Section~\ref{sec:results-rq4}), so the interesting variation in this
-dataset is not \emph{whether} a model finishes, but how it uses the two
-levers once it starts.
+(Chapter~\ref{ch:results}'s coverage figures), so the interesting variation
+in this dataset is not \emph{whether} a model finishes, but how it uses the
+two levers once it starts.
 
 \paragraph{What can and cannot be said about cost.} \texttt{glm-5.2} is
 roughly an order of magnitude cheaper per cell than \texttt{gpt-5.5} or
-\texttt{claude-opus-4-8} (Section~\ref{sec:results-rq4}), and that
+\texttt{claude-opus-4-8} (Appendix~\ref{ch:appendix-additional-results}),
+and that
 advantage does not come at the expense of either completion reliability
 or achieved goodput: it reaches baseline and finishes its budget on every
 one of its 21 cells, and its geometric-mean best-iteration goodput sits
@@ -41,7 +42,7 @@ how its two refinement levers behave once it is running: its
 deployment-refinement steps collapse a working deployment to zero goodput
 more often than any other model's do (Section~\ref{sec:results-rq3}), and
 its code-side failure profile leans more heavily on \textsc{Rust-Actix}
-build failures than the other two models' do (Section~\ref{sec:results-rq7}).
+build failures than the other two models' do (Section~\ref{sec:results-rq6}).
 Cost, completion reliability,
 achieved goodput, and refinement-lever quality are separate axes in this
 data, and \texttt{glm-5.2} only underperforms on the last of them.
@@ -54,7 +55,7 @@ capacity knob, is consistent with what each lever can structurally see. A
 spec-refinement step can move replicas, resources, and database topology,
 but it cannot change what the running application \emph{does}; if the
 bottleneck is a connection-handling bug
-(Section~\ref{sec:results-rq7}), no amount of deployment tuning reaches
+(Section~\ref{sec:results-case-studies}), no amount of deployment tuning reaches
 it. The reverse is not quite symmetric: code refinement \emph{can}, in
 principle, work around a deployment problem by changing application
 behaviour (for example, reducing per-request work), which may explain why
@@ -62,19 +63,20 @@ code refinement's observed effect is not just larger on average but more
 variable in both directions than deployment refinement's.
 
 \paragraph{Convergence patterns.} Where a trajectory has enough successful
-iterations to work with, Section~\ref{sec:results-rq6}'s
-\textsc{ClickCount} evidence, corroborated across two different models on
-the same scenario, shows deployment parameters moving in a consistent,
-workload-appropriate direction across several iterations rather than
+iterations to work with, the \textsc{ClickCount} case study
+(Section~\ref{sec:results-case-studies}) shows deployment parameters
+moving in a consistent direction across several iterations rather than
 oscillating: once the agent identifies that horizontal fan-out beats
 per-pod headroom for a near-stateless workload, later spec iterations
 continue in that direction rather than re-deriving it from scratch, which
 is the behaviour the append-only conversational memory of
-Section~\ref{sec:methods-workflow} is designed to support. The backfire
-case in Section~\ref{sec:results-rq7} is the counter-example: convergence
-toward a \emph{locally} reasonable decision is not the same as convergence
-toward a good one, particularly when one refinement step is free to change
-several spec fields whose interaction it cannot fully anticipate.
+Section~\ref{sec:methods-workflow} is designed to support. This is one
+trajectory, not a general property of the dataset; the backfire case in
+the same section, on the very same cell, is the counter-example:
+convergence toward a \emph{locally} reasonable decision is not the same
+as convergence toward a good one, particularly when one refinement step
+is free to change several spec fields whose interaction it cannot fully
+anticipate.
 
 
 % ----- §6.2 Limitations -----
@@ -104,13 +106,14 @@ tests were calibrated against (Section~\ref{sec:setup-scenarios}). This
 overlap between artifact author and evaluated candidate is a
 construct-validity threat to the model comparison.
 The generated and original scenarios are not therefore interchangeable
-workloads: their absolute goodput levels differ. Section~\ref{sec:results-rq4}
-nevertheless examines the threat directly, splitting each model's cells into
-authored and unauthored scenarios. The model ordering is unchanged across the
-two subsets, and neither model has a larger relative advantage on the subset
-that it helped construct; this gives no evidence that provenance, rather than
-model capability, drives the ranking. It is recorded here as a known and
-checked threat rather than an unexamined one, bounded by the same
+workloads: their absolute goodput levels differ, and RQ4
+(Section~\ref{sec:results-rq4}) shows they also differ in baseline health,
+failure profile, and refinement headroom for reasons unrelated to
+authorship. This thesis does not isolate the provenance effect itself: doing
+so convincingly would need either a provenance-independent fourth model or
+repeated draws per scenario, neither of which this single-sample,
+three-model design provides. It is recorded here as an acknowledged,
+unexamined threat rather than a checked one, bounded by the same
 single-sample caveat as every other comparison.
 
 \paragraph{Iteration budget.} Every experiment used a fixed $N{=}10$
@@ -160,7 +163,7 @@ never recover within their ten-iteration budget are recorded the same way
 throughout. A goodput of $0$ at the \emph{end} of an otherwise-healthy
 trajectory is scored identically again, even though it is a different
 phenomenon (Section~\ref{sec:results-rq1}): the failure taxonomy
-(Section~\ref{sec:results-rq7}) does not flag it at all, since every
+(Section~\ref{sec:results-rq6}) does not flag it at all, since every
 individual iteration still completed as a harness-level success.
 
 \paragraph{Stochastic LLM behaviour.} Temperature was fixed at $0.2$
@@ -178,7 +181,7 @@ topology and one hardware profile (Section~\ref{sec:setup-infrastructure}).
 ``Fixed infrastructure constraints'' in the thesis research question
 (Section~\ref{sec:intro-missing}) is therefore fixed to \emph{one} specific
 capacity envelope; whether the same deployment decisions (e.g.\ the
-replica-count/CPU-request trade-off of Section~\ref{sec:results-rq6})
+replica-count/CPU-request trade-off of Section~\ref{sec:results-case-studies})
 would be reachable, or would be the right decisions, on a cluster an order
 of magnitude larger or smaller is untested.
 
@@ -221,14 +224,14 @@ grid, not as population estimates with conventional inferential guarantees.
 
 \paragraph{Concurrent-sweep image caching.} The recurring
 \texttt{docker tag failed: ... No such image} error documented in
-Section~\ref{sec:results-rq7} traces to a disk-management routine that runs
+Section~\ref{sec:results-rq6} traces to a disk-management routine that runs
 at the start of every sample's preflight and clears unused container
 images from the shared build host, so that a spec-only iteration reusing
 an image built earlier in the same cell can find it already evicted if
 another cell's preflight happened to run in between. Because experiments
 in this dataset were collected with multiple cells running concurrently,
 this is a genuine race rather than a one-off transient error. Its effect
-was contained to the two cells and iteration pairs Section~\ref{sec:results-rq7}
+was contained to the two cells and iteration pairs Section~\ref{sec:results-rq6}
 records: both fail cleanly before reaching deploy or bench, so no goodput
 value in this dataset is affected, but each pair consumes two iterations
 of the fixed ten-iteration budget without the decision stage's choice for
@@ -248,11 +251,11 @@ attribute a measured change to a cause at all, and this thesis's data
 suggests the two levers really do specialise in practice, not just by
 construction. Systems that let an agent freely mix implementation and
 configuration changes in one step should expect the attribution problem
-Section~\ref{sec:results-rq7}'s backfire case illustrates \emph{within} a
+Section~\ref{sec:results-case-studies}'s backfire case illustrates \emph{within} a
 single lever, only worse.
 
 \paragraph{For Kubernetes deployment optimisation.} The
-\textsc{ClickCount} evidence (Section~\ref{sec:results-rq6}), reproduced
+\textsc{ClickCount} evidence (Section~\ref{sec:results-case-studies}), reproduced
 qualitatively by two different models on the same scenario, is more than a
 single existence proof that an LLM agent, given only a schema and raw
 load-test feedback, can rediscover a standard scaling heuristic (favour
@@ -270,5 +273,5 @@ performance-tuning agents purely on their tuning behaviour in isolation:
 in this dataset, the single largest lever on final goodput was not a
 tuning decision at all, but whether the code was correct enough to deploy
 under load in the first place, a class of bug that, as
-Section~\ref{sec:results-rq7}'s pooling case study shows, a
+Section~\ref{sec:results-case-studies}'s pooling case study shows, a
 single-container functional-test suite cannot even see.

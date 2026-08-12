@@ -24,6 +24,21 @@
 \usepackage{hyperref}
 \usepackage{cleveref}
 \usepackage{placeins}
+\usepackage{pdflscape}
+\usepackage{makecell}
+\usepackage{array}
+\usepackage{float}
+% [pass]: keep the class's page layout unchanged; only enable \newgeometry so
+% the wide per-iteration appendix tables can widen their own landscape pages.
+\usepackage[pass]{geometry}
+
+% Per-iteration results appendix (appendix/per_iteration_results.tex):
+% fixed-width centred iteration columns and cell-state colours.
+\newcolumntype{C}{>{\centering\arraybackslash}p{13mm}}
+\definecolor{costgray}{gray}{0.45}
+\definecolor{failcol}{RGB}{150,45,45}
+\definecolor{failbg}{RGB}{250,234,234}
+\definecolor{bandbg}{gray}{0.90}
 
 % --------------------------------------------------
 % Cover Page Information
@@ -137,5 +152,11 @@ February 2026 -- August 2026
 
 \chapter{Configuration Details}
 \input{appendix/configuration_details}
+
+\chapter{Additional Results}
+\input{appendix/additional_results}
+
+\chapter{Per-Iteration Results}
+\input{appendix/per_iteration_results}
 
 \end{document}

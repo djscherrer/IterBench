@@ -85,8 +85,8 @@ instance so that cache stays useful. The harness does not need to send
 any explicit cache parameters for this model.
 
 Table~\ref{tab:setup-model-config} gives the resulting per-model context
-window and price list; Section~\ref{sec:results-rq4} reports what that
-translated to in measured spend over this evaluation.
+window and price list; Appendix~\ref{ch:appendix-additional-results}
+reports what that translated to in measured spend over this evaluation.
 
 \begin{table}[htbp]
   \centering
@@ -111,7 +111,7 @@ translated to in measured spend over this evaluation.
   point conversational runs here cross by roughly iteration~5.
   $^\ddagger$\texttt{glm-5.2} is accessed through OpenRouter rather than a
   first-party API and has no fixed \$/MTok rate in this evaluation: its
-  measured cost (Section~\ref{sec:results-rq4}) is taken directly from
+  measured cost (Appendix~\ref{ch:appendix-additional-results}) is taken directly from
   OpenRouter's own reported per-request charge, which already nets out its
   implicit caching discount, rather than computed from a price list.
 \end{table}
@@ -155,11 +155,12 @@ the later model-evaluation experiments.
 This creates a potential \emph{provenance bias}: an evaluated model could
 benefit from having authored part of the scenarios or from having supplied a
 reference implementation used to calibrate their tests. The setup therefore
-does not make the three model comparisons fully provenance-independent. The
-evaluation checks this threat by separating original from generated
-scenarios (Section~\ref{sec:results-rq4}); the remaining construct-validity
-caveat and the limits of that check are discussed in
-Section~\ref{sec:discussion-limitations}.
+does not make the three model comparisons fully provenance-independent, and
+this thesis does not isolate that effect; it is discussed as an open
+construct-validity caveat in Section~\ref{sec:discussion-limitations}.
+Generated and original scenarios do differ in baseline health, failure
+profile, and refinement headroom (RQ4, Section~\ref{sec:results-rq4}), for
+reasons the data does not attribute to authorship one way or the other.
 
 Endpoint counts below are unique OpenAPI paths, not operations
 (\textsc{Petstore}'s 8 paths, for example, carry 13 operations across the

@@ -17,9 +17,9 @@
 Chapter~\ref{ch:setup} fixed what was run: three models, seven scenarios,
 three frameworks, one sample per cell. This chapter asks what it shows.
 Rather than walking through every cell one at a time, it is organised
-around seven research questions that each aggregate across every cell,
+around six research questions that each aggregate across every cell,
 model, and scenario collected, closing with a synthesis that draws the
-seven answers together and connects them back to the thesis's central
+six answers together and connects them back to the thesis's central
 question (Section~\ref{sec:intro-missing}): \emph{can an LLM agent
 iteratively optimise the deployment configuration of a backend application
 on a Kubernetes cluster, guided by runtime performance feedback, to
@@ -210,8 +210,8 @@ trajectory then exhausted its budget, ending at $0$\,req/s despite having
 reached $3\times$ its own baseline just one iteration earlier. Unlike the
 dead baselines above, this cell began healthy; it failed only at the end
 of an otherwise successful trajectory, with no iterations remaining for
-recovery. Section~\ref{sec:results-rq7} discusses a milder case that
-recovers more slowly but before the budget is exhausted.
+recovery. Section~\ref{sec:results-case-studies} discusses a milder case
+that recovers more slowly but before the budget is exhausted.
 
 \paragraph{Interpretation.}
 Iterative refinement improves sustained goodput in essentially every cell
@@ -244,7 +244,7 @@ final iteration lands at zero despite an earlier healthy peak.
 
 % ----- §5.3 RQ2 -----
 \section{RQ2: Does the Load Profile Itself Locate Sustained Goodput
-  Efficiently and Reliably?}
+  Reliably and at Bounded Cost?}
 \label{sec:results-rq2}
 
 Every goodput number in this chapter, RQ1's included, comes from a single
@@ -256,12 +256,15 @@ recovery step, and a fine-grained refine search. This question validates the
 instrument rather than making a new claim about the systems it measures: if the
 profile locates sustained goodput slowly, inconsistently, or only across a
 narrow range of deployments, every other result in this chapter inherits that
-weakness silently. We ask it in four parts: how much wall-clock time the search
-costs, and where that time is spent across the four phases; how the refined
-estimate the profile reports relates to the peak goodput the explore phase
-observes on the way to it; how stable that estimate is when the same deployment
-is measured twice; and how often the profile reaches a usable estimate at all,
-given that it deliberately drives every deployment into overload at least once.
+weakness silently. We ask it in four parts, leading with the property that most
+directly validates the instrument: how stable the reported estimate is when the
+same deployment is measured twice; how the refined estimate the profile reports
+relates to the peak goodput the explore phase observes on the way to it; how
+often the profile reaches a usable estimate at all, given that it deliberately
+drives every deployment into overload at least once; and, last, how much
+wall-clock time the search costs and where that time is spent, reported as this
+instrument's own bounded overhead rather than as a comparison against a load
+profile we did not run.
 
 This question works one level below the rest of the chapter. Elsewhere,
 iterations are compared by the single goodput number each reports; here we look
@@ -271,31 +274,34 @@ bench stage, not only the 63 baseline runs, and is reconstructed entirely from
 the diagnostics each run already recorded, so it required no additional
 benchmarking.
 
-\paragraph{Efficiency.}
-Figure~\ref{fig:results-rq2-phase-durations} shows each phase's wall-clock
-duration across all parsed runs. The warm-up gate is fixed at 30\,s by
-construction. Explore is the dominant cost (median 244\,s, IQR 157--341\,s, up
-to 588\,s), consistent with its being the phase that sweeps the widest range of
-load levels. Recovery is cheap and usually settles on the first attempt (median
-45\,s, IQR 45--46\,s, matching the profile's 45\,s settle window). Refine costs
-less than explore despite being the more careful search (median 62\,s, IQR
-41--105\,s), because its efficiency-scaled step size shrinks automatically as
-the deployment nears its ceiling. A complete run takes a median of 402\,s (IQR
-303--513\,s, maximum 1{,}154\,s), comfortably inside the profile's 30-minute
-(1{,}800\,s) budget in every one of the 632 runs: the search consistently
-terminates on its own phase-completion criteria, not because the time budget
-forced it to stop.
+\paragraph{Repeatability.}
+The most direct test of a measurement instrument is whether it returns the same
+value when it measures the same deployment twice. To probe that, each fixed
+candidate was re-measured in a deploy-only re-verification that repeats the
+benchmark without changing the application code or its deployment. Across the
+candidates measured in both runs, the estimate is typically very stable: the
+symmetric difference between the two measurements has a median of $0\%$ and a
+mean of $7.1\%$, with per-model medians of $3.4\%$ for \texttt{claude-opus-4-8},
+$0.5\%$ for \texttt{gpt-5.5}, and $0\%$ for \texttt{glm-5.2}.
 
-\begin{figure}[htbp]
-  \centering
-  \includegraphics[width=0.72\linewidth]{figures/eval/load_profile_phase_durations.pdf}
-  \caption{Wall-clock duration by load-profile phase, across all 632
-    individual bench runs in this dataset (log scale; warm-up is
-    effectively fixed at 30\,s by construction).}
-  \label{fig:results-rq2-phase-durations}
-\end{figure}
+This stability is not uniform across the study, and the reason is instructive.
+Part-way through data collection, a network-path change moved the benchmark
+traffic onto the isolated experiment LAN. Candidates measured before that change
+repeat far less tightly than those measured after it: for the re-run candidates,
+the median symmetric difference falls from $10.8\%$ before the change to $2.6\%$
+after it, with the pre-change tail reaching several hundred percent on
+individual candidates. The run-to-run noise this paragraph is meant to quantify
+is therefore dominated by an environmental confound that was corrected during
+the study rather than by the search strategy itself, which is a caveat on the
+absolute goodput levels of the earliest runs. These figures are provisional in
+one further respect: the re-verification does not yet cover every candidate, and
+the pre-change runs were not themselves repeated, so the before/after contrast
+is consistent with the network confound without isolating it as the sole cause.
+Completing the re-verification set is what remains to settle the numbers.
 
-\paragraph{Accuracy.}
+\paragraph{Internal consistency.}
+Repeatability concerns the reported estimate across runs; a second check looks
+within a single run, at how the profile's own two internal estimates relate.
 Restricted to the 479 runs that report a positive sustained-goodput estimate,
 that estimate spans 287\,req/s to 96{,}925\,req/s, more than two orders of
 magnitude, which is the range the exponential explore ramp is built for: a
@@ -325,32 +331,6 @@ already trustworthy.
     recorded explore peak.}
   \label{fig:results-rq2-peak-vs-sustained}
 \end{figure}
-
-\paragraph{Repeatability.}
-Accuracy so far concerns the profile's two internal estimates within a single
-run; it says nothing about how stable the reported estimate is when the same
-deployment is measured twice. To probe that, each fixed candidate was
-re-measured in a deploy-only re-verification that repeats the benchmark without
-changing the application code or its deployment. Across the candidates measured
-in both runs, the estimate is typically very stable: the symmetric difference
-between the two measurements has a median of $0\%$ and a mean of $7.1\%$, with
-per-model medians of $3.4\%$ for \texttt{claude-opus-4-8}, $0.5\%$ for
-\texttt{gpt-5.5}, and $0\%$ for \texttt{glm-5.2}.
-
-This stability is not uniform across the study, and the reason is instructive.
-Part-way through data collection, a network-path change moved the benchmark
-traffic onto the isolated experiment LAN. Candidates measured before that change
-repeat far less tightly than those measured after it: for the re-run candidates,
-the median symmetric difference falls from $10.8\%$ before the change to $2.6\%$
-after it, with the pre-change tail reaching several hundred percent on
-individual candidates. The run-to-run noise this paragraph is meant to quantify
-is therefore dominated by an environmental confound that was corrected during
-the study rather than by the search strategy itself, which is a caveat on the
-absolute goodput levels of the earliest runs. These figures are provisional in
-one further respect: the re-verification does not yet cover every candidate, and
-the pre-change runs were not themselves repeated, so the before/after contrast
-is consistent with the network confound without isolating it as the sole cause.
-Completing the re-verification set is what remains to settle the numbers.
 
 \paragraph{Reliability and robustness.}
 Table~\ref{tab:results-rq2-funnel} follows all 632 runs through the four gates
@@ -397,32 +377,66 @@ genuinely unhealthy or regressed deployment (Section~\ref{sec:results-rq1}'s
 dead baselines and late regressions) would be expected to show up
 regardless of which load profile measured it.
 
+\paragraph{Bounded cost.}
+The last property to check is what the search costs, taken here as the
+instrument's own overhead rather than as a speed comparison against a profile
+this study did not run. Figure~\ref{fig:results-rq2-phase-durations} shows each
+phase's wall-clock duration across all parsed runs. The warm-up gate is fixed at
+30\,s by construction. Explore is the dominant cost (median 244\,s, IQR
+157--341\,s, up to 588\,s), consistent with its being the phase that sweeps the
+widest range of load levels. Recovery is cheap and usually settles on the first
+attempt (median 45\,s, IQR 45--46\,s, matching the profile's 45\,s settle
+window). Refine costs less than explore despite being the more careful search
+(median 62\,s, IQR 41--105\,s), because its efficiency-scaled step size shrinks
+automatically as the deployment nears its ceiling. A complete run takes a median
+of 402\,s (IQR 303--513\,s, maximum 1{,}154\,s), comfortably inside the profile's
+30-minute (1{,}800\,s) budget in every one of the 632 runs: the search
+consistently terminates on its own phase-completion criteria, not because the
+time budget forced it to stop.
+
+\begin{figure}[htbp]
+  \centering
+  \includegraphics[width=0.72\linewidth]{figures/eval/load_profile_phase_durations.pdf}
+  \caption{Wall-clock duration by load-profile phase, across all 632
+    individual bench runs in this dataset (log scale; warm-up is
+    effectively fixed at 30\,s by construction).}
+  \label{fig:results-rq2-phase-durations}
+\end{figure}
+
 \paragraph{Interpretation.}
-The profile costs a median of under seven minutes per run, well inside its
-budget, and spends that time roughly where the mechanism design predicts: most
-on the wide, aggressive explore search, least on the narrow, efficiency-gated
-refine search. Its refined estimate is usually, but not always, below the
-transient peak the explore phase observes, and the exception, refine settling
-\emph{above} explore's peak in about a quarter of runs, is itself informative:
-it shows that the coarse explore ramp can be fooled by a single latency spike
-into stopping short of what a deployment can sustain, and that recovery and
-refine do real corrective work rather than conservatively discounting a number
-the profile already trusts. Three in four runs produce a usable estimate; of
-those that do not, most fail at a stage (recovery or refine) that plausibly
-reflects the deployment's own health rather than the search strategy.
+Taken together, these checks describe a usable measurement instrument. Where the
+same candidate has been re-measured, the estimate is stable to within a few
+percent once the mid-study network confound is separated out, so the reported
+number is largely reproducible rather than a single noisy draw. Its refined
+estimate is usually, but not always, below the transient peak the explore phase
+observes, and the exception, refine settling \emph{above} explore's peak in
+about a quarter of runs, is itself informative: it shows that the coarse explore
+ramp can be fooled by a single latency spike into stopping short of what a
+deployment can sustain, and that recovery and refine do real corrective work
+rather than conservatively discounting a number the profile already trusts.
+Three in four runs produce a usable estimate; of those that do not, most fail at
+a stage (recovery or refine) that plausibly reflects the deployment's own health
+rather than the search strategy. All of this comes at a bounded cost: a median
+run under seven minutes that always terminates on its own criteria, spent
+roughly where the mechanism design predicts, most on the wide, aggressive
+explore search and least on the narrow, efficiency-gated refine search. No
+alternative load profile (a fixed-step staircase, for instance) was run on this
+dataset, so these durations describe this instrument's own overhead rather than
+support a comparative claim against another search strategy;
+Section~\ref{sec:conclusion-future-work} returns to that gap.
 
 \paragraph{Conclusion.}
-\textbf{Yes, with repeatability still provisional.} The profile locates
-sustained goodput efficiently, a median run costing under seven minutes and
-never exhausting its budget, and it is robust enough to survive and recover from
-the overload it deliberately induces in the large majority of runs ($85.6\%$
-recovery success after an explore-stop, $75.8\%$ of all runs reaching a positive
-estimate). Its refined estimate is not simply a discounted explore peak: it
-settles below the peak when the peak was optimistic and above it when the peak
-undersold the deployment. Where the same candidate has been re-measured, the
-estimate is stable to within a few percent once the mid-study network confound
-is accounted for; confirming that across the full re-verification set is the one
-part of this question that remains open.
+\textbf{Yes, with repeatability still provisional.} The profile is robust enough
+to survive and recover from the overload it deliberately induces in the large
+majority of runs ($85.6\%$ recovery success after an explore-stop, $75.8\%$ of
+all runs reaching a positive estimate), and its refined estimate is not simply a
+discounted explore peak: it settles below the peak when the peak was optimistic
+and above it when the peak undersold the deployment. Where the same candidate has
+been re-measured, the estimate is stable to within a few percent once the
+mid-study network confound is accounted for; confirming that across the full
+re-verification set is the one part of this question that remains open. All of
+this holds at a bounded, predictable wall-clock cost, a median run under seven
+minutes that never exhausts its budget.
 
 
 % ----- §5.4 RQ3 -----
@@ -435,12 +449,12 @@ Across all three models, the decision stage chose \textbf{code} refinement
 Table~\ref{tab:results-rq3-funnel} breaks this down by model: of the 327
 code choices, 48 ($14.7\%$) failed outright before ever reaching a bench
 measurement (non-compiling code, failing functional tests, and the other
-kinds Section~\ref{sec:results-rq7} catalogues in detail); of the 302 spec
+kinds Section~\ref{sec:results-rq6} catalogues in detail); of the 302 spec
 choices, only 12 ($4.0\%$) did. That gap is not uniform across models. For
 \texttt{glm-5.2}, code refinement fails outright more than a quarter of
 the time (30 of 110, $27.3\%$), by far the highest rate in this table and
 driven almost entirely by the \textsc{Rust-Actix} compile failures
-Section~\ref{sec:results-rq7} documents, while its own spec lever fails
+Section~\ref{sec:results-rq6} documents, while its own spec lever fails
 only $6.1\%$ of the time. \texttt{gpt-5.5} shows the same direction at a
 smaller scale ($14.2\%$ code vs.\ $1.0\%$ spec). \texttt{claude-opus-4-8}
 is the one model where the two levers fail at comparable, low rates
@@ -451,7 +465,7 @@ still pays off once it does complete is addressed below.
 \begin{table}[htbp]
   \centering
   \caption{Refinement steps chosen by the decision stage, by model and
-    lever: how many failed outright (Section~\ref{sec:results-rq7}) versus
+    lever: how many failed outright (Section~\ref{sec:results-rq6}) versus
     completed and reached a bench measurement.}
   \label{tab:results-rq3-funnel}
   \small
@@ -564,31 +578,43 @@ strictly positive and their geometric mean is undefined.}
 model.} Restricted to the clean population, the typical (median) step is
 still modest for both levers (code $+3.6\%$, spec $+3.0\%$), but the code
 \emph{mean} is pulled well above its own median by a handful of large
-recoveries, single-step jumps of up to $+334.9\%$ (\texttt{gpt-5.5}),
-$+259.7\%$ (\texttt{glm-5.2}), and $+259.5\%$ (\texttt{claude-opus-4-8}),
-where a code change fixed a latent correctness or connection-handling bug
-that no amount of replica or resource tuning could have addressed. Code
+single-step jumps, up to $+334.9\%$ (\texttt{gpt-5.5}), $+259.7\%$
+(\texttt{glm-5.2}), and $+259.5\%$ (\texttt{claude-opus-4-8}), where a
+code change fixed a latent correctness or connection-handling bug that no
+amount of replica or resource tuning could have addressed. Code
 refinement's mean exceeds deployment refinement's for every model:
 \texttt{claude-opus-4-8} ($+17.5\%$ vs.\ $+16.4\%$, closely),
 \texttt{gpt-5.5} ($+30.5\%$ vs.\ $+7.9\%$), and \texttt{glm-5.2} ($+30.7\%$
-vs.\ $+9.5\%$). \texttt{glm-5.2} edges out \texttt{gpt-5.5} for the
-highest code mean of the three, but the two are close ($+30.7\%$ vs.\
-$+30.5\%$) and \texttt{glm-5.2}'s figure rests on little more than half
-the sample ($n=37$ vs.\ $n=67$), so this ordering should be read as a
-near-tie rather than a settled ranking.
+vs.\ $+9.5\%$), \texttt{gpt-5.5} and \texttt{glm-5.2} landing within
+$0.2$ points of each other despite \texttt{glm-5.2}'s figure resting on
+little more than half the sample ($n=37$ vs.\ $n=67$).
+Figure~\ref{fig:results-code-vs-spec} shows why: for every model, code's
+points cluster near zero with a handful of individual steps clearly
+separated above the rest, the same large jumps listed above, whereas
+deployment refinement's points are more continuously spread and never
+reach nearly as high, its largest single value across all three models
+($+167.5\%$, \texttt{claude-opus-4-8}) still sits below code's
+\emph{third}-largest value alone ($+259.5\%$). It is that small set of
+isolated code outliers, not a broadly higher typical step, that decides
+the code-mean ranking, which is why \texttt{gpt-5.5} and \texttt{glm-5.2}
+landing within $0.2$ points of each other is incidental rather than a
+meaningful difference between the two.
 
 \paragraph{Interpretation.}
 This supports the framework's decision to keep code and deployment
 refinement mutually exclusive per iteration
-(Section~\ref{sec:methods-workflow}): the two levers act on genuinely
-different failure classes. Code refinement does more of the heavy lifting
-for correctness-adjacent bottlenecks, the same class of bug BaxBench's
-original single-container evaluation cannot even observe, since it never
-applies load (Section~\ref{sec:rw-benchmarks}), but it is also the
-riskier choice in the sense of failing outright before ever producing a
+(Section~\ref{sec:methods-workflow}): the two levers trade off gain
+against risk in opposite directions. Code refinement tends to produce
+the larger throughput increases, since a meaningful share of them come
+from untangling a correctness-adjacent bottleneck, the same class of bug
+BaxBench's original single-container evaluation cannot even observe,
+since it never applies load (Section~\ref{sec:rw-benchmarks}), but that
+comes at the cost of failing outright more often, before ever producing a
 comparison (Table~\ref{tab:results-rq3-funnel}), especially for
-\texttt{glm-5.2} on \textsc{Rust-Actix}. Deployment refinement fails
-outright far less often, but is not risk-free once it does run: every
+\texttt{glm-5.2} on \textsc{Rust-Actix}. Deployment refinement instead
+tends toward smaller, more gradual improvements and fails outright far
+less often, so it is the lower-risk lever in that specific sense, but it
+is not risk-free once it does run: every
 model has spec steps that collapse a working deployment to zero goodput
 (Table~\ref{tab:results-rq3-boundary}), and
 Section~\ref{sec:results-rq1}'s \textsc{BranchWeave}$\times$\textsc{Rust-Actix}
@@ -601,9 +627,7 @@ refinement (14.7\% vs.\ 4.0\% of chosen steps, pooled), but once a step
 completes and both its predecessor and successor are non-zero, code
 refinement's mean exceeds deployment refinement's for every model.}
 Deployment refinement is smaller on both median and mean throughout this
-clean comparison, though for every model it remains positive on average,
-not the net-negative lever a version of this table that folded
-zero-goodput collapses into the mean would have shown. What role the
+clean comparison, for every model. What role the
 higher outright-failure rate and the collapse/recovery imbalance
 (Table~\ref{tab:results-rq3-boundary}) should play in an overall
 risk comparison between the two levers is not settled by this section
@@ -611,124 +635,118 @@ alone.
 
 
 % ----- §5.5 RQ4 -----
-\section{RQ4: How Cost-Effective Is Each Model, and Is the Ranking Robust?}
+\section{RQ4: Does Task Complexity Explain Which Scenarios Are Harder to Optimise?}
 \label{sec:results-rq4}
 
 \paragraph{Evidence.}
-All three evaluated models are frontier-tier and comparatively expensive
-per call, and coverage reflects that: every one of the 63 cells reaches a
-working baseline and completes its full ten-iteration budget, for all
-three models. This is plausibly a property of model strength rather than
-of the framework itself; smaller or cheaper models tried in preliminary
-testing did occasionally fail to produce a working baseline at all. With
-completion equal across the board, RQ1 already reports the headline
-ranking on goodput alone: \texttt{gpt-5.5}'s geometric-mean best-iteration
-goodput ($32{,}817$\,req/s) is roughly double \texttt{claude-opus-4-8}'s
-($13{,}382$) and \texttt{glm-5.2}'s ($12{,}630$), which are close to each
-other (Table~\ref{tab:results-rq1-summary},
-Figure~\ref{fig:results-baseline-vs-best}). What RQ1 does not settle is
-whether that ranking still holds once what each model \emph{costs} to
-reach it is taken into account, or whether it is an artefact of which
-scenarios each model happened to help build; those are this section's two
-questions.
-
-\paragraph{Cost-effectiveness.}
-Despite comparable per-cell iteration budgets
-(Section~\ref{sec:setup-procedure}), the three models differ substantially
-in measured LLM spend (Table~\ref{tab:setup-model-cost}): partly a direct
-consequence of the per-token rates of Table~\ref{tab:setup-model-config},
-partly of how differently each model uses its context (turn length, retry
-rate, cache-hit ratio).
+Every scenario receives the same nine cells (three models $\times$ three
+frameworks; Chapter~\ref{ch:setup}), so any difference in difficulty
+between two scenarios cannot be attributed to one scenario drawing an
+easier model or framework mix: model and framework are held constant
+across the comparison. Section~\ref{sec:setup-scenarios} and
+Table~\ref{tab:appendix-scenarios} already record each scenario's static
+complexity, its endpoint count and functional-test count. This section
+asks whether that static complexity predicts three empirical difficulty
+signals pooled from the same nine cells: how often the baseline already
+starts healthy, how often an iteration fails outright
+(Section~\ref{sec:results-rq6}), and how much headroom is left for
+refinement to find once something works (the best-over-first-positive
+gain used elsewhere in this chapter). Table~\ref{tab:results-rq4-scenario}
+reports all three alongside the endpoint and functional-test counts.
 
 \begin{table}[htbp]
   \centering
-  \caption{Measured LLM spend per model, over all 21 cells per model, and
-    best-iteration goodput achieved per dollar spent (geometric-mean best
-    goodput from Table~\ref{tab:results-rq1-summary}, divided by spend
-    per cell).}
-  \label{tab:setup-model-cost}
+  \caption{Per-scenario difficulty signals, pooled over each scenario's
+    nine cells (three models $\times$ three frameworks). Endpoints and
+    functional tests (FTs) are the static counts of
+    Table~\ref{tab:appendix-scenarios}. Failures are all recorded
+    iteration-level failures for that scenario
+    (Section~\ref{sec:results-rq6}); zero-end is the number of cells whose
+    final iteration reports zero goodput; median gain is the median
+    best-over-first-positive-goodput ratio ($n=8$ for the two scenarios
+    with a cell that never records positive goodput, $n=9$ otherwise).}
+  \label{tab:results-rq4-scenario}
   \small
-  \begin{tabular}{@{}lrrrr@{}}
+  \begin{tabular}{@{}lrrrrrr@{}}
     \toprule
-    \textbf{Model} & \textbf{Total spend} & \textbf{Cells} & \textbf{Spend / cell} & \textbf{Best goodput / \$} \\
+    \textbf{Scenario} & \textbf{Endpoints} & \textbf{FTs} & \textbf{Healthy /9} & \textbf{Failures} & \textbf{Zero-end} & \textbf{Median gain} \\
     \midrule
-    \texttt{gpt-5.5}         & \$144.21 & 21 & \$6.87 & 4{,}777 \\
-    \texttt{claude-opus-4-8} & \$133.61 & 21 & \$6.36 & 2{,}104 \\
-    \texttt{glm-5.2}         & \$28.49  & 21 & \$1.36 & 9{,}287 \\
+    \textsc{ClickCount}    & 2 & 1 & 5 & 6  & 1 & $13.99\times$ \\
+    \textsc{Recipes}       & 5 & 1 & 6 & 5  & 1 & $2.79\times$ \\
+    \textsc{BranchWeave}   & 5 & 5 & 7 & 16 & 2 & $1.62\times$ \\
+    \textsc{Petstore}      & 8 & 3 & 2 & 15 & 0 & $1.09\times$ \\
+    \textsc{ParcelPinLockerPickup} & 6 & 4 & 5 & 7 & 3 & $1.84\times$ \\
+    \textsc{SplitNestSharedExpenseLedger} & 6 & 4 & 6 & 7 & 1 & $2.04\times$ \\
+    \textsc{TransitPulseDelayReporter}    & 5 & 3 & 5 & 5 & 1 & $3.41\times$ \\
     \bottomrule
   \end{tabular}
 \end{table}
 
-Normalising achieved goodput by what it cost to reach reorders the RQ1
-ranking rather than just softening it. \texttt{glm-5.2} delivers roughly
-$9{,}287$\,req/s of best-iteration goodput per dollar spent,
-\texttt{gpt-5.5} roughly $4{,}777$, and \texttt{claude-opus-4-8} roughly
-$2{,}104$: \texttt{glm-5.2} is about $1.9\times$ more cost-effective than
-\texttt{gpt-5.5} and $4.4\times$ more cost-effective than
-\texttt{claude-opus-4-8}, which trails on this measure despite sitting in
-the middle of the raw-goodput ranking. Two comparisons drive the ordering.
-\texttt{gpt-5.5} reaches roughly double the geometric-mean goodput of the
-other two at a per-cell cost within 8\% of \texttt{claude-opus-4-8}'s, so
-its higher achieved goodput is not simply bought with proportionally
-higher spend; that is enough to keep it well ahead of
-\texttt{claude-opus-4-8} on cost-effectiveness despite the latter's lower
-absolute cost. \texttt{glm-5.2} reaches essentially the same
-geometric-mean goodput as \texttt{claude-opus-4-8} ($12{,}630$ vs.\
-$13{,}382$) at under a fifth of the cost per cell (\$1.36 vs.\ \$6.36),
-which is what pushes it to the top of the cost-effectiveness ranking
-despite trailing both other models on raw goodput.
+\paragraph{Endpoint count alone does not predict difficulty.}
+\textsc{Petstore} has both the largest surface (8 endpoints, 13
+operations) and the fewest healthy baselines out of the box (2 of 9), so
+more surface plausibly does give the agent more chances to get something
+wrong on the first attempt. But \textsc{ClickCount}, the smallest surface
+in the dataset at 2 endpoints, still starts dead in 4 of its 9 cells,
+essentially the same rate as scenarios with two or three times its
+endpoint count; a trivial API is not automatically an easy one to get
+right on the first try. The two scenarios also diverge sharply on the
+other end of a trajectory: \textsc{Petstore}'s cells, once they do reach
+a working state, have the least headroom left for refinement to find
+(median $1.09\times$, barely above baseline), while \textsc{ClickCount}'s
+have by far the most ($13.99\times$), consistent with the single
+$75.4\times$ explore-vs-refine outlier RQ2 already reports on this same
+scenario (Section~\ref{sec:results-rq2}). A naive two-endpoint
+implementation, once healthy, is often far from its own ceiling; a
+naive eight-endpoint one, once healthy, tends to already be close to it.
 
-\paragraph{Robustness: scenario provenance.}
-One threat to the RQ1 ranking is that \texttt{gpt-5.5} drove the
-construction pipeline for four of the seven scenarios
-(Section~\ref{sec:setup-scenarios}), and \texttt{glm-5.2} supplied part
-of the reference-implementation set their tests were calibrated against,
-so either model might be expected to hold an advantage on the artifacts
-it helped produce. The data does not bear this out. Splitting each
-model's cells into the three \emph{original} \textsc{BaxBench} scenarios
-and the four generated ones, \texttt{gpt-5.5}'s geometric-mean best
-goodput leads the other two models by roughly $3.3$--$3.4\times$ on the
-original scenarios it did \emph{not} author, against only about
-$2.0$--$2.2\times$ on the four it did: its margin is larger precisely
-where the provenance concern does not apply. All three models reach
-higher goodput on the generated scenarios than on the original ones, and
-\texttt{gpt-5.5} gains the \emph{smallest} relative increase of the three
-in doing so, the opposite of what a scenario-authoring advantage would
-predict. \texttt{glm-5.2} contributed only one of three reference
-implementations, never acted as a scoring oracle, and is not a top scorer
-on either subset, so its calibration role does not appear to confer a
-scoring advantage either. These splits rest on the same single-sample
-cells as the rest of the chapter (nine original and twelve generated per
-model) and are indicative rather than conclusive, but they give no sign
-that provenance, rather than model capability, drives the ranking.
+\paragraph{Failure kind, not just failure count, separates the two hardest scenarios.}
+\textsc{BranchWeave} and \textsc{Petstore} have the two highest failure
+counts (16 and 15), but for different reasons, and their composition
+matters more than the raw totals. Some of this is definitional:
+\textsc{BranchWeave} also has the most functional tests of the seven (5,
+against 1--4 for the rest), so it mechanically has more ways to be marked
+\texttt{functional\_test}-failed, and indeed 11 of its 16 failures
+(69\%) are exactly that single kind, concentrated in the graph-shaped,
+stateful playthrough logic the scenario exercises
+(Section~\ref{sec:setup-scenarios}). \textsc{BranchWeave} is also the
+only scenario with cells that end the iteration budget at zero goodput
+after starting healthy (2 of 9), the pathological late-regression
+behaviour Section~\ref{sec:results-rq1} traces to specific
+\textsc{Rust-Actix} cells. \textsc{Petstore}'s failures, by contrast,
+spread across six of the eight recorded failure kinds
+(\texttt{functional\_test}, \texttt{docker\_build}, \texttt{llm\_call},
+\texttt{llm\_parse}, \texttt{timeout}, \texttt{unknown}), with no single
+kind dominating, and none of its cells end at zero. That pattern reads as
+broad-based fragility from a large, multi-resource API surface rather
+than one specific logic class going wrong, whereas \textsc{BranchWeave}'s
+difficulty is narrower and traces to one identifiable behavioural class.
 
 \paragraph{Interpretation.}
-Cost reorders part of the RQ1 ranking rather than confirming it outright.
-\texttt{gpt-5.5} is still the strongest model in absolute terms, achieving
-the highest goodput without a proportionally higher cost, but
-\texttt{glm-5.2}, the weakest of the three on raw goodput, is the
-strongest once cost is accounted for, matching \texttt{claude-opus-4-8}'s
-achieved goodput at a fraction of its price and leaving
-\texttt{claude-opus-4-8} last on cost-effectiveness despite its middling
-raw-goodput rank. That reordering is not an artefact of which scenarios
-each model happened to help build: splitting cells by provenance leaves
-\texttt{gpt-5.5}'s margin intact, if anything larger on the scenarios it
-did not author, and \texttt{glm-5.2}'s calibration role shows no
-comparable scoring advantage either. Neither ranking is about
-reliability: every model evaluated here completed every cell it was
-given.
+Static complexity is informative but not sufficient on its own: it
+correlates loosely with how often a baseline starts healthy, not at all
+with how much headroom refinement finds, and only partly (and partly by
+construction) with how often iterations fail. The two hardest scenarios
+by failure count, \textsc{BranchWeave} and \textsc{Petstore}, are hard in
+different, identifiable ways, one concentrated in a specific behavioural
+class, the other spread across nearly every failure category, which a
+single complexity number would not distinguish. \textsc{ClickCount} and
+\textsc{TransitPulseDelayReporter}, the two scenarios with the fewest
+failures, are the most reliable to push through the loop, but only
+\textsc{ClickCount} also leaves substantial goodput on the table for
+refinement to recover, so "easy" and "has headroom left" are not the
+same property either.
 
 \paragraph{Conclusion.}
-\textbf{The three models do not differ in completion reliability, but
-they differ meaningfully in cost-effectiveness, and the resulting
-ordering is not an artefact of who built the scenarios.}
-\texttt{gpt-5.5} delivers the highest absolute throughput without
-costing proportionally more; \texttt{glm-5.2} delivers comparable
-throughput to \texttt{claude-opus-4-8} at a small fraction of the price,
-making it the most cost-effective of the three overall. Which of these
-matters more depends on whether the deployment is throughput-constrained
-or budget-constrained, not on which model is more capable in some single
-sense.
+\textbf{Task complexity by endpoint count alone does not explain which
+scenarios are harder to optimise.} Functional-test depth and failure-kind
+composition track difficulty better than raw surface size, and difficulty
+itself splits into at least two independent axes that do not move
+together: how often a baseline starts healthy, and how much headroom is
+left once it does. \textsc{Petstore} is hardest to start but leaves the
+least behind; \textsc{BranchWeave} starts easily but carries this
+dataset's sharpest regression risk; \textsc{ClickCount} is trivial to
+build yet the most rewarding to refine.
 
 
 % ----- §5.6 RQ5 -----
@@ -746,40 +764,41 @@ sense.
 \end{figure}
 
 \paragraph{Evidence.}
-Every model has seven-of-seven coverage on every framework except two
-cells that never reach positive goodput (\texttt{glm-5.2}'s
+Figure~\ref{fig:results-framework-comparison} shows full seven-scenario
+coverage on every framework for every model, with two exceptions that
+never reach positive goodput (\texttt{glm-5.2}'s
 \textsc{TransitPulseDelayReporter}$\times$\textsc{Go-net-http} and
 \texttt{claude-opus-4-8}'s \textsc{ClickCount}$\times$\textsc{Python-Flask},
-both already excluded in Section~\ref{sec:results-rq1}), so all but two of
-the nine per-model framework geometric means rest on seven cells, those
-two on six. \textsc{Go-net-http} reaches the highest geometric-mean
-goodput for \emph{every} model: $28{,}170.1$\,req/s for
-\texttt{claude-opus-4-8}, $51{,}626.2$ for \texttt{gpt-5.5}, $17{,}167.7$
+both already excluded in Section~\ref{sec:results-rq1}). All but two of
+the nine per-model framework geometric means therefore rest on seven cells,
+those two on six.
+
+\textsc{Go-net-http} reaches the highest geometric-mean
+goodput for \emph{every} model: $28{,}170$\,req/s for
+\texttt{claude-opus-4-8}, $51{,}626$ for \texttt{gpt-5.5}, $17{,}168$
 for \texttt{glm-5.2}. Below that, the ordering is not consistent. For
 \texttt{gpt-5.5} and \texttt{glm-5.2}, \textsc{Rust-Actix} is second
-($40{,}870.9$ and $12{,}485.4$) ahead of \textsc{Python-Flask}
-($16{,}749.4$ and $9{,}820.8$). For \texttt{claude-opus-4-8} the order
-inverts: \textsc{Python-Flask} ($10{,}465.7$) is \emph{ahead} of
-\textsc{Rust-Actix} ($7{,}847.5$), the lowest framework geometric mean for
+($40{,}871$ and $12{,}485$) ahead of \textsc{Python-Flask}
+($16{,}749$ and $9{,}821$). For \texttt{claude-opus-4-8} the order
+inverts: \textsc{Python-Flask} ($10{,}466$) is \emph{ahead} of
+\textsc{Rust-Actix} ($7{,}848$), the lowest framework geometric mean for
 any model in this dataset.
 
-That inversion is not simply ``\textsc{Python-Flask} is the slow one
-here'': two of \texttt{claude-opus-4-8}'s seven \textsc{Rust-Actix} cells
-are exceptionally low, \textsc{Petstore} at $286.7$\,req/s and
-\textsc{ClickCount} at $2{,}916.9$, both cells whose trajectory never
-improves past its first success (\textsc{Petstore}$\times$\textsc{Rust-Actix}
-shows the same $1.0\times$ stall for \texttt{gpt-5.5} too, at a far higher
-absolute goodput of $27{,}853$\,req/s); the other five \textsc{Rust-Actix}
-cells are in the same range as \texttt{claude-opus-4-8}'s other
-frameworks. A geometric mean is considerably more sensitive to a couple
-of low values than a median over the same seven cells, which is exactly
-why this pattern did not show up under a median-based version of this
-comparison.
+That inversion does not mean \textsc{Python-Flask} is genuinely the faster
+framework here. It is driven mainly by two of \texttt{claude-opus-4-8}'s
+seven \textsc{Rust-Actix} cells being exceptionally low, \textsc{Petstore}
+at $287$\,req/s and \textsc{ClickCount} at $2{,}917$; the trajectory of
+both cells never improves past its first success
+(\textsc{Petstore}$\times$\textsc{Rust-Actix} shows the same $1.0\times$
+stall for \texttt{gpt-5.5} too, at a far higher absolute goodput of
+$27{,}853$\,req/s). The other five \textsc{Rust-Actix} cells are in the
+same range as \texttt{claude-opus-4-8}'s other frameworks, and the
+geometric mean is very sensitive to a couple of low values.
 
 \paragraph{Interpretation.}
-\textsc{Go-net-http} setting the highest ceiling for every model is now a
-clean, model-independent finding. What is model-dependent is not which
-framework is \emph{best}, but which is \emph{worst}: for \texttt{gpt-5.5}
+\textsc{Go-net-http} sets the highest ceiling for every model. What is
+model-dependent is not which framework is \emph{best}, but which is
+\emph{worst}: for \texttt{gpt-5.5}
 and \texttt{glm-5.2}, \textsc{Python-Flask}'s single-process WSGI ceiling
 under \texttt{gunicorn} is the limiting factor; for \texttt{claude-opus-4-8},
 two specific \textsc{Rust-Actix} cells that stall at their first
@@ -789,7 +808,7 @@ cells are unremarkable. This is a property of the underlying data, not an
 artefact of the statistic used to summarise it, but \emph{which}
 statistic is used determines whether it is visible at all: a robust
 central-tendency measure such as a median can hide exactly the kind of
-collapse this thesis's RQ7 failure analysis is otherwise built to
+collapse this thesis's RQ6 failure analysis is otherwise built to
 surface.
 
 \paragraph{Conclusion.}
@@ -804,113 +823,35 @@ model.
 
 
 % ----- §5.7 RQ6 -----
-\section{RQ6: What Deployment Parameters Does the Agent Converge To?}
+\section{RQ6: Prominent Failure Sources}
 \label{sec:results-rq6}
-
-\paragraph{Evidence.}
-Spec prompts intentionally omit recommended numeric ranges
-(Section~\ref{sec:methods-spec}), so any sensible-looking convergence in
-\texttt{backend.replicas}, per-pod resource requests, or database
-topology is evidence the agent is reading load-test and utilisation
-feedback rather than falling back on defaults. The clearest example
-remains \texttt{gpt-5.5} on \textsc{ClickCount}$\times$\textsc{Go-net-http},
-whose $75.4\times$ gain (baseline $1{,}285.1$\,req/s to best
-$96{,}924.9$\,req/s) is the single largest in this dataset:
-
-\begin{table}[htbp]
-  \centering
-  \caption{Spec-knob trajectory for \texttt{gpt-5.5}, \textsc{ClickCount},
-    \textsc{Go-net-http} (selected iterations).}
-  \label{tab:results-rq6-clickcount}
-  \footnotesize
-  \begin{tabular}{@{}rrrrrrr@{}}
-    \toprule
-    Iter.\ & Lever & Goodput (req/s) & Replicas & CPU req.\ & DB repl.\ & DB max\_conn \\
-    \midrule
-    000 & baseline & 1{,}285.1  & 48  & 1000m & 3 & 500 \\
-    006 & code     & 23{,}670.6 & 48  & 1000m & 3 & 500 \\
-    007 & spec     & 23{,}640.9 & 192 & 350m  & 1 & 300 \\
-    008 & code     & 90{,}653.8 & 192 & 350m  & 1 & 300 \\
-    009 & spec     & 91{,}392.6 & 320 & 250m  & 1 & 500 \\
-    010 & code     & 96{,}924.9 & 320 & 250m  & 1 & 500 \\
-    \bottomrule
-  \end{tabular}
-\end{table}
-
-Between iterations 006 and 010, the agent roughly \emph{sextuples}
-replica count (48 $\to$ 320) while \emph{quartering} per-pod CPU request
-(1000m $\to$ 250m), trading a few large pods for many small ones, and
-drops database replicas from 3 to 1. For a scenario whose endpoints are a
-near-stateless counter increment (Section~\ref{sec:setup-scenarios}),
-this is the correct qualitative direction: per-request CPU cost is
-negligible, so raw horizontal fan-out beats per-pod headroom, and the
-extra Postgres read replicas the baseline provisioned were never
-load-bearing. \texttt{glm-5.2} shows the same qualitative direction on its
-own \textsc{ClickCount}$\times$\textsc{Go-net-http} cell, one of its
-largest observed gains in this dataset ($14.9\times$), though a full
-knob-by-knob trajectory is not reproduced here.
-
-Not every spec-refinement decision pays off, however:
-Section~\ref{sec:results-rq7} gives a case where the stated rationale is
-reasonable but the resulting deployment regresses to zero goodput, and RQ3
-above shows this is not a one-off: \texttt{glm-5.2}'s spec-refinement
-steps collapse a working deployment to zero goodput 12 times across the
-study, the most of any model/lever combination
-(Table~\ref{tab:results-rq3-boundary}), and \texttt{claude-opus-4-8}'s
-\textsc{BranchWeave}$\times$\textsc{Rust-Actix} cell
-(Section~\ref{sec:results-rq1}) shows the same failure mode ending a
-trajectory outright rather than just dipping mid-way through it.
-
-\paragraph{Interpretation.}
-Where the agent has enough successful iterations to work with, its
-\texttt{spec.yaml} trajectory tracks the workload's actual scaling
-characteristics rather than converging on generic defaults, which is the
-behaviour the constrained-schema design of Section~\ref{sec:methods-design}
-was intended to elicit. That the two models with the largest observed
-gains (\texttt{gpt-5.5} and \texttt{glm-5.2}) both reach it on the same
-scenario, via qualitatively similar knob movements, is stronger evidence
-than a single case study that this reflects the workload's actual scaling
-shape rather than one model's idiosyncratic behaviour.
-
-\paragraph{Conclusion.}
-\textbf{The agent converges on workload-appropriate deployment parameters
-when given the room to iterate}, corroborated on the same scenario by two
-different models, but this chapter reports one detailed trajectory, not a
-systematic per-cell audit; RQ7's counter-example, and RQ3's model-level
-spec statistics, show this is a tendency, not a guarantee, and RQ1's
-\textsc{BranchWeave}$\times$\textsc{Rust-Actix} cell shows the downside
-case can be severe enough to end a trajectory rather than just cost it a
-few iterations.
-
-
-% ----- §5.8 RQ7 -----
-\section{RQ7: Failure Modes and Case Studies}
-\label{sec:results-rq7}
 
 \begin{figure}[htbp]
   \centering
   \includegraphics[width=0.75\linewidth]{figures/eval/failure_taxonomy.pdf}
-  \caption{Recorded \texttt{failure.json} occurrences by phase and kind,
-    summed across all three models and all 63 cells.}
+  \caption{Recorded \texttt{failure.json} occurrences by phase: one bar
+    per model within each phase group, stacked and labelled by failure
+    kind, across all 63 cells. Bold numbers are per-bar totals; smaller
+    numbers inside a segment are that kind's own count.}
   \label{fig:results-failure-taxonomy}
 \end{figure}
 
 \paragraph{Evidence.}
-Of \textbf{61} recorded failures, \textbf{31} are \texttt{02-code:
-functional\_test} failures, split 3 / 13 / 15 across
-\texttt{claude-opus-4-8} / \texttt{gpt-5.5} / \texttt{glm-5.2}, and these
-remain the dataset's largest genuine code-correctness signal.
-\textbf{14} are \texttt{docker\_build} failures (Rust or Go code that fails
-to compile), 12 of them \texttt{glm-5.2}'s and 2 \texttt{gpt-5.5}'s.
-Together, functional-test and docker-build failures account for 45 of the
-61 recorded failures (74\%). Notably, \texttt{claude-opus-4-8}'s
-\textsc{BranchWeave}$\times$\textsc{Rust-Actix} cell
-(Section~\ref{sec:results-rq1}) contributes \emph{zero} entries to this
-count despite ending at zero goodput: every one of its ten iterations
-completed as a harness-level success, so its late collapse is invisible
-here and only shows up in the goodput trajectory itself, a further
-illustration that this failure taxonomy tracks harness-detected problems,
-not final outcome quality.
+Figure~\ref{fig:results-failure-taxonomy} splits the \textbf{61} recorded
+failures by phase, model, and kind: \textbf{47} occur in the
+\texttt{02-code} phase, \textbf{9} in \texttt{04-deploy}, \textbf{4} in
+\texttt{03-spec}, and \textbf{1} in \texttt{01-decision}, so code-phase
+failures alone outnumber every other phase combined. Within the code
+phase, two kinds dominate: \textbf{31} are \texttt{functional\_test}
+failures, split 3 / 13
+/ 15 across \texttt{claude-opus-4-8} / \texttt{gpt-5.5} / \texttt{glm-5.2}
+and present for every model, and \textbf{14} are \texttt{docker\_build}
+failures (Rust or Go code that fails to compile), concentrated almost
+entirely in one model: 12 \texttt{glm-5.2}'s, 2 \texttt{gpt-5.5}'s, none
+\texttt{claude-opus-4-8}'s. Together, functional-test and docker-build
+failures account for 45 of the 61 recorded failures (74\%), and both are
+correctness problems the agent is directly responsible for rather than
+artefacts of the deployment path.
 
 Two deploy-phase failure kinds each recur across more than one cell.
 \textbf{3} \texttt{crashloop} failures appear on \texttt{glm-5.2}'s
@@ -966,6 +907,47 @@ cell hit its own configured \texttt{--llm-max-cost} ceiling (\$20.22 spent
 against a \$20.00 cap) at iteration 010, the framework's cost-tracking
 safeguard (Section~\ref{sec:methods-workflow}) doing exactly what it is
 designed to do.
+
+\paragraph{Interpretation.}
+The evidence supports a consistent reading: essentially all \emph{genuine}
+attrition happens at the code-correctness gate the agent is directly
+responsible for (functional-test and docker-build failures together
+account for 45 of 61 recorded failures), and the cluster-execution path is
+close to, but not quite, failure-free. RQ1's
+\textsc{BranchWeave}$\times$\textsc{Rust-Actix} cell shows this count is
+blind to a genuinely important outcome: a trajectory can end at zero
+goodput without a single entry appearing here, since every one of its
+iterations completed as a harness-level success.
+Section~\ref{sec:results-case-studies} returns to that same blind spot
+from the trajectory side, with two cases where the aggregate count alone
+would understate what actually happened.
+
+\paragraph{Conclusion.}
+\textbf{The dominant \emph{genuine} failure mode is upstream of
+deployment}, in code correctness (functional-test and docker-build
+failures together are 74\% of recorded failures). The cluster-execution
+path is nearly, not entirely, failure-free: the crashloop and timeout
+cases show that a proposal passing static validation can still fail at
+apply time for reasons validation was never designed to catch (an
+application crash loop or a slow-starting container), offset by two
+documented cases where the same validation correctly caught an infeasible
+proposal before it was ever applied. A separate gap, not in scheduling but
+in reporting, is that this failure taxonomy does not capture a trajectory
+ending at zero goodput when every individual iteration is a harness-level
+success.
+
+
+% ----- §5.8 Case Studies -----
+\section{Case Studies: What Individual Trajectories Reveal}
+\label{sec:results-case-studies}
+
+The failure counts of Section~\ref{sec:results-rq6} are built from
+discrete, labelled events, and by construction they can only report what
+was labelled. The first two cases below sit outside that count entirely,
+on the same cell, yet each changes what the aggregate picture means; the
+third looks at a healthy trajectory instead, to show what a
+spec-refinement decision looks like when it does track the workload
+correctly.
 
 \paragraph{Case study: a connection-pooling bug invisible to
 single-container evaluation.} \texttt{glm-5.2}'s
@@ -1033,34 +1015,88 @@ deployment to zero goodput more often than any other model/lever
 combination in this dataset (Section~\ref{sec:results-rq3}) suggests this
 is not a one-off either for this cell or this model.
 
+\paragraph{Case study: a spec trajectory that tracks a workload's scaling
+shape.} \texttt{gpt-5.5} on \textsc{ClickCount}$\times$\textsc{Go-net-http}
+produces the single largest gain in this dataset ($75.4\times$, baseline
+$1{,}285.1$\,req/s to best $96{,}924.9$\,req/s), and its spec-refinement
+steps move in a consistent direction across the run rather than
+oscillating:
+
+\begin{table}[htbp]
+  \centering
+  \caption{Spec-knob trajectory for \texttt{gpt-5.5}, \textsc{ClickCount},
+    \textsc{Go-net-http} (selected iterations).}
+  \label{tab:results-case-clickcount}
+  \footnotesize
+  \begin{tabular}{@{}rrrrrrr@{}}
+    \toprule
+    Iter.\ & Lever & Goodput (req/s) & Replicas & CPU req.\ & DB repl.\ & DB max\_conn \\
+    \midrule
+    000 & baseline & 1{,}285.1  & 48  & 1000m & 3 & 500 \\
+    006 & code     & 23{,}670.6 & 48  & 1000m & 3 & 500 \\
+    007 & spec     & 23{,}640.9 & 192 & 350m  & 1 & 300 \\
+    008 & code     & 90{,}653.8 & 192 & 350m  & 1 & 300 \\
+    009 & spec     & 91{,}392.6 & 320 & 250m  & 1 & 500 \\
+    010 & code     & 96{,}924.9 & 320 & 250m  & 1 & 500 \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+Between iterations 006 and 010, the agent roughly \emph{sextuples}
+replica count (48 $\to$ 320) while \emph{quartering} per-pod CPU request
+(1000m $\to$ 250m), trading a few large pods for many small ones, and
+drops database replicas from 3 to 1. For a scenario whose endpoints are a
+near-stateless counter increment (Section~\ref{sec:setup-scenarios}),
+this is the correct qualitative direction: per-request CPU cost is
+negligible, so raw horizontal fan-out beats per-pod headroom, and the
+extra Postgres read replicas the baseline provisioned were never
+load-bearing. \texttt{glm-5.2} shows the same qualitative direction on its
+own \textsc{ClickCount}$\times$\textsc{Go-net-http} cell, one of its
+largest observed gains in this dataset ($14.9\times$), though a full
+knob-by-knob trajectory is not reproduced here. Spec prompts intentionally
+omit recommended numeric ranges (Section~\ref{sec:methods-spec}), so this
+directional movement is evidence that, on this trajectory, the agent is
+reading load-test and utilisation feedback rather than falling back on
+defaults; the backfire case above, on a different cell, and RQ3's finding
+that spec-refinement steps collapse a working deployment to zero goodput
+more often for \texttt{glm-5.2} than for any other model/lever combination
+in this dataset (Section~\ref{sec:results-rq3}), are enough to show this
+direction is not guaranteed by the mechanism itself, only that it is
+possible.
+
 \paragraph{Interpretation.}
-The evidence supports a consistent reading: essentially all \emph{genuine}
-attrition happens at the code-correctness gate the agent is directly
-responsible for (functional-test and docker-build failures together
-account for 45 of 61 recorded failures), and the cluster-execution path is
-close to, but not quite, failure-free. The two case studies together show
-the same lesson from opposite directions: code refinement can fix bugs the
-model could not have anticipated (the pooling case), and a single
-deployment decision can undo a healthy deployment even when its diagnosis
-is correct, because the framework does not constrain how many fields one
-spec-refinement step may touch (the backfire case). RQ1's
-\textsc{BranchWeave}$\times$\textsc{Rust-Actix} cell shows this failure
-record is blind to a genuinely important outcome: a trajectory can end at
-zero goodput without a single entry appearing here.
+The first two cases show the same lesson from opposite directions: code
+refinement can fix a bug the model could not have anticipated at
+generation time (the pooling case), and a single deployment decision can
+undo a healthy deployment even when its diagnosis is correct, because the
+framework does not constrain how many fields one spec-refinement step may
+touch (the backfire case). Neither shows up in
+Section~\ref{sec:results-rq6}'s failure counts: both iterations complete
+as harness-level successes with a recorded goodput of zero, the same kind
+of gap that section already flags as a general limitation of a taxonomy
+built from discrete failure events rather than from outcome quality.
+RQ1's \textsc{BranchWeave}$\times$\textsc{Rust-Actix} cell
+(Section~\ref{sec:results-rq1}) is the same phenomenon at trajectory
+scale: a run can end at zero goodput without a single entry in the
+taxonomy at all. The \textsc{ClickCount} case is the counterpoint: on a
+trajectory with enough successful iterations to work with, the same
+spec-refinement mechanism that produces the backfire case here instead
+moves parameters in a workload-appropriate direction, reproduced
+qualitatively by a second model on the same scenario; read against the
+backfire case, it shows the mechanism is capable of tracking a workload's
+actual scaling shape without being told to, not that it reliably does.
 
 \paragraph{Conclusion.}
-\textbf{The dominant \emph{genuine} failure mode is upstream of
-deployment}, in code correctness (functional-test and docker-build
-failures together are 74\% of recorded failures). The cluster-execution
-path is nearly, not entirely, failure-free: the crashloop and timeout
-cases show that a proposal passing static validation can still fail at
-apply time for reasons validation was never designed to catch (an
-application crash loop or a slow-starting container), offset by two
-documented cases where the same validation correctly caught an infeasible
-proposal before it was ever applied. A separate gap, not in scheduling but
-in reporting, is that this failure taxonomy does not capture a trajectory
-ending at zero goodput when every individual iteration is a harness-level
-success.
+\textbf{Individual trajectories surface what a count-based taxonomy
+structurally cannot}: two failure modes invisible to it, on the same
+cell, a deployment-only bug invisible to single-container testing and a
+well-reasoned deployment decision that still regresses goodput to zero,
+and, on a different trajectory, a case where the same lever instead
+tracks the workload's actual scaling characteristics. Reading
+trajectories alongside the taxonomy of Section~\ref{sec:results-rq6},
+rather than either alone, is necessary to see both \emph{how often}
+failures occur and what a spec-refinement decision looks like from the
+inside, for better or worse.
 
 
 % ----- §5.9 Cross-Cutting Synthesis -----
@@ -1072,7 +1108,7 @@ patterns recur consistently enough to generalise beyond any single cell:
 
 \begin{itemize}
   \item \textbf{Correctness gates deployment, consistently.} The largest
-        single source of attrition (RQ7, 74\% of recorded failures) and
+        single source of attrition (RQ6, 74\% of recorded failures) and
         the largest single-step goodput gains (RQ3) both trace back to
         code correctness, not deployment tuning. This holds across every
         model and is exactly the class of bug BaxBench's original
@@ -1085,7 +1121,7 @@ patterns recur consistently enough to generalise beyond any single cell:
         distinct risk of collapsing a working deployment to zero goodput
         outright, most often for \texttt{glm-5.2} but not exclusive to it:
         one \texttt{claude-opus-4-8} cell loses everything this way with
-        no budget left to recover (RQ1, RQ7).
+        no budget left to recover (RQ1, RQ6).
   \item \textbf{The three models are equally reliable but not equally
         capable or costly.} Every model completes its full budget on
         100\% of its 21 cells, so the meaningful comparison is achieved
@@ -1101,10 +1137,10 @@ patterns recur consistently enough to generalise beyond any single cell:
   \item \textbf{The cluster-execution path is close to, but not quite, a
         failure-free component, and the failure taxonomy itself has
         blind spots.} Deploy-phase failures remain a small fraction of the
-        total (RQ7), and static spec validation demonstrably catches a
+        total (RQ6), and static spec validation demonstrably catches a
         resource-infeasible proposal before it is ever applied, twice, in
         the node-over-commit cases documented in
-        Section~\ref{sec:results-rq7}; separately, a trajectory that ends
+        Section~\ref{sec:results-rq6}; separately, a trajectory that ends
         at zero goodput through two ordinary-looking spec decisions
         generates no failure record at all.
 \end{itemize}
@@ -1141,17 +1177,16 @@ Across all three models and all 63 scenario/framework cells:
         not universal (\textsc{Python-Flask} for \texttt{gpt-5.5} and
         \texttt{glm-5.2}, but \textsc{Rust-Actix} for
         \texttt{claude-opus-4-8}) (RQ5);
-  \item where it converges, the agent's deployment-spec trajectory tracks
-        workload characteristics sensibly, corroborated across two models
-        on the same scenario (RQ6), though not every individual
-        spec-refinement decision improves the outcome, even when the
-        stated rationale is sound, and in one case the downside is severe
-        enough to end the trajectory (RQ7);
+  \item individual trajectories (case studies) show deployment-spec
+        decisions that move parameters in a workload-appropriate
+        direction, but not every spec-refinement decision improves the
+        outcome, even when the stated rationale is sound, and in one case
+        the downside is severe enough to end the trajectory (RQ1);
   \item nearly all \emph{genuine} attrition happens at the
         code-correctness gate the agent is responsible for; the
         cluster-execution path is nearly, not entirely, failure-free, and
         the failure taxonomy itself has a blind spot for trajectories that
-        end at zero goodput without a harness-level failure (RQ7).
+        end at zero goodput without a harness-level failure (RQ6).
 \end{itemize}
 
 These findings are discussed further, including limitations and threats
