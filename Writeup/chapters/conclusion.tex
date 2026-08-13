@@ -1,7 +1,7 @@
 % =============================================================
 %  Chapter 7 — Conclusion
 % =============================================================
-%  Grounded in the final results/ snapshot (2026-07-31, 63 of 63 cells, full coverage).
+%  Grounded in the final results/ snapshot (2026-07-31, 63 of 63 tasks, full coverage).
 % =============================================================
 
 \chapter{Conclusion}
@@ -28,8 +28,8 @@ configuration of a backend application on a Kubernetes cluster, guided by
 runtime performance feedback, to maximise sustainable throughput under
 fixed infrastructure constraints (Section~\ref{sec:intro-missing}).
 
-The approach is an iterative benchmarking framework that extends
-\textsc{BaxBench} with a real multi-node Kubernetes cluster and a
+The approach, \textsc{IterBench}, is an iterative benchmarking framework that
+extends \textsc{BaxBench} with a real multi-node Kubernetes cluster and a
 five-stage refinement loop (decision, code, spec, deploy, bench;
 Chapter~\ref{ch:methods}), in which an LLM agent proposes exactly one
 change per iteration, to either application code or a constrained
@@ -54,10 +54,15 @@ unexplained end-to-end number.
 \label{sec:conclusion-findings}
 
 \paragraph{What worked.} Iterative refinement improved sustained goodput
-in essentially every cell with data, across all three evaluated models,
-and in a substantial fraction of cells it did not just improve an
-already-working deployment but converted a non-functional one into a
-functional one (Section~\ref{sec:results-rq1}). Keeping code and deployment refinement
+in essentially every task that produced data, across all three evaluated
+models, and in 28 of the 30 tasks whose baseline was dead it did not just
+improve an already-working deployment but converted a non-functional one
+into a functional one (Section~\ref{sec:results-rq1}). Those comparisons
+rest on an instrument that was validated before it was used: re-measuring
+an unchanged candidate moves the sustained-goodput estimate by a median
+$2.9\%$, and every one of the 632 bench runs terminated on its own phase
+criteria well inside its wall-clock budget
+(Section~\ref{sec:results-load-profile-validation}). Keeping code and deployment refinement
 mutually exclusive per iteration turned out to be more than a bookkeeping
 convenience: the two levers measurably specialise in practice, with code
 refinement carrying almost all of the largest single-step recoveries and
@@ -74,40 +79,41 @@ not a one-off: its deployment-refinement steps collapse a working
 deployment to zero goodput more often than any other model/lever
 combination in this dataset (Section~\ref{sec:results-rq3}). A second,
 more severe instance of the same failure mode shows up on
-\texttt{claude-opus-4-8}: one cell starts from a healthy baseline, peaks at
+\texttt{claude-opus-4-8}: one task starts from a healthy baseline, peaks at
 $3\times$ that baseline, and then loses everything again to two
 consecutive deployment-refinement regressions with no iterations left in
 its budget to recover (Section~\ref{sec:results-rq1}), so the same
 occasional-backfire pattern is not confined to the one model with the
 highest collapse count. Separately, and closer to a framework finding than a
-model one: a proposal that passes static validation can still fail at
-apply time for reasons validation was never designed to catch (an
-application crash loop, or pods that never pass their readiness probe),
-and the failure taxonomy is blind entirely to a trajectory that ends at
-zero goodput without a single harness-level failure along the way
+model one: the failure taxonomy is blind entirely to a trajectory that
+ends at zero goodput without a single harness-level failure along the way,
+which is exactly how that \texttt{claude-opus-4-8} task ends
 (Section~\ref{sec:results-rq6}).
 
 \paragraph{What surprised us.} The multiplicative gain from refinement
 turned out to depend much more on how badly under-provisioned the
 baseline happened to be than on any consistent ``value added by
-refinement'' figure: the same framework produced gains ranging from just
-over $1\times$ to more than $75\times$ depending on the cell, and the two
-largest gains in the dataset landed on the same scenario for two different
-models (Section~\ref{sec:results-rq1}). A second surprise was in the
+refinement'' figure: within a single framework, gains ranged from none at
+all ($1.0\times$) to $66.7\times$ depending on the task, and the
+largest gains in the dataset clustered on a single scenario
+(\textsc{ClickCount}), reaching that $66.7\times$ on one \texttt{glm-5.2}
+task (Section~\ref{sec:results-rq1}). A second surprise was in the
 failure taxonomy rather than in goodput: every recorded
 \texttt{docker\_build} failure in this dataset, all 14 of them, is a
 \textsc{Rust-Actix} compile failure, twelve of them \texttt{glm-5.2}'s
-across six different scenarios (Section~\ref{sec:results-rq6}), a
+across five different scenarios (Section~\ref{sec:results-rq6}), a
 concentrated, framework-specific correctness signal that a
 single-container, single-framework evaluation would not surface as
 clearly. Also unexpected, though smaller: the deployment-and-cluster path
 was \emph{nearly}, but not quite, invisible as a source of failure. A
-handful of spec-refinement iterations, across cells from two different
-models, produced deployments that passed static validation but then
-either crash-looped or never passed their readiness probe within the wait
-window (Section~\ref{sec:results-rq6}); the same static validation is also
-documented, on two separate cells, correctly rejecting an infeasible
-proposal before it was ever applied.
+handful of refinement iterations, most of them spec-refinement, across
+tasks from two different models, produced deployments that passed static
+validation but then either crash-looped or never passed their readiness
+probe within the wait window, so a proposal can still fail at apply time
+for reasons a static check was never designed to catch. The same
+validation is also documented, on two separate tasks, correctly rejecting
+an infeasible proposal before it was ever applied
+(Section~\ref{sec:results-rq6}).
 
 \paragraph{What we learned from the evaluation.} The single biggest
 determinant of final performance in this dataset was not deployment
@@ -132,12 +138,12 @@ performance feedback, to maximise sustainable throughput under fixed
 infrastructure constraints?}
 
 \textbf{Yes, within the scope this thesis tested.} Across all 63
-scenario$\times$framework$\times$model cells in the evaluated matrix,
+scenario$\times$framework$\times$model tasks in the evaluated matrix,
 across three models, an LLM agent that alternates between code and
 deployment-specification
 refinement, guided only by adaptive load-test feedback and resource
 diagnostics, consistently increased sustained goodput once a functionally
-correct baseline existed, and in a majority of dead-baseline cells it
+correct baseline existed, and in a majority of dead-baseline tasks it
 produced a working deployment where none existed initially. The
 deployment-specification lever specifically, the part of the question
 closest to this thesis's actual contribution, since code-level LLM
@@ -153,7 +159,7 @@ observed cases (Section~\ref{sec:results-rq6}).
 The qualification matters as much as the answer. What this thesis cannot
 yet say is whether the result generalises beyond seven database-backed
 scenarios, one cluster topology, and a ten-iteration budget at $n=1$
-sample per cell
+sample per task
 (Section~\ref{sec:conclusion-limitations}); nor can it cleanly separate
 ``the agent optimises deployment configuration well'' from ``the agent
 optimises deployment configuration well \emph{once code correctness stops
@@ -172,13 +178,17 @@ database-backed, and chosen to span workload shapes rather than to be a
 statistically representative sample; a fixed 10-iteration refinement
 budget, which this dataset shows can end a trajectory at zero goodput
 purely because it runs out before a late regression is corrected; $n=1$
-sample per cell, so no comparative claim here has been tested against
+sample per task, so no comparative claim here has been tested against
 sampling variance; overlap between scenario generation and model evaluation,
 an unexamined provenance threat that also does not make generated
-and original scenarios interchangeable; a subset of load runs using the
-lower-bandwidth control network rather than the experiment LAN; a hard
-$100{,}000$-user ceiling reached by 31 of the 589 warm-up survivors, which
-right-censors that tail of the capacity search; a single scalar (sustained
+and original scenarios interchangeable; a network-consistent ground truth
+obtained by re-benchmarking every pre-cutover run on the experiment LAN,
+which makes the \emph{measurements} uniform but leaves the candidates in
+those tasks having been proposed under the earlier setup; a hard
+$100{,}000$-user ceiling reached by 44 of the 588 warm-up survivors, which
+right-censors that tail of the capacity search; measurement agreement that
+is weakest for deployments close to failing under load, so counts of dead
+and recovered baselines carry a tolerance of a few tasks; a single scalar (sustained
 goodput under one adaptive load profile) as the sole optimisation signal,
 which does not distinguish a dead baseline from a trajectory that recovered
 and later collapsed again; temperature-$0.2$ but still stochastic LLM
@@ -229,7 +239,7 @@ functional-and-security check) otherwise leaves open.
 \paragraph{Strengthen spec validation and functional-test depth.} Two
 separate validation surfaces could plausibly be doing more than they do
 now. Static spec validation (Section~\ref{sec:methods-spec}) currently
-checks a fixed set of structural and capacity properties; RQ6's
+checks a fixed set of structural and capacity properties; RQ5's
 crashloop and timeout deploy-phase failures
 (Section~\ref{sec:results-rq6}) are outside what any structural check
 could catch, since they are runtime application behaviour rather than a
@@ -250,16 +260,15 @@ case in Section~\ref{sec:results-case-studies} shows that a single spec-refineme
 step can change several fields at once, which limits attribution the same
 way mixing code and spec changes would. Future work could either constrain
 spec-refinement steps to one field at a time and measure whether that
-improves reliability, particularly for \texttt{glm-5.2}, whose
-spec-refinement steps collapse a working deployment to zero goodput more
-often than any other model's in this dataset, or instrument enough
+improves reliability, particularly for \texttt{glm-5.2} and its collapse
+rate above, or instrument enough
 to attribute outcomes to individual fields \emph{post hoc} without
 constraining the agent's search space.
 
-\paragraph{Protect against a trajectory ending on a regression.} This
-dataset now contains one cell that starts from a healthy baseline, peaks
-well above it, and then loses everything to two consecutive late
-regressions with no budget left to recover (Section~\ref{sec:results-rq1}).
+\paragraph{Protect against a trajectory ending on a regression.} Nothing
+in the current design guards the end of a trajectory, as the task that
+loses a $3\times$ gain to two late regressions illustrates
+(Section~\ref{sec:results-rq1}).
 A cheap mitigation worth testing is reporting, or even deploying, the best
 validated iteration rather than the last one when a trajectory's budget
 runs out mid-regression; a more involved one is letting the decision stage
@@ -285,7 +294,7 @@ largely independent of each other. First, growing the
 background workers, additional cache tiers, would let the agent's search
 space match a larger slice of real deployment topologies rather than the
 database-and-pooler-centric one evaluated here. Second, repeating even a
-subset of cells on a cluster an order of magnitude larger or smaller, or
+subset of tasks on a cluster an order of magnitude larger or smaller, or
 with a different node/network topology, would show whether the
 deployment decisions the agent converges to (Section~\ref{sec:results-case-studies})
 are tuned to the workload or partly to this specific cluster's capacity

@@ -5,41 +5,32 @@ applications, but existing benchmarks evaluate them in an isolated,
 single-container environment and stop there. Production backends run
 under shared cluster resources, where replica counts, resource limits,
 pod placement, and database topology jointly determine achievable
-throughput: decisions usually left to a human operator or to a reactive
-autoscaler that reasons about none of them jointly. This thesis asks
-whether an LLM agent can close that gap itself: iteratively optimise the
-deployment configuration of a backend application on a Kubernetes
-cluster, guided by runtime performance feedback, to maximise sustainable
-throughput under fixed infrastructure constraints.
+throughput. This thesis asks whether an LLM agent can close that gap
+itself: iteratively optimise the deployment configuration of a backend
+application on a Kubernetes cluster, guided by runtime performance
+feedback, to maximise sustainable throughput under fixed infrastructure
+constraints.
 
-We extend \textsc{BaxBench} with a Kubernetes-based iterative
-benchmarking framework in which an agent alternates, one lever per
-iteration, between refining application code and a constrained deployment
-specification, guided by load-test and resource feedback after each
-deploy-and-benchmark cycle. Performance is scored by \emph{sustained
+We extend \textsc{BaxBench} with \textsc{IterBench}, a Kubernetes-based
+iterative benchmarking framework in which an agent alternates, one lever
+per iteration, between refining application code and a constrained
+deployment specification, guided by load-test and resource feedback after
+each deploy-and-benchmark cycle. Performance is scored by \emph{sustained
 goodput}, discovered automatically per deployment without per-scenario
 tuning.
 
-We evaluate three frontier-tier models (Claude Opus 4.8, GPT-5.5, GLM-5.2)
-across seven \textsc{BaxBench} scenarios and three application frameworks,
-a fully covered matrix of 63 scenario$\times$framework$\times$model cells
-and ten refinement iterations each. Iterative refinement improves
-sustained goodput in essentially every cell, sometimes converting a
-non-functional deployment into a working one, with gains from $1\times$
-(a few cells never improve past their first success) to more than
-$75\times$ depending on baseline under-provisioning.
-Code refinement contributes the largest single-step recoveries, dominated
-by correctness bugs invisible to single-container testing, and its mean
+We evaluate three frontier-tier models (Claude Opus 4.8, GPT-5.5,
+GLM-5.2) across seven \textsc{BaxBench} scenarios and three application
+frameworks, a fully covered matrix of 63 scenario$\times$framework$\times$model
+cells with ten refinement iterations each. Iterative refinement improves
+sustained goodput in essentially every cell, with gains from $1\times$ to
+more than $75\times$ depending on baseline under-provisioning. Code
+refinement contributes the largest single-step recoveries, dominated by
+correctness bugs invisible to single-container testing, and its mean
 effect exceeds deployment refinement's for every model. Deployment
-refinement is a smaller capacity knob that tracks workload characteristics
-without target ranges, but carries a distinct downside risk: it collapses
-a working deployment to zero goodput more often than code refinement
-does, most severely for one model, and in one cell severe enough to end a
-trajectory at zero goodput once its budget ran out mid-regression. All
-three models
-reach baseline and complete their full budget on every cell, so
-completion rate does not differentiate them. LLM-guided deployment
-optimisation is a viable, bounded complement to code-level optimisation,
-whose largest limitations are code-correctness entanglement and a fixed
-budget's risk to late-trajectory regressions, not the deployment-reasoning
-task itself.
+refinement is a smaller capacity knob that carries a distinct downside
+risk: it collapses a working deployment to zero goodput more often than
+code refinement does. LLM-guided deployment optimisation is therefore a
+viable but bounded complement to code-level optimisation, limited more by
+code-correctness entanglement and by a fixed budget's exposure to
+late-trajectory regressions than by the deployment-reasoning task itself.

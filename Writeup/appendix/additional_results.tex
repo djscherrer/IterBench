@@ -5,29 +5,29 @@ alongside every experiment in Chapter~\ref{ch:results}. It is descriptive
 context rather than a research question in its own right: none of the
 splits below are used to rank the three models, only to show where the
 money in Table~\ref{tab:setup-model-cost} actually went. Figures are
-computed directly from each cell's \texttt{llm\_cost\_ledger.json} (its
+computed directly from each task's \texttt{llm\_cost\_ledger.json} (its
 per-iteration and per-call-type cost breakdown) via
 \texttt{scripts/analysis/cost\_breakdown.py}, cross-checked against the
-per-cell totals in \texttt{results\_aggregate/cells.csv}.
+per-task totals in \texttt{results\_aggregate/tasks.csv}.
 
 \section{LLM Cost Breakdown}
 \label{sec:appendix-cost}
 
 \paragraph{Total spend.} Table~\ref{tab:setup-model-cost} gives each
-model's total measured spend across its 21 cells and the resulting
-per-cell average. \texttt{glm-5.2}'s per-cell spend is roughly a fifth of
+model's total measured spend across its 21 tasks and the resulting
+per-task average. \texttt{glm-5.2}'s per-task spend is roughly a fifth of
 the other two models', consistent with its lower list price
 (Table~\ref{tab:setup-model-config}) and, per the breakdown below, with
 its refinement steps individually costing less at any given price.
 
 \begin{table}[htbp]
   \centering
-  \caption{Measured LLM spend per model, over all 21 cells per model.}
+  \caption{Measured LLM spend per model, over all 21 tasks per model.}
   \label{tab:setup-model-cost}
   \small
   \begin{tabular}{@{}lrrr@{}}
     \toprule
-    \textbf{Model} & \textbf{Total spend} & \textbf{Cells} & \textbf{Spend / cell} \\
+    \textbf{Model} & \textbf{Total spend} & \textbf{Tasks} & \textbf{Spend / task} \\
     \midrule
     \texttt{gpt-5.5}         & \$144.21 & 21 & \$6.87 \\
     \texttt{claude-opus-4-8} & \$133.61 & 21 & \$6.36 \\
@@ -37,11 +37,11 @@ its refinement steps individually costing less at any given price.
 \end{table}
 
 \paragraph{Cost to reach a working baseline.} Iteration~000's cost is the
-first LLM call of a cell: a single baseline code-and-spec generation
-attempt, before any runtime feedback exists to refine against. For cells
+first LLM call of a task: a single baseline code-and-spec generation
+attempt, before any runtime feedback exists to refine against. For tasks
 that start with a healthy baseline (Section~\ref{sec:results-rq1}), that
 one call is the entire cost of getting to a working deployment.
-For cells that start dead, reaching a working deployment instead costs
+For tasks that start dead, reaching a working deployment instead costs
 whatever iterations~000 through the first iteration with positive
 goodput together spend, since a dead baseline is only useful once
 refinement has recovered it. Table~\ref{tab:appendix-cost-baseline}
@@ -50,11 +50,11 @@ reports both, per model.
 \begin{table}[htbp]
   \centering
   \caption{Mean LLM cost (USD) to reach a working baseline, split by
-    whether the cell started healthy (cost of \texttt{iteration-000}
+    whether the task started healthy (cost of \texttt{iteration-000}
     alone) or started dead and had to recover (cumulative cost through
     the first iteration with positive goodput). $n$ is the number of
-    cells in each split; the two do not always sum to 21 because two
-    cells (Section~\ref{sec:results-rq1}) never recover a positive
+    tasks in each split; the two do not always sum to 21 because two
+    tasks (Section~\ref{sec:results-rq1}) never recover a positive
     baseline and are excluded from the dead-baseline column.}
   \label{tab:appendix-cost-baseline}
   \small
@@ -64,8 +64,8 @@ reports both, per model.
     \textbf{Model} & \textbf{Mean \$} & \textbf{$n$} & \textbf{Mean \$} & \textbf{$n$} \\
     \midrule
     \texttt{claude-opus-4-8} & \$0.74 & 12 & \$2.42 & 8 \\
-    \texttt{gpt-5.5}         & \$1.02 & 15 & \$4.86 & 6 \\
-    \texttt{glm-5.2}         & \$0.11 & 7  & \$0.41 & 13 \\
+    \texttt{gpt-5.5}         & \$1.03 & 14 & \$4.54 & 7 \\
+    \texttt{glm-5.2}         & \$0.11 & 7  & \$0.39 & 13 \\
     \bottomrule
   \end{tabular}
 \end{table}
@@ -73,7 +73,7 @@ reports both, per model.
 Recovering a dead baseline costs more than an already-healthy one for
 every model, three to five times as much on average, which is the
 expected shape: recovery is itself several refinement iterations rather
-than the single baseline-generation call a healthy cell needed. The gap
+than the single baseline-generation call a healthy task needed. The gap
 is proportionally similar across models despite their very different
 absolute price points, so this cost is a consequence of how many extra
 iterations recovery took, not of one model being disproportionately
@@ -98,7 +98,7 @@ gives those step counts).
     \textbf{Model} & \textbf{\$ / decision} & \textbf{\$ / code step} & \textbf{\$ / spec step} \\
     \midrule
     \texttt{claude-opus-4-8} & \$0.24 & \$0.58 & \$0.22 \\
-    \texttt{gpt-5.5}         & \$0.17 & \$0.68 & \$0.25 \\
+    \texttt{gpt-5.5}         & \$0.16 & \$0.67 & \$0.25 \\
     \texttt{glm-5.2}         & \$0.07 & \$0.11 & \$0.05 \\
     \bottomrule
   \end{tabular}

@@ -8,7 +8,7 @@
 %  chapter is deliberately just the concrete instantiation of it.
 %
 %  Grounded in the final results/ snapshot (2026-07-31): 63 of a
-%  possible 63 cells (7 scenarios x 3 frameworks x 3 models) have
+%  possible 63 tasks (7 scenarios x 3 frameworks x 3 models) have
 %  experiment data (full coverage). Regenerate via
 %  ``pipenv run python scripts/analysis/aggregate_evaluation.py''
 %  (default --results-root matches the current layout) before editing
@@ -20,7 +20,7 @@
 
 This chapter fixes the concrete instantiation of the framework described in
 Chapter~\ref{ch:methods}: which models, scenarios, frameworks, and cluster
-were used, and which settings were chosen for the resulting cells, samples,
+were used, and which settings were chosen for the resulting tasks, samples,
 experiments, and iterations (Section~\ref{sec:methods-workflow}).
 Chapter~\ref{ch:results} assumes this setup and focuses on findings.
 
@@ -137,7 +137,7 @@ Section~\ref{sec:methods-scenario-gen}. This is a subset of the full
 \textsc{BaxBench} suite (28 scenarios; Section~\ref{sec:rw-benchmarks}),
 not an exhaustive sample of it. All seven require a backing database,
 making database topology and connection handling
-(Section~\ref{sec:methods-spec}) relevant to every cell. They differ
+(Section~\ref{sec:methods-spec}) relevant to every task. They differ
 mainly in API surface size and statefulness.
 
 \paragraph{Generation parameters.} For the four generated scenarios,
@@ -159,7 +159,7 @@ does not make the three model comparisons fully provenance-independent, and
 this thesis does not isolate that effect; it is discussed as an open
 construct-validity caveat in Section~\ref{sec:discussion-limitations}.
 Generated and original scenarios do differ in baseline health, failure
-profile, and refinement headroom (RQ4, Section~\ref{sec:results-rq4}), for
+profile, and refinement headroom (RQ3, Section~\ref{sec:results-rq4}), for
 reasons the data does not attribute to authorship one way or the other.
 
 Endpoint counts below are unique OpenAPI paths, not operations
@@ -214,7 +214,8 @@ architecture described in Section~\ref{sec:methods-architecture}:
 \begin{itemize}
   \item \textbf{Control plane / orchestrator / registry (1 host).} For
         operational simplicity, a single node runs the Kubernetes control
-        plane, the BaxBench orchestrator, and the private image registry.
+        plane, the \textsc{IterBench} orchestrator, and the private image
+        registry.
   \item \textbf{Kubernetes workers (4 hosts).} Candidate deployments
         (application pods, databases, poolers, caches) are scheduled only
         onto these nodes, whose four d430 hosts contribute 128 CPU cores
@@ -256,33 +257,33 @@ in the thesis research question concrete.
 \section{Evaluation Procedure}
 \label{sec:setup-procedure}
 
-The unit hierarchy (cell $\to$ sample $\to$ experiment $\to$ iteration) is
+The unit hierarchy (task $\to$ sample $\to$ experiment $\to$ iteration) is
 defined in Section~\ref{sec:methods-workflow}; this section states the
 concrete budget values used throughout Chapter~\ref{ch:results}.
 
 \begin{itemize}
-  \item \textbf{Cells.} Every combination of the 7 scenarios and 3
+  \item \textbf{Tasks.} Every combination of the 7 scenarios and 3
         frameworks (Section~\ref{sec:setup-scenarios}), crossed with the 3
-        evaluated models (Section~\ref{sec:setup-models}): 63 cells in
+        evaluated models (Section~\ref{sec:setup-models}): 63 tasks in
         total.
-  \item \textbf{Samples.} One sample per cell ($n=1$). This is a budget
+  \item \textbf{Samples.} One sample per task ($n=1$). This is a budget
         constraint, not a methodological preference: preliminary
-        experiments showed roughly \$1--7 per cell in LLM spend alone,
+        experiments showed roughly \$1--7 per task in LLM spend alone,
         compounded by each experiment's long wall-clock runtime (typically
         2 to 3 hours end to end for the full ten-iteration budget), so
-        repeated sampling across the cells evaluated here was not
+        repeated sampling across the tasks evaluated here was not
         affordable within this thesis's compute budget. Its consequence is
         statistical uncertainty: it provides no repeated draws from which
-        within-cell variance or significance can be estimated. Model- and
+        within-task variance or significance can be estimated. Model- and
         framework-level aggregates are therefore descriptive summaries of
-        this fixed grid, not estimates based on independently sampled cells.
+        this fixed grid, not estimates based on independently sampled tasks.
         The measurement and inference consequences are stated in
         Section~\ref{sec:methods-metrics}, revisited where relevant in
         Chapter~\ref{ch:results}, and consolidated in
         Section~\ref{sec:discussion-limitations}.
   \item \textbf{Experiments.} One experiment per sample, i.e.\ one
-        refinement trajectory per cell; no re-runs under different
-        budgets/profiles were kept for the cells reported here.
+        refinement trajectory per task; no re-runs under different
+        budgets/profiles were kept for the tasks reported here.
   \item \textbf{Iteration budget.} $N{=}10$ refinement iterations
         (iterations \texttt{000}--\texttt{010}) per experiment, plus up to
         10 baseline generation attempts (Section~\ref{sec:methods-code})

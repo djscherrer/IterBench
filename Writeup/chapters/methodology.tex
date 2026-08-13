@@ -13,8 +13,8 @@
 \section{Method Overview and Evaluation Objective}
 \label{sec:methods-overview}
 
-This chapter describes the methodology of our iterative agentic benchmark
-setup. It defines the concrete evaluation machinery: the offline construction
+This chapter describes the methodology of \textsc{IterBench}, our iterative
+agentic benchmark setup. It defines the concrete evaluation machinery: the offline construction
 of scenarios and workloads, the cluster components on which candidates run,
 the iterative workflow that generates and refines them, and the measures by
 which we compare iterations.
@@ -218,7 +218,7 @@ The load-test author receives the accepted scenario description, OpenAPI
 contract and produces a single executable Locust script. Its user tasks
 represent the intended user flows and their corresponding API operations. The
 author may assign task weights to express their relative selection frequency.
-Pacing is controlled separately by the selected \textsc{BaxBench} load profile,
+Pacing is controlled separately by the selected \textsc{IterBench} load profile,
 which supplies the configured wait-time range when the verified script is
 exported for benchmarking. The complete authoring prompt is reproduced in
 Appendix~\ref{sec:appendix-prompts-load}; it requires a \texttt{FastHttpUser}
@@ -283,11 +283,12 @@ memory used to measure performance.
 
 \begin{figure}[htbp]
   \centering
-  \includegraphics[width=1\linewidth]{figures/methods/benchmark-architecture/architecture.pdf}
+  \includegraphics[width=1\linewidth]{figures/methods/benchmark-architecture/architecture.png}
   \caption{Benchmark architecture. The assessed LLM agent interfaces with the
-    BaxBench orchestrator; the orchestrator and Kubernetes control plane deploy
-    each candidate on worker nodes, while a Locust master and workers generate
-    HTTP load from separate hosts.}
+    \textsc{IterBench} orchestrator; the orchestrator and Kubernetes control plane deploy
+    each candidate on worker nodes and a metrics server reports their resource
+    utilisation, while a Locust master and workers generate HTTP load from
+    separate hosts.}
   \label{fig:architecture}
 \end{figure}
 
@@ -308,7 +309,16 @@ slate.
 A private registry stores the container images for candidate deployments so
 that Kubernetes workers can pull them locally.
 
-\paragraph{BaxBench orchestrator.}
+\paragraph{Metrics server.}
+A \texttt{metrics-server} add-on runs in the cluster and serves the Kubernetes
+Metrics API, which aggregates the CPU and memory readings that each node's
+kubelet reports for itself and for the pods it hosts. The orchestrator samples
+this API through \texttt{kubectl top} while a load test runs. These samples are
+the source of the per-tier, per-pod, and per-node utilisation figures that enter
+the cluster diagnostics and the feedback report
+(Section~\ref{sec:methods-bench}).
+
+\paragraph{\textsc{IterBench} orchestrator.}
 The orchestrator is the evaluation harness. It prompts the assessed LLM agent,
 drives deployment through the control plane, launches Locust on the load
 hosts, and records experiment artifacts.
@@ -332,33 +342,33 @@ error reports; the agent returns the proposed artifacts.
 \section{Benchmark State, Context, and Feedback}
 \label{sec:methods-workflow}
 
-\subsection{Cells, Samples, Experiments, and Iterations}
+\subsection{Tasks, Samples, Experiments, and Iterations}
 
 Four nested units recur throughout this thesis, from largest to smallest:
-the \emph{cell}, the \emph{sample}, the \emph{experiment}, and the
+the \emph{task}, the \emph{sample}, the \emph{experiment}, and the
 \emph{iteration}, as illustrated in Figure~\ref{fig:sample-experiment-diagram}.
 The figure provides the vocabulary used in the remainder of the chapter.
 
 \begin{figure}[htbp]
     \centering
-    \includegraphics[width=1\linewidth]{figures/methods/benchmark-state-context-and-feedback/sample-experiment-hierarchy.pdf}
+    \includegraphics[width=1\linewidth]{figures/methods/benchmark-state-context-and-feedback/sample-experiment-hierarchy.png}
     \caption{Hierarchy of the four experimental units used throughout this
-      thesis: cell, sample, experiment, and iteration.}
+      thesis: task, sample, experiment, and iteration.}
     \label{fig:sample-experiment-diagram}
 \end{figure}
 
-\paragraph{Cell.}
-A \textbf{cell} is one point in our experimental design, defined by a tuple
+\paragraph{Task.}
+A \textbf{task} is one point in our experimental design, defined by a tuple
 of the \emph{BaxBench scenario} (the application behaviour and API contract
 to implement), the \emph{framework} (the implementation language and
 library stack), and the \emph{language-model configuration} (the model used
 to generate the application).
 
 \paragraph{Sample.}
-A \textbf{sample} is one independent execution trajectory for a given cell.
-Because LLM behaviour is stochastic, repeated samples of the same cell allow
+A \textbf{sample} is one independent execution trajectory for a given task.
+Because LLM behaviour is stochastic, repeated samples of the same task allow
 us to observe independent trajectories, estimate variance, and obtain a
-clearer signal about the underlying mean performance of that cell.
+clearer signal about the underlying mean performance of that task.
 
 \paragraph{Experiment.}
 An \textbf{experiment} defines the execution and evaluation settings for a
@@ -800,7 +810,7 @@ builds into a container image.
 
 \paragraph{Inputs.}
 Baseline generation receives the scenario description, API contract, and
-framework specified by the cell (Section~\ref{sec:methods-workflow}). Code
+framework specified by the task (Section~\ref{sec:methods-workflow}). Code
 refinement additionally receives the current valid code in the
 conversation, pointed at by an artifact pointer
 (Section~\ref{sec:methods-memory}), and, after a previous code failure, an
@@ -1065,7 +1075,7 @@ database poolers or caches. The framework then adds the deploy-time wiring:
 it makes the image available to Kubernetes and injects its concrete image
 reference, supplies framework-managed application and database connection
 settings, exposes the backend through a Kubernetes Service, and assigns the
-iteration its BaxBench namespace.
+iteration its own namespace.
 
 \paragraph{Processing.}
 The framework takes the validated \texttt{03-spec/spec.yaml} and combines
@@ -1074,7 +1084,7 @@ agent artifact. It renders Kubernetes manifests, including a namespace, the
 requested workloads, and their Services, and applies the resulting
 deployment blueprint. The namespace is derived from the experiment and
 iteration (for example, \texttt{baxbench-<experiment>-iteration-003}); under
-the default cleanup policy, BaxBench-owned namespaces are removed before
+the default cleanup policy, framework-owned namespaces are removed before
 deployment and after benchmarking, giving the iteration an isolated
 resource scope. The framework then verifies that each
 requested workload is ready, that the backend Service has ready endpoints,
@@ -1434,41 +1444,41 @@ later iteration. Iteration-level comparisons preserve the order of
 decisions and failures rather than reducing a trajectory to one final
 number. Deployment and load-test configuration are supplied by the
 experiment profile rather than assembled from ad-hoc values in the prompt,
-so every cell and model is evaluated under identical execution conditions.
+so every task and model is evaluated under identical execution conditions.
 
 \paragraph{Statistical treatment.}
-Repeated samples of a cell would let us estimate directly, rather than
+Repeated samples of a task would let us estimate directly, rather than
 assume, the variance introduced by stochastic code and deployment
 generation. The experiments reported in this thesis use one sample per
-cell instead, because a complete ten-iteration refinement trajectory is
+task instead, because a complete ten-iteration refinement trajectory is
 costly; this is a property of the specific experiments run here, not a
 constraint of the method itself.
 
 Two distinct sources of variance bear on how these single-sample results
 should be read. The first is \emph{generation} variance, the run-to-run
 spread introduced by stochastic code and deployment-specification
-generation at a fixed cell. One sample cannot estimate it within a cell,
+generation at a fixed task. One sample cannot estimate it within a task,
 but every model- or framework-level summary in Chapter~\ref{ch:results}
-is an aggregate over many cells (21 per model, spanning seven scenarios
+is an aggregate over many tasks (21 per model, spanning seven scenarios
 and three frameworks) and therefore averages over that many
 semi-independent generation draws, so no single unlucky or lucky
 generation dominates a geometric mean taken across the set. The aggregate
-comparisons that RQ1, RQ4, and RQ5 rest on are in this sense better
-supported than any individual cell, even though each cell is drawn once.
+comparisons that RQ1, RQ3, and RQ4 rest on are in this sense better
+supported than any individual task, even though each task is drawn once.
 We also assume that some generation variance is absorbed by refinement
 itself: an unhealthy baseline or an unlucky single iteration is not
 necessarily fatal, since later iterations have further opportunities to
-recover from it (Section~\ref{sec:results-rq1} reports several cells that
+recover from it (Section~\ref{sec:results-rq1} reports several tasks that
 do exactly this), an assumption not independently verified here. The
 second source is \emph{measurement} variance, the run-to-run spread the
 load profile itself introduces when the same fixed deployment is
-benchmarked more than once. Averaging over cells does not cancel this,
-because it is present in every cell alike rather than varying
+benchmarked more than once. Averaging over tasks does not cancel this,
+because it is present in every task alike rather than varying
 independently across them; it is instead examined directly, holding code,
 specification, and deployment fixed, in Section~\ref{sec:results-rq2}.
 
-Results are therefore descriptive: aggregate summaries over cells damp
-generation variance but are not significance-tested against it, single-cell
+Results are therefore descriptive: aggregate summaries over tasks damp
+generation variance but are not significance-tested against it, single-task
 and single-trajectory observations (such as the case studies of
 Section~\ref{sec:results-case-studies}) carry no such averaging and are read as
 individual evidence rather than as population-mean estimates, and

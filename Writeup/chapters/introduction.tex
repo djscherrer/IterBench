@@ -89,10 +89,10 @@ This gap leaves a fundamental question unanswered:
 \section{This Work}
 \label{sec:intro-thiswork}
 
-In this thesis, we extend \textsc{BaxBench} with a Kubernetes-based iterative
-benchmarking framework that addresses this question.  Given a
-\textsc{BaxBench} scenario and a target Kubernetes cluster, the framework
-orchestrates a multi-phase refinement loop:
+In this thesis, we present \textsc{IterBench}, a Kubernetes-based iterative
+benchmarking framework that extends \textsc{BaxBench} to address this
+question.  Given a \textsc{BaxBench} scenario and a target Kubernetes cluster,
+\textsc{IterBench} orchestrates a multi-phase refinement loop:
 %
 \begin{enumerate}
   \item A \textbf{baseline phase} in which the LLM agent generates both
@@ -136,34 +136,30 @@ that help, whether it depends on the model, and where it breaks down are
 separate empirical claims. It also rests on a measurement whose own behavior
 needs checking before it can carry that weight: every iteration score in this
 thesis comes from the Explore-and-Refine load profile
-(Section~\ref{sec:methods-load-profile}), so Chapter~\ref{ch:results}
-decomposes the central question into six questions, asked of the same
-dataset (three models, seven \textsc{BaxBench} scenarios, three frameworks;
+(Section~\ref{sec:methods-load-profile}). Chapter~\ref{ch:results} therefore
+validates that measurement instrument first
+(Section~\ref{sec:results-load-profile-validation}), then decomposes the
+central question into five questions asked of the same dataset (three models,
+seven \textsc{BaxBench} scenarios, three frameworks;
 Chapter~\ref{ch:setup}):
 %
 \begin{description}
   \item[RQ1] Does iterative refinement improve sustained goodput
     (Section~\ref{sec:results-rq1})?
-  \item[RQ2] Does the Explore-and-Refine load profile itself locate a
-    system's sustained goodput reliably and repeatably, at a bounded and
-    predictable cost, while remaining robust enough to survive and recover
-    from the overload it deliberately induces (Section~\ref{sec:results-rq2})?
-  \item[RQ3] Which refinement lever, code or deployment, contributes more,
+  \item[RQ2] Which refinement lever, code or deployment, contributes more,
     and do the two specialise on different failure classes
     (Section~\ref{sec:results-rq3})?
-  \item[RQ4] Does a scenario's static task complexity explain which
+  \item[RQ3] Does a scenario's static task complexity explain which
     scenarios are harder to optimise, in baseline health, failure rate, and
     headroom left for refinement (Section~\ref{sec:results-rq4})?
-  \item[RQ5] Does application-framework choice affect achievable goodput
+  \item[RQ4] Does application-framework choice affect achievable goodput
     independently of refinement (Section~\ref{sec:results-rq5})?
-  \item[RQ6] Which failure sources are most prominent in this dataset, and
-    how does their frequency compare across phases, models, and cells
+  \item[RQ5] Which failure sources are most prominent in this dataset, and
+    how does their frequency compare across phases, models, and tasks
     (Section~\ref{sec:results-rq6})?
 \end{description}
 %
-RQ2 validates the measurement instrument the other five RQs depend on rather
-than adding a new claim about the systems themselves.
-Chapter~\ref{ch:discussion} interprets the six answers together, and
+Chapter~\ref{ch:discussion} interprets the five answers together, and
 Chapter~\ref{ch:conclusion} returns to the overarching question directly.
 
 
@@ -174,8 +170,8 @@ Chapter~\ref{ch:conclusion} returns to the overarching question directly.
 This thesis makes the following contributions:
 %
 \begin{enumerate}
-  \item \textbf{An iterative benchmark framework} that extends
-        \textsc{BaxBench} with Kubernetes deployment, adaptive load testing,
+  \item \textbf{An iterative benchmark framework} (\textsc{IterBench}) that
+        extends \textsc{BaxBench} with Kubernetes deployment, adaptive load testing,
         and a multi-phase refinement loop in which the agent chooses between
         code and deployment-specification refinement. Deterministic failure
         routing (Section~\ref{sec:methods-failure}) preserves artifact lineage
@@ -199,7 +195,7 @@ This thesis makes the following contributions:
 
   \item \textbf{An experimental evaluation} across three frontier-tier
         LLMs, seven \textsc{BaxBench} scenarios, and three application
-        frameworks, covering all 63 scenario--framework--model cells, while
+        frameworks, covering all 63 scenario--framework--model tasks, while
         tracking LLM cost alongside goodput. The evaluation shows that refinement
         generally improves sustained goodput, that code and deployment changes
         address different failure classes, and that outcomes vary with the
@@ -231,11 +227,11 @@ The remainder of this thesis is organised as follows.
   \item[Chapter~\ref{ch:setup}] details the experimental setup, including
     cluster configuration, selected models, scenarios, and hyperparameters.
 
-  \item[Chapter~\ref{ch:results}] presents the evaluation, organised around the
-    six research questions of Section~\ref{sec:intro-rqs}, one of which (RQ2)
-    validates the load-profile measurement instrument the other five depend on,
-    closing with a cross-cutting synthesis that connects the answers back to the
-    overarching question of Section~\ref{sec:intro-missing}.
+  \item[Chapter~\ref{ch:results}] presents the evaluation, first validating the
+    load-profile measurement instrument and then answering the five research
+    questions of Section~\ref{sec:intro-rqs}, before a closing summary
+    connects the answers back to the overarching question of
+    Section~\ref{sec:intro-missing}.
 
   \item[Chapter~\ref{ch:discussion}] interprets those results, discusses their
     limitations and threats to validity, and draws out practical implications
