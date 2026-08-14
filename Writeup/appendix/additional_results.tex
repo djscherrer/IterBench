@@ -90,12 +90,12 @@ gives those step counts).
 \begin{table}[htbp]
   \centering
   \caption{Mean LLM cost (USD) per refinement-decision call, per
-    code-refinement step, and per spec-refinement step, by model.}
+    code-refinement step, and per deployment-refinement step, by model.}
   \label{tab:appendix-cost-lever}
   \small
   \begin{tabular}{@{}lrrr@{}}
     \toprule
-    \textbf{Model} & \textbf{\$ / decision} & \textbf{\$ / code step} & \textbf{\$ / spec step} \\
+    \textbf{Model} & \textbf{\$ / decision} & \textbf{\$ / code step} & \textbf{\$ / deployment step} \\
     \midrule
     \texttt{claude-opus-4-8} & \$0.24 & \$0.58 & \$0.22 \\
     \texttt{gpt-5.5}         & \$0.16 & \$0.67 & \$0.25 \\
@@ -105,10 +105,10 @@ gives those step counts).
 \end{table}
 
 A code-refinement step costs two to three times as much as a
-spec-refinement step for every model, which tracks what the two calls
+deployment-refinement step for every model, which tracks what the two calls
 actually do: code refinement rewrites and resubmits application source,
-while spec refinement adjusts a small, structured \texttt{spec.yaml}
+while deployment refinement adjusts a small, structured \texttt{spec.yaml}
 (Section~\ref{sec:methods-spec}). Section~\ref{sec:results-rq3} reports
-that code refinement also fails outright more often than spec refinement
+that code refinement also fails outright more often than deployment refinement
 before ever producing a usable comparison; on top of that risk, it is
 consistently the more expensive lever to attempt, for all three models.

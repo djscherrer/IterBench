@@ -144,7 +144,8 @@ seven \textsc{BaxBench} scenarios, three frameworks;
 Chapter~\ref{ch:setup}):
 %
 \begin{description}
-  \item[RQ1] Does iterative refinement improve sustained goodput
+  \item[RQ1] Does iterative refinement improve sustained goodput, and how
+    does that improvement differ across the three models
     (Section~\ref{sec:results-rq1})?
   \item[RQ2] Which refinement lever, code or deployment, contributes more,
     and do the two specialise on different failure classes
@@ -159,6 +160,12 @@ Chapter~\ref{ch:setup}):
     (Section~\ref{sec:results-rq6})?
 \end{description}
 %
+Scenario and framework each get a question of their own (RQ3, RQ4) because
+they are properties of the optimisation problem the agent is handed. The
+choice of model is a property of the agent itself, and so cuts across all
+five questions rather than forming a sixth: every question above is reported
+per model, and the accompanying cost comparison is collected in
+Appendix~\ref{ch:appendix-additional-results}.
 Chapter~\ref{ch:discussion} interprets the five answers together, and
 Chapter~\ref{ch:conclusion} returns to the overarching question directly.
 
@@ -173,7 +180,7 @@ This thesis makes the following contributions:
   \item \textbf{An iterative benchmark framework} (\textsc{IterBench}) that
         extends \textsc{BaxBench} with Kubernetes deployment, adaptive load testing,
         and a multi-phase refinement loop in which the agent chooses between
-        code and deployment-specification refinement. Deterministic failure
+        code and deployment refinement. Deterministic failure
         routing (Section~\ref{sec:methods-failure}) preserves artifact lineage
         and makes failed iterations attributable to a recorded stage rather
         than an unexplained end-to-end outcome.
@@ -235,7 +242,7 @@ The remainder of this thesis is organised as follows.
 
   \item[Chapter~\ref{ch:discussion}] interprets those results, discusses their
     limitations and threats to validity, and draws out practical implications
-    for agentic software optimisation and Kubernetes deployment tuning.
+    for agentic software optimisation and Kubernetes deployment optimisation.
 
   \item[Chapter~\ref{ch:conclusion}] answers the overarching research question
     directly, summarises what worked and what did not, and outlines

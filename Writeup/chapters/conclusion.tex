@@ -106,11 +106,12 @@ concentrated, framework-specific correctness signal that a
 single-container, single-framework evaluation would not surface as
 clearly. Also unexpected, though smaller: the deployment-and-cluster path
 was \emph{nearly}, but not quite, invisible as a source of failure. A
-handful of refinement iterations, most of them spec-refinement, across
-tasks from two different models, produced deployments that passed static
-validation but then either crash-looped or never passed their readiness
-probe within the wait window, so a proposal can still fail at apply time
-for reasons a static check was never designed to catch. The same
+handful of refinement iterations, most of them deployment-refinement
+steps, across tasks from two different models, produced deployments that
+passed static validation but then either crash-looped or never passed
+their readiness probe within the wait window, so a proposal can still
+fail at apply time for reasons a static check was never designed to
+catch. The same
 validation is also documented, on two separate tasks, correctly rejecting
 an infeasible proposal before it was ever applied
 (Section~\ref{sec:results-rq6}).
@@ -145,7 +146,7 @@ refinement, guided only by adaptive load-test feedback and resource
 diagnostics, consistently increased sustained goodput once a functionally
 correct baseline existed, and in a majority of dead-baseline tasks it
 produced a working deployment where none existed initially. The
-deployment-specification lever specifically, the part of the question
+deployment-deployment refinement specifically, the part of the question
 closest to this thesis's actual contribution, since code-level LLM
 optimisation is comparatively well studied
 (Section~\ref{sec:rw-llm-perf}), behaved as a genuine, if bounded and
@@ -205,7 +206,7 @@ constraints in general.
 \paragraph{Steer scenario generation toward diverse, complex bottlenecks.}
 Every scenario evaluated here is, structurally, a CRUD application over a
 single relational database: read/write operations on rows, with the
-deployment-tuning problem consequently concentrated in database topology,
+deployment-optimisation problem consequently concentrated in database topology,
 connection pooling, and horizontal fan-out
 (Section~\ref{sec:discussion-limitations}). This is a property of the
 scenario-construction pipeline (Section~\ref{sec:methods-scenario-gen})
@@ -256,10 +257,10 @@ raise the bar an implementation has to clear before it is trusted, at the
 cost of a stricter, more expensive generation pipeline.
 
 \paragraph{Constrain or measure within-lever attribution.} The backfire
-case in Section~\ref{sec:results-case-studies} shows that a single spec-refinement
+case in Section~\ref{sec:results-case-studies} shows that a single deployment-refinement
 step can change several fields at once, which limits attribution the same
-way mixing code and spec changes would. Future work could either constrain
-spec-refinement steps to one field at a time and measure whether that
+way mixing code and deployment changes would. Future work could either constrain
+deployment-refinement steps to one field at a time and measure whether that
 improves reliability, particularly for \texttt{glm-5.2} and its collapse
 rate above, or instrument enough
 to attribute outcomes to individual fields \emph{post hoc} without

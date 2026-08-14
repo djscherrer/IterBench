@@ -19,7 +19,10 @@ three frameworks, one sample per task. This chapter asks what it shows.
 Rather than walking through every task one at a time, it first validates
 the load profile used to obtain every goodput measurement and then answers
 five research questions that aggregate across every task, model, and
-scenario collected. A closing summary draws the five answers together
+scenario collected. Model choice is a cross-cutting dimension rather than a
+question of its own: each of the five is reported per model, so the
+comparison between the three accumulates across the chapter instead of
+sitting in one section. A closing summary draws the five answers together
 and connects them back to the thesis's central
 question (Section~\ref{sec:intro-missing}): \emph{can an LLM agent
 iteratively optimise the deployment configuration of a backend application
@@ -60,7 +63,8 @@ claim.
 
 
 % ----- §5.2 RQ1 -----
-\section{RQ1: Does Iterative Refinement Improve Sustained Goodput?}
+\section{RQ1: Does Iterative Refinement Improve Sustained Goodput, and How
+Does That Differ Across Models?}
 \label{sec:results-rq1}
 
 \begin{table}[H]
@@ -191,7 +195,7 @@ compounded: the next decision stage receives them as feedback, and most
 trajectories recover within one or two iterations.
 \textsc{BranchWeave}$\times$\textsc{Rust-Actix} on \texttt{claude-opus-4-8}
 is the sharpest exception. After reaching $25{,}327.3$\,req/s at
-iteration~007, two consecutive spec-refinement iterations, 009, which
+iteration~007, two consecutive deployment-refinement iterations, 009, which
 reduced database replicas from 3 to 2, and 010, which reduced
 \texttt{max\_connections} from 400 to 250, drove goodput to zero. The
 trajectory then exhausted its budget, ending at $0$\,req/s despite having
@@ -205,7 +209,16 @@ that recovers more slowly but before the budget is exhausted.
 \textbf{Yes, with two caveats.} Refinement improves sustained goodput in
 every model whenever a task has data, and in a large majority of
 dead-baseline tasks (28 of 30) it is not a marginal improvement but the
-difference between a non-functional and a functional deployment. The size
+difference between a non-functional and a functional deployment. The
+improvement is universal across the three models, but its shape is not:
+\texttt{gpt-5.5} arrives at refinement with the most already-healthy
+baselines and finishes highest in absolute goodput, \texttt{glm-5.2}
+starts dead most often yet recovers from 13 of those 14 baselines to
+finish narrowly above \texttt{claude-opus-4-8}, and
+\texttt{claude-opus-4-8}'s leading multiplicative gain reflects its lower
+starting point rather than a stronger endpoint. Which model is ``best''
+therefore depends on whether the question is about the baseline call or
+the loop that follows it. The size
 of the multiplicative gain, however, is no fixed ``refinement value-add''
 comparable across tasks: it tracks how under-provisioned the baseline
 happened to be, most sharply on the near-stateless \textsc{ClickCount}
@@ -252,7 +265,7 @@ the spec choices. That gap is not uniform across models. For
 \texttt{glm-5.2}, code refinement fails outright more than a quarter of
 the time, by far the highest rate in this table and driven almost
 entirely by the \textsc{Rust-Actix} compile failures
-Section~\ref{sec:results-rq6} documents, while its own spec lever fails
+Section~\ref{sec:results-rq6} documents, while its own deployment refinement fails
 only $7.1\%$ of the time. \texttt{gpt-5.5} shows the same direction at a
 smaller scale, with no spec failures at all, and \texttt{claude-opus-4-8}
 is the one model whose two levers fail at comparable, low rates. For every
@@ -295,7 +308,7 @@ dead, and collapses a working one comparatively rarely (19 of 280
 completed steps). Deployment refinement shows the opposite balance: it
 recovers a dead predecessor only about half as often as it fails to, and
 collapses a working deployment proportionally more often than code
-refinement does. \texttt{claude-opus-4-8}'s code lever is the one partial
+refinement does. \texttt{claude-opus-4-8}'s code refinement is the one partial
 exception to the pooled pattern, failing to revive a dead predecessor
 more often than it succeeds.
 
@@ -388,7 +401,7 @@ correctness-adjacent bottleneck, the same class of bug BaxBench's
 load-free evaluation cannot observe (Section~\ref{sec:rw-benchmarks}).
 Deployment refinement is smaller on both median and mean and fails
 outright far less often, but it is not risk-free once it runs: every
-model has spec steps that collapse a working deployment to zero.
+model has deployment-refinement steps that collapse a working deployment to zero.
 
 
 % ----- RQ3 -----
@@ -427,19 +440,19 @@ model has spec steps that collapse a working deployment to zero.
 
 \paragraph{Evidence.}
 Every scenario receives the same nine tasks (three models $\times$ three
-frameworks; Chapter~\ref{ch:setup}), so any difference in difficulty
-between two scenarios cannot be attributed to one scenario drawing an
-easier model or framework mix: model and framework are held constant
-across the comparison. Section~\ref{sec:setup-scenarios} and
-Table~\ref{tab:appendix-scenarios} already record each scenario's static
-complexity, its endpoint count and functional-test count. This section
-asks whether that static complexity predicts three empirical difficulty
-signals pooled from the same nine tasks: how often the baseline already
-starts healthy, how often an iteration fails outright
-(Section~\ref{sec:results-rq6}), and how much headroom is left for
-refinement to find once something works (the best-over-first-positive
-gain used elsewhere in this chapter). Table~\ref{tab:results-rq4-scenario}
-reports all three alongside the endpoint and functional-test counts.
+frameworks; Chapter~\ref{ch:setup}), so model and framework are held
+constant across any scenario-to-scenario comparison and a difference in
+difficulty is attributable to the scenario itself.
+Section~\ref{sec:setup-scenarios} and
+Table~\ref{tab:appendix-scenarios} record each scenario's static
+complexity, its endpoint and functional-test counts. This section asks
+whether that static complexity predicts three empirical difficulty
+signals: how often the baseline already starts healthy, how often an
+iteration fails outright (Section~\ref{sec:results-rq6}), and how much
+headroom refinement finds once something works (the
+best-over-first-positive gain used elsewhere in this chapter).
+Table~\ref{tab:results-rq4-scenario} reports all three alongside the
+static counts.
 
 \paragraph{Endpoint count alone does not predict difficulty.}
 \textsc{Petstore} has both the largest surface (8 endpoints, 13
@@ -573,32 +586,34 @@ surface.
 Figure~\ref{fig:results-failure-taxonomy} splits the \textbf{61} recorded
 failures by phase, model, and kind: \textbf{47} occur in the
 \texttt{02-code} phase, \textbf{10} in \texttt{04-deploy}, \textbf{3} in
-\texttt{03-spec}, and \textbf{1} in \texttt{01-decision}, so code-phase
+\texttt{03-spec}, and \textbf{1} in \texttt{01-decision}, so code-refinement
 failures alone outnumber every other phase combined. Within the code
 phase, two kinds dominate: \textbf{31} are \texttt{functional\_test}
 failures, split 3 / 13
 / 15 across \texttt{claude-opus-4-8} / \texttt{gpt-5.5} / \texttt{glm-5.2}
 and present for every model, and \textbf{14} are \texttt{docker\_build}
-failures (Rust or Go code that fails to compile), concentrated almost
-entirely in one model: 12 \texttt{glm-5.2}'s, 2 \texttt{gpt-5.5}'s, none
+failures, every one of them \textsc{Rust-Actix} code that fails to
+compile, concentrated almost entirely in one model: 12
+\texttt{glm-5.2}'s, 2 \texttt{gpt-5.5}'s, none
 \texttt{claude-opus-4-8}'s. Together, functional-test and docker-build
 failures account for 45 of the 61 recorded failures (74\%), and both are
 correctness problems the agent is directly responsible for rather than
 artefacts of the deployment path.
 
-Two deploy-phase failure kinds each recur across more than one task.
-\textbf{4} \texttt{crashloop} failures span two \texttt{glm-5.2} tasks:
-three on \textsc{ParcelPinLockerPickup}, two consecutive spec-refinement
-iterations (002--003) on \textsc{Go-net-http} and one code-phase iteration
+Two deploy-phase failure kinds each recur across more than one iteration.
+\textbf{4} \texttt{crashloop} failures span three \texttt{glm-5.2} tasks
+across two scenarios:
+three on \textsc{ParcelPinLockerPickup}, two consecutive deployment-refinement
+iterations (002--003) on \textsc{Go-net-http} and one code-refinement iteration
 (004) on \textsc{Rust-Actix}, and a fourth on
-\textsc{ClickCount}$\times$\textsc{Python-Flask} (spec-refinement iteration
+\textsc{ClickCount}$\times$\textsc{Python-Flask} (deployment-refinement iteration
 004). In all four, the diagnostic shows every
 backend pod already scheduled and running, then repeatedly
 \texttt{CrashLoopBackOff} across every worker node, an application-level
 crash rather than a resource shortfall. \textbf{2} \texttt{timeout} failures
 appear on \texttt{claude-opus-4-8}'s
 \textsc{Petstore}$\times$\textsc{Python-Flask} task (iterations 005--006,
-both spec-refinement): pods reach \texttt{Running} but a majority never
+both deployment refinement): pods reach \texttt{Running} but a majority never
 pass their readiness probe within the wait window, so the rollout never
 converges even though nothing crashes. Both are genuine deploy-phase
 outcomes distinct from the resource-infeasibility case the next paragraph
@@ -632,7 +647,7 @@ The remaining kinds are small in count but each a distinct, genuine
 signal: \textbf{3} \texttt{spec\_validation} failures (the two node-pinning
 cases just described, plus \texttt{glm-5.2}'s
 \textsc{Recipes}$\times$\textsc{Rust-Actix} task) and \textbf{3}
-decision- or code-phase \texttt{llm\_parse} failures (all
+decision- or code-refinement \texttt{llm\_parse} failures (all
 \texttt{glm-5.2}: \textsc{Petstore}$\times$\textsc{Go-net-http} at baseline,
 and \textsc{SplitNestSharedExpenseLedger} on both
 \textsc{Go-net-http}\,(iteration 006) and \textsc{Rust-Actix}\,(iteration
@@ -662,7 +677,7 @@ discrete, labelled events, and by construction they can only report what
 was labelled. The first two cases below sit outside that count entirely,
 on the same task, yet each changes what the aggregate picture means; the
 third looks at a healthy trajectory instead, to show what a
-spec-refinement decision looks like when it does track the workload
+deployment-refinement decision looks like when it does track the workload
 correctly.
 
 \paragraph{Case study: a connection-pooling bug invisible to
@@ -685,7 +700,7 @@ framework introduces. Iteration~001 (code refinement) does not fix it
 (goodput remains 0); iteration~002 (code refinement again, chosen freely
 by the decision stage given the iteration~001 failure feedback) does,
 jumping to $21{,}542.3$\,req/s. This is direct evidence that iterative
-\emph{code} refinement, not deployment tuning, is the correct lever for
+\emph{code} refinement, not deployment refinement, is the correct lever for
 an infra-interaction bug the model could not have anticipated at
 generation time, and that it can take more than one attempt.
 
@@ -720,9 +735,11 @@ CPU cut left the application under-provisioned for its own request
 handling while the new DB topology was still stabilising. The task goes
 on to alternate lever choices through the rest of its budget, peaking at
 $44{,}850.9$\,req/s at iteration~007 before settling at $40{,}414.0$\,req/s
-by iteration~010, itself not a monotonic climb, with two further
-consecutive code-refinement steps (iterations~008--009) that give back
-part of the gain before the final spec step recovers it. Unlike
+by iteration~010, itself not a monotonic climb: the first of two
+consecutive code-refinement steps (iteration~008) gives back roughly a
+fifth of the peak, the second (iteration~009) recovers about half of what
+was lost, and the closing deployment-refinement step adds $20$\,req/s to that, leaving the
+trajectory below its own peak. Unlike
 \texttt{claude-opus-4-8}'s \textsc{BranchWeave}$\times$\textsc{Rust-Actix}
 task (Section~\ref{sec:results-rq1}), this trajectory has enough budget
 left after its own backfire to recover before running out.
@@ -730,9 +747,9 @@ left after its own backfire to recover before running out.
 changed three spec fields at once, which is consistent with the
 single-lever-per-iteration design (Section~\ref{sec:methods-workflow}) but
 does not prevent \emph{multiple fields within one lever} from changing
-simultaneously, which limits attribution within a spec-refinement step the
-same way mixing code and spec changes would across steps. RQ2's finding
-that \texttt{glm-5.2}'s spec-refinement steps collapse a working
+simultaneously, which limits attribution within a deployment-refinement step the
+same way mixing code and deployment changes would across steps. RQ2's finding
+that \texttt{glm-5.2}'s deployment-refinement steps collapse a working
 deployment to zero goodput more often than any other model/lever
 combination in this dataset (Section~\ref{sec:results-rq3}) suggests this
 is not a one-off either for this task or this model.
@@ -740,7 +757,7 @@ is not a one-off either for this task or this model.
 \paragraph{Case study: a spec trajectory that tracks a workload's scaling
 shape.} \texttt{gpt-5.5} on \textsc{ClickCount}$\times$\textsc{Go-net-http}
 produces a large gain ($17.0\times$, baseline
-$5{,}725.9$\,req/s to best $97{,}137.7$\,req/s), and its spec-refinement
+$5{,}725.9$\,req/s to best $97{,}137.7$\,req/s), and its deployment-refinement
 steps move in a consistent direction across the run rather than
 oscillating:
 
@@ -764,9 +781,9 @@ oscillating:
   \end{tabular}
 \end{table}
 
-By iteration~006 a code step has already lifted goodput to near this
+By iteration~006 a code-refinement step has already lifted goodput to near this
 task's ceiling ($\sim$96{,}000\,req/s, among the highest in the dataset);
-the spec steps that follow hold it there while moving deployment knobs in
+the deployment-refinement steps that follow hold it there while moving deployment knobs in
 a workload-appropriate direction rather than driving a further climb.
 Between iterations 006 and 010, the agent roughly \emph{sextuples}
 replica count (48 $\to$ 320) while \emph{quartering} per-pod CPU request
@@ -776,15 +793,22 @@ near-stateless counter increment (Section~\ref{sec:setup-scenarios}),
 this is the correct qualitative direction: per-request CPU cost is
 negligible, so raw horizontal fan-out beats per-pod headroom, and the
 extra Postgres read replicas the baseline provisioned were never
-load-bearing. \texttt{glm-5.2} shows the same qualitative direction on its
-own \textsc{ClickCount}$\times$\textsc{Go-net-http} task, the single
-largest gain in this dataset ($66.7\times$), though a full
-knob-by-knob trajectory is not reproduced here. Spec prompts intentionally
+load-bearing. \texttt{glm-5.2} reaches almost exactly the same ceiling on
+its own \textsc{ClickCount}$\times$\textsc{Go-net-http} task
+($96{,}281.8$\,req/s, and the single largest gain in this dataset at
+$66.7\times$), but not by the same route: its replica count ends where it
+started (50), it halves rather than quarters per-pod CPU
+(1000m $\to$ 500m), and it never provisioned the database read replicas
+that \texttt{gpt-5.5} dropped. Its deployment-refinement steps oscillate across the run
+(50 $\to$ 25 $\to$ 50 $\to$ 20 $\to$ 50 replicas) instead of settling on a
+direction, so the two models arrive at the same ceiling on the same task
+by visibly different deployment settings. Spec prompts intentionally
 omit recommended numeric ranges (Section~\ref{sec:methods-spec}), so this
 directional movement is evidence that, on this trajectory, the agent is
 reading load-test and utilisation feedback rather than falling back on
-defaults; the backfire case above, on a different task, and RQ2's finding
-that spec-refinement steps collapse a working deployment to zero goodput
+defaults; the backfire case above, \texttt{glm-5.2}'s oscillating path on
+this same task, and RQ2's finding
+that deployment-refinement steps collapse a working deployment to zero goodput
 more often for \texttt{glm-5.2} than for any other model/lever combination
 in this dataset (Section~\ref{sec:results-rq3}), are enough to show this
 direction is not guaranteed by the mechanism itself, only that it is
@@ -801,9 +825,9 @@ Section~\ref{sec:results-rq6}'s counts, since both iterations complete as
 harness-level successes recording zero goodput, the same blind spot RQ1's
 \textsc{BranchWeave}$\times$\textsc{Rust-Actix} task shows at trajectory
 scale. The \textsc{ClickCount} case is the counterpoint: the same lever
-instead tracks the workload's actual scaling shape, reproduced
-qualitatively by a second model, which shows the mechanism is capable of
-this, not that it reliably does it.
+instead tracks the workload's actual scaling shape. A second model
+reaches the same ceiling on that task by an oscillating path, which shows
+the mechanism is capable of this, not that it reliably does it.
 
 
 % ----- §5.9 Summary -----
@@ -840,8 +864,8 @@ Across all three models and all 63 scenario/framework tasks:
         comparison is achieved goodput against cost: \texttt{gpt-5.5}
         reaches the highest absolute goodput without costing
         proportionally more, while \texttt{glm-5.2} slightly exceeds
-        \texttt{claude-opus-4-8}'s goodput at under a fifth of the cost
-        (Appendix~\ref{ch:appendix-additional-results});
+        \texttt{claude-opus-4-8}'s goodput at roughly a fifth of the cost
+        (RQ1; Appendix~\ref{ch:appendix-additional-results});
   \item \textsc{Go-net-http} sets the highest achievable-goodput ceiling
         for all three models; which framework sets the \emph{lowest} is
         not universal (\textsc{Python-Flask} for \texttt{gpt-5.5} and
@@ -849,7 +873,7 @@ Across all three models and all 63 scenario/framework tasks:
         \texttt{claude-opus-4-8}) (RQ4);
   \item individual trajectories (case studies) show deployment-spec
         decisions that move parameters in a workload-appropriate
-        direction, but not every spec-refinement decision improves the
+        direction, but not every deployment-refinement decision improves the
         outcome, even when the stated rationale is sound, and in one case
         the downside is severe enough to end the trajectory (RQ1);
   \item nearly all \emph{genuine} attrition happens at the

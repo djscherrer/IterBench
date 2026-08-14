@@ -20,7 +20,7 @@ model-level difference.} The clearest pattern across all five research
 questions is not a capability gap between models, but a division of
 labour between the two refinement levers: both the largest source of
 attrition and the largest single-step goodput recoveries trace to code
-correctness rather than deployment tuning
+correctness rather than deployment refinement
 (Section~\ref{sec:results-summary}), and this holds for all three models.
 Where model differences do appear, they concentrate in a narrower place
 than a first glance at raw completion counts would suggest: all 63 tasks
@@ -51,10 +51,10 @@ of labour in Section~\ref{sec:results-rq3}, code refinement carrying
 correctness-adjacent fixes with a heavy positive tail, deployment
 refinement acting as a smaller and, for one model, occasionally negative
 capacity knob, is consistent with what each lever can structurally see. A
-spec-refinement step can move replicas, resources, and database topology,
+deployment-refinement step can move replicas, resources, and database topology,
 but it cannot change what the running application \emph{does}; if the
 bottleneck is a connection-handling bug
-(Section~\ref{sec:results-case-studies}), no amount of deployment tuning reaches
+(Section~\ref{sec:results-case-studies}), no amount of deployment refinement reaches
 it. The reverse is not quite symmetric: code refinement \emph{can}, in
 principle, work around a deployment problem by changing application
 behaviour (for example, reducing per-request work), which may explain why
@@ -90,7 +90,7 @@ iterations to work with, the \textsc{ClickCount} case study
 (Section~\ref{sec:results-case-studies}) shows deployment parameters
 moving in a consistent direction across several iterations rather than
 oscillating: once the agent identifies that horizontal fan-out beats
-per-pod headroom for a near-stateless workload, later spec iterations
+per-pod headroom for a near-stateless workload, later deployment-refinement iterations
 continue in that direction rather than re-deriving it from scratch, which
 is the behaviour the append-only conversational memory of
 Section~\ref{sec:methods-workflow} is designed to support. This is one
@@ -117,7 +117,7 @@ were evaluated (Section~\ref{sec:setup-scenarios}), chosen to span a range
 of workload shapes rather than to be a representative sample in a
 statistical sense. All seven require a database; none is compute-bound in
 the way an image-processing or cryptographic scenario would be, so the
-deployment-tuning story this thesis tells is specifically a
+deployment-optimisation story this thesis tells is specifically a
 \emph{database-and-network-bound} story. Whether the same code/deployment
 division of labour holds for CPU-bound workloads is untested.
 

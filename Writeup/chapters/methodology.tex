@@ -477,9 +477,9 @@ summarises the routing policy.
     \midrule
     Decision & LLM decides freely with failure context \\
     Code (baseline) & Sample aborts after the baseline retry budget \\
-    Code (refinement) & Force Code \\
+    Code (refinement) & Force code refinement \\
     Spec (baseline) & Sample aborts after the baseline retry budget \\
-    Spec (refinement) & Force deployment-specification refinement \\
+    Spec (refinement) & Force deployment refinement \\
     Deploy & LLM decides freely \\
     Bench (harness failure) & LLM decides freely \\
     \bottomrule
@@ -793,7 +793,7 @@ A Decision failure becomes context for the next free decision
 (Section~\ref{sec:methods-failure}).
 
 \paragraph{Single-lever policy.}
-Deployment tuning and code optimisation are coupled but costly to change
+Deployment refinement and code refinement are coupled but costly to change
 jointly. The policy assumes that each round of feedback predominantly points
 to a bottleneck at one lever, so the iteration budget is better spent
 refining one artifact after the other, with a performance measurement in
@@ -1463,7 +1463,8 @@ is an aggregate over many tasks (21 per model, spanning seven scenarios
 and three frameworks) and therefore averages over that many
 semi-independent generation draws, so no single unlucky or lucky
 generation dominates a geometric mean taken across the set. The aggregate
-comparisons that RQ1, RQ3, and RQ4 rest on are in this sense better
+comparisons that RQ1, RQ3, and RQ4 rest on, by model, scenario, and
+framework respectively, are in this sense better
 supported than any individual task, even though each task is drawn once.
 We also assume that some generation variance is absorbed by refinement
 itself: an unhealthy baseline or an unlucky single iteration is not
