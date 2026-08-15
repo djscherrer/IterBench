@@ -1,36 +1,37 @@
 \chapter*{Abstract}
 
-Large language models can now generate functionally correct backend
-applications, but existing benchmarks evaluate them in an isolated,
-single-container environment and stop there. Production backends run
-under shared cluster resources, where replica counts, resource limits,
-pod placement, and database topology jointly determine achievable
-throughput. This thesis asks whether an LLM agent can close that gap
-itself: iteratively optimise the deployment configuration of a backend
-application on a Kubernetes cluster, guided by runtime performance
-feedback, to maximise sustainable throughput under fixed infrastructure
-constraints.
+\textsc{BaxBench} demonstrates that LLMs can generate complete backend
+applications without solving functional
+correctness~\cite{vero2025baxbench}. Correctness measured in an isolated single
+container is necessary for production use but not sufficient. Deployed backends
+run under shared cluster resources, where replica counts, resource limits, and
+database topology jointly determine achievable throughput. This thesis asks
+whether an LLM agent can close that gap itself: iteratively optimise a deployed
+backend service on Kubernetes to maximise sustained goodput, the rate of
+successful requests it holds stably.
 
 We extend \textsc{BaxBench} with \textsc{IterBench}, a Kubernetes-based
-iterative benchmarking framework in which an agent alternates, one lever
-per iteration, between refining application code and a constrained
-deployment specification, guided by load-test and resource feedback after
-each deploy-and-benchmark cycle. Performance is scored by \emph{sustained
-goodput}, discovered automatically per deployment without per-scenario
-tuning.
+benchmarking framework whose agent picks one refinement lever per iteration,
+revising either the application code or a declarative deployment specification
+that a validator checks against a fixed cluster budget. Each
+deploy-and-benchmark cycle returns load-test results and cluster-resource
+diagnostics to the agent. An adaptive load profile locates each deployment's
+sustained-goodput ceiling from rolling load-test statistics, across capacities
+two orders of magnitude apart, in bounded time.
 
-We evaluate three frontier-tier models (Claude Opus 4.8, GPT-5.5,
-GLM-5.2) across seven \textsc{BaxBench} scenarios and three application
-frameworks, a fully covered matrix of 63 scenario$\times$framework$\times$model
-cells with ten refinement iterations each. Iterative refinement improves
-sustained goodput in essentially every cell, with gains from $1\times$ to
-more than $75\times$ depending on baseline under-provisioning. Code
-refinement contributes the largest single-step recoveries, dominated by
-correctness bugs invisible to single-container testing, and its mean
-effect exceeds deployment refinement's for every model. Deployment
-refinement is a smaller capacity knob that carries a distinct downside
-risk: it collapses a working deployment to zero goodput more often than
-code refinement does. LLM-guided deployment optimisation is therefore a
-viable but bounded complement to code-level optimisation, limited more by
-code-correctness entanglement and by a fixed budget's exposure to
-late-trajectory regressions than by the deployment-reasoning task itself.
+We evaluate three models (Claude Opus 4.8, GPT-5.5, GLM-5.2) across seven
+\textsc{BaxBench} scenarios and three application frameworks: 63 tasks, each
+with ten refinement iterations. Of these, 30 start with zero goodput; 28
+recover. Among the 61 tasks that ever serve, 58 improve on their first working
+measurement, by a geometric mean of $2.7\times$. GPT-5.5 more than doubles the
+geometric-mean best goodput of either other model, while GLM-5.2 matches Claude
+Opus 4.8 at a fifth of the cost. Code refinement, the most failure-prone and
+most expensive lever, produces the largest single-step gains and a higher mean
+effect for every model, its largest jumps fixing correctness or
+connection-handling defects exposed under load. Deployment refinement fails
+less often, yet the steps that do complete collapse working deployments to zero
+goodput more often. Framework choice sets a sustained-goodput cap that
+refinement does not lift, and \textsc{Go-net-http}'s is the highest for every
+model. LLM-driven optimisation therefore improves deployed services
+substantially, but code correctness, more than deployment reasoning, governs
+whether a service becomes tunable.

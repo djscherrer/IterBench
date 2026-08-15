@@ -668,6 +668,128 @@ as RQ1's \textsc{BranchWeave}$\times$\textsc{Rust-Actix} task does,
 because every one of its iterations completed as a harness-level success.
 
 
+% ----- Cost -----
+\section{What Refinement Costs}
+\label{sec:results-cost}
+
+Every result so far is stated in goodput alone, but refinement buys
+goodput with LLM calls, so its price is an outcome in its own right. This
+section reports what the campaign cost and which parts of the loop the
+money went into. Spend is read from each task's
+\texttt{llm\_cost\_ledger.json}, which records the provider-billed cost of
+every call; Appendix~\ref{ch:appendix-additional-results} carries the
+finer splits.
+
+\paragraph{Evidence.}
+Table~\ref{tab:setup-model-cost} sets each model's spend against what that
+spend achieved.
+
+\begin{table}[htbp]
+  \centering
+  \caption{Measured LLM spend per model over its 21 tasks, against
+    geometric-mean best achieved goodput, repeated from
+    Table~\ref{tab:results-rq1-summary}. The last column divides spend per
+    task by that figure, so it ranks the models rather than pricing any
+    individual task.}
+  \label{tab:setup-model-cost}
+  \small
+  \begin{tabular}{@{}lrrrr@{}}
+    \toprule
+    \textbf{Model} & \textbf{Total} & \textbf{\$ / task} & \textbf{Best goodput (rps)} & \textbf{\$ / 1000 rps} \\
+    \midrule
+    \texttt{gpt-5.5}         & \$148.67 & \$7.08 & 34{,}853 & \$0.20 \\
+    \texttt{claude-opus-4-8} & \$133.61 & \$6.36 & 13{,}382 & \$0.48 \\
+    \texttt{glm-5.2}         & \$28.49  & \$1.36 & 14{,}560 & \$0.09 \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\paragraph{The spread across models is a price difference, not an
+efficiency difference.} \texttt{glm-5.2} spends \$1.36 per task against
+\$6.36 and \$7.08, roughly a fifth of either. That gap is not explained by
+it doing less work: \texttt{glm-5.2} emitted the \emph{most} output tokens
+of the three models over the campaign (3.7M, against 2.8M and 2.9M), and
+attempted essentially the same number of refinement steps as the other
+two (209 against 210 and 210, Table~\ref{tab:results-rq3-funnel}). Its
+advantage is list price
+(Table~\ref{tab:setup-model-config}) rather than economy of tokens. Once
+spend is set against achieved goodput the ordering changes: \texttt{gpt-5.5}
+has the highest absolute per-task cost yet buys goodput at \$0.20 per
+1000 rps, less than half \texttt{claude-opus-4-8}'s \$0.48, because it
+reaches 2.6 times the goodput for 11\% more money.
+\texttt{glm-5.2} is cheapest on both axes. On this pair of measures
+\texttt{claude-opus-4-8} is dominated: it is neither the cheapest model
+nor the fastest, and \texttt{glm-5.2} matches its goodput
+(Section~\ref{sec:results-rq1}) at a fifth of the cost.
+
+\paragraph{Within a task, the lever mix sets the price.} A code-refinement
+step costs \$0.58, \$0.68 and \$0.11 for \texttt{claude-opus-4-8},
+\texttt{gpt-5.5} and \texttt{glm-5.2}, against \$0.22, \$0.25 and \$0.05
+for a deployment-refinement step: two to three times as much, for every
+model (Table~\ref{tab:appendix-cost-lever}). The reason is what each call
+emits. Roughly three quarters of a code step's cost for
+\texttt{claude-opus-4-8}, and over four fifths for \texttt{gpt-5.5}, is
+the source the model writes rather than the conversation history it reads,
+whereas a deployment step edits a small, structured \texttt{spec.yaml}
+(Section~\ref{sec:methods-spec}). Read together with RQ2
+(Section~\ref{sec:results-rq3}), this makes code refinement the lever that
+is at once the highest-yield, the most likely to fail outright, and the
+most expensive to attempt.
+
+\paragraph{Reaching a working deployment is a small part of the bill.}
+For a task whose baseline is already healthy, the single generation call
+that produced it costs \$0.11 to \$1.03 depending on the model. For a task
+that starts dead, recovery costs \$0.39 to \$4.54, three to five times
+more, because recovery is several refinement iterations rather than one
+call (Table~\ref{tab:appendix-cost-baseline}). Even so, iteration~000 is
+only 13\% of a task's total spend, and the ten refinement iterations that
+follow are close to flat in cost
+(Table~\ref{tab:appendix-cost-iteration}). Total spend is therefore close
+to linear in the iteration budget, which makes the budget, rather than any
+per-call property, the parameter that sets the price of a run.
+
+\paragraph{Framework choice is not a cost lever.} Pooled per-task spend
+varies little across frameworks, from \$4.69 for \textsc{Rust-Actix} to
+\$5.13 for \textsc{Go-net-http}, a 9\% spread, and the cheapest framework
+differs for every model (Table~\ref{tab:appendix-cost-env}). One might
+expect a framework whose idiomatic solution is more compact to be cheaper,
+given that the emitted source dominates a code step's cost. That mechanism
+is visible within a model at the level of individual calls, where output
+volume and call cost move together, but it does not survive aggregation
+into a framework ranking: \texttt{gpt-5.5}'s mean cost per
+\textsc{Python-Flask} code step falls from \$0.66 to \$0.43 once
+\textsc{Petstore} is excluded, which alone reorders the frameworks. Unlike
+achievable goodput, where \textsc{Go-net-http} leads for all three models
+(RQ4, Section~\ref{sec:results-rq5}), cost gives no stable framework
+ordering.
+
+\paragraph{Scenario cost is flat apart from the largest surface.}
+Per-task spend ranges from \$3.99 for \textsc{ParcelPinLockerPickup} to
+\$7.25 for \textsc{Petstore} (Table~\ref{tab:appendix-cost-scenario}), but
+that range is almost entirely one scenario. Endpoint count correlates with
+cost at $r=0.65$ across all seven scenarios and at $r=0.05$ with
+\textsc{Petstore} removed, so size does not predict price in general.
+\textsc{Petstore} is expensive for the same reason RQ3
+(Section~\ref{sec:results-rq4}) finds it hard: with the fewest healthy
+baselines of any scenario, its tasks spend more of the budget on the
+expensive lever, 57\% of their refinement steps on code against 49\%
+overall.
+
+\paragraph{Answer.}
+\textbf{The whole campaign cost \$310.77}, and a full eleven-iteration
+task averages \$4.93. Across models the difference is dominated by list
+price rather than by how efficiently each model works:
+\texttt{glm-5.2} matches \texttt{claude-opus-4-8}'s goodput for roughly a
+fifth of the money while emitting more tokens, and \texttt{gpt-5.5} buys
+more than twice \texttt{claude-opus-4-8}'s goodput per dollar despite the
+highest absolute spend. Within a task the price is set by the iteration
+budget and by how many of those iterations pick the code lever, which
+costs two to three times a deployment lever. Neither framework nor
+scenario gives a stable cost ordering, so the levers a practitioner
+actually controls are the model, the budget, and the balance between the
+two refinement actions.
+
+
 % ----- §5.8 Case Studies -----
 \section{Case Studies: What Individual Trajectories Reveal}
 \label{sec:results-case-studies}
@@ -845,11 +967,11 @@ Across all three models and all 63 scenario/framework tasks:
         both optimistic and prematurely low explore peaks, and every run
         terminates on its own criteria inside a bounded budget
         (Section~\ref{sec:results-load-profile-validation});
-  \item iterative refinement improves sustained goodput in essentially
+  \item iterative refinement (non-monotonically) improves sustained goodput in essentially
         every task, and separately rescues 28 of the 30 \emph{dead}
         baselines observed into a working deployment; one further task,
         healthy at baseline, climbs well above it and then loses
-        everything again at the very end of its budget (RQ1);
+        everything again at the very end of its budget (RQ1); % TODO: Why this part: one further task, healthy at baseline, climbs well above it and then loses everything again at the very end of its budget"
   \item code refinement contributes the largest single-step gains for
         all three models and exceeds deployment refinement's mean for all
         three as well, dominated by fixes to bugs that only manifest under
@@ -862,10 +984,14 @@ Across all three models and all 63 scenario/framework tasks:
         for \texttt{glm-5.2} (RQ2);
   \item \textbf{all three models complete every task}, so the meaningful
         comparison is achieved goodput against cost: \texttt{gpt-5.5}
-        reaches the highest absolute goodput without costing
-        proportionally more, while \texttt{glm-5.2} slightly exceeds
-        \texttt{claude-opus-4-8}'s goodput at roughly a fifth of the cost
-        (RQ1; Appendix~\ref{ch:appendix-additional-results});
+        buys goodput at \$0.20 per 1000 rps against
+        \texttt{claude-opus-4-8}'s \$0.48, reaching the highest absolute
+        goodput for 11\% more spend per task, while \texttt{glm-5.2}
+        slightly exceeds \texttt{claude-opus-4-8}'s goodput at roughly a
+        fifth of the cost; within a task, code refinement costs two to
+        three times a deployment refinement and total spend is close to
+        linear in the iteration budget
+        (RQ1; Section~\ref{sec:results-cost});
   \item \textsc{Go-net-http} sets the highest achievable-goodput ceiling
         for all three models; which framework sets the \emph{lowest} is
         not universal (\textsc{Python-Flask} for \texttt{gpt-5.5} and

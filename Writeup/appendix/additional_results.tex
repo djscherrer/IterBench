@@ -1,39 +1,80 @@
 \label{ch:appendix-additional-results}
 
-This appendix collects supplementary breakdowns of the LLM spend recorded
-alongside every experiment in Chapter~\ref{ch:results}. It is descriptive
-context rather than a research question in its own right: none of the
-splits below are used to rank the three models, only to show where the
-money in Table~\ref{tab:setup-model-cost} actually went. Figures are
-computed directly from each task's \texttt{llm\_cost\_ledger.json} (its
-per-iteration and per-call-type cost breakdown) via
-\texttt{scripts/analysis/cost\_breakdown.py}, cross-checked against the
-per-task totals in \texttt{results\_aggregate/tasks.csv}.
+This appendix collects the supplementary breakdowns behind
+Section~\ref{sec:results-cost}, which reports what iterative refinement
+costs and where that cost comes from. The splits below are descriptive
+detail rather than a research question in their own right: none of them
+are used to rank the three models beyond what
+Table~\ref{tab:setup-model-cost} already establishes, only to show where
+the money actually went. Figures are computed directly from each task's
+\texttt{llm\_cost\_ledger.json} (its per-iteration and per-call-type cost
+breakdown) via \texttt{scripts/analysis/cost\_breakdown.py}, cross-checked
+against the per-task totals in
+\texttt{results\_aggregate\_lan/cells.csv}. Both are read from
+\texttt{results\_lan}, the network-consistent tree every reported number
+in Chapter~\ref{ch:results} comes from
+(Section~\ref{sec:results-load-profile-validation}).
+
+\paragraph{A note on measurement.} Spend is what the providers actually
+billed, so it includes the overhead of running the campaign rather than an
+idealised price. Nine times across seven tasks a run was stopped and later
+resumed; because the conversation is replayed from disk while the
+provider-side prompt cache has gone cold, the accumulated history is
+re-billed at the uncached rate on the first calls after each resume. That
+overcharge is \$7.99, or 2.6\% of total spend, and it falls between 1.6\%
+and 2.8\% for every model, so it inflates the absolute figures slightly and
+leaves the relative comparison intact. The resumes affect nothing else:
+the replayed conversation is identical, and all 63 tasks ran their full
+eleven iterations.
 
 \section{LLM Cost Breakdown}
 \label{sec:appendix-cost}
 
-\paragraph{Total spend.} Table~\ref{tab:setup-model-cost} gives each
-model's total measured spend across its 21 tasks and the resulting
-per-task average. \texttt{glm-5.2}'s per-task spend is roughly a fifth of
-the other two models', consistent with its lower list price
-(Table~\ref{tab:setup-model-config}) and, per the breakdown below, with
-its refinement steps individually costing less at any given price.
+\paragraph{Spend by framework and scenario.} Tables~\ref{tab:appendix-cost-env}
+and~\ref{tab:appendix-cost-scenario} give the per-task means behind the
+brief treatment in Section~\ref{sec:results-cost}. Neither split produces a
+consistent ordering: the cheapest framework differs for all three models,
+and the scenario spread is flat apart from \textsc{Petstore}.
 
 \begin{table}[htbp]
   \centering
-  \caption{Measured LLM spend per model, over all 21 tasks per model.}
-  \label{tab:setup-model-cost}
+  \caption{Mean LLM spend (USD) per task, by framework and model. Each
+    cell pools that framework's seven tasks for that model.}
+  \label{tab:appendix-cost-env}
   \small
-  \begin{tabular}{@{}lrrr@{}}
+  \begin{tabular}{@{}lrrrr@{}}
     \toprule
-    \textbf{Model} & \textbf{Total spend} & \textbf{Tasks} & \textbf{Spend / task} \\
+    \textbf{Framework} & \textbf{\texttt{claude-opus-4-8}} & \textbf{\texttt{gpt-5.5}} & \textbf{\texttt{glm-5.2}} & \textbf{All} \\
     \midrule
-    \texttt{gpt-5.5}         & \$144.21 & 21 & \$6.87 \\
-    \texttt{claude-opus-4-8} & \$133.61 & 21 & \$6.36 \\
-    \texttt{glm-5.2}         & \$28.49  & 21 & \$1.36 \\
+    \textsc{Go-net-http}  & \$6.48 & \$7.14 & \$1.77 & \$5.13 \\
+    \textsc{Python-Flask} & \$5.68 & \$8.04 & \$1.21 & \$4.98 \\
+    \textsc{Rust-Actix}   & \$6.93 & \$6.06 & \$1.09 & \$4.69 \\
     \bottomrule
   \end{tabular}
+\end{table}
+
+\begin{table}[htbp]
+  \centering
+  \caption{Mean LLM spend (USD) per task, by scenario and model, ordered
+    by the pooled mean. Each cell pools that scenario's three tasks for
+    that model.}
+  \label{tab:appendix-cost-scenario}
+  \small
+  \resizebox{\linewidth}{!}{%
+  \begin{tabular}{@{}lrrrr@{}}
+    \toprule
+    \textbf{Scenario} & \textbf{\texttt{claude-opus-4-8}} & \textbf{\texttt{gpt-5.5}} & \textbf{\texttt{glm-5.2}} & \textbf{All} \\
+    \midrule
+    \textsc{ParcelPinLockerPickup}         & \$5.19 & \$5.44  & \$1.34 & \$3.99 \\
+    \textsc{ClickCount}                    & \$6.95 & \$5.40  & \$1.00 & \$4.45 \\
+    \textsc{TransitPulseDelayReporter}     & \$5.72 & \$6.17  & \$1.62 & \$4.50 \\
+    \textsc{BranchWeave}                   & \$6.59 & \$5.86  & \$1.48 & \$4.64 \\
+    \textsc{Recipes}                       & \$6.68 & \$6.75  & \$0.92 & \$4.78 \\
+    \textsc{SplitNestSharedExpenseLedger}  & \$6.14 & \$6.68  & \$1.94 & \$4.92 \\
+    \textsc{Petstore}                      & \$7.28 & \$13.26 & \$1.20 & \$7.25 \\
+    \bottomrule
+  \end{tabular}%
+  }
 \end{table}
 
 \paragraph{Cost to reach a working baseline.} Iteration~000's cost is the
@@ -93,15 +134,17 @@ gives those step counts).
     code-refinement step, and per deployment-refinement step, by model.}
   \label{tab:appendix-cost-lever}
   \small
-  \begin{tabular}{@{}lrrr@{}}
+  \resizebox{\linewidth}{!}{%
+  \begin{tabular}{@{}lrrrr@{}}
     \toprule
-    \textbf{Model} & \textbf{\$ / decision} & \textbf{\$ / code step} & \textbf{\$ / deployment step} \\
+    \textbf{Model} & \textbf{\$ / decision} & \textbf{\$ / code step} & \textbf{\$ / deployment step} & \textbf{Ratio} \\
     \midrule
-    \texttt{claude-opus-4-8} & \$0.24 & \$0.58 & \$0.22 \\
-    \texttt{gpt-5.5}         & \$0.16 & \$0.67 & \$0.25 \\
-    \texttt{glm-5.2}         & \$0.07 & \$0.11 & \$0.05 \\
+    \texttt{claude-opus-4-8} & \$0.24 & \$0.58 & \$0.22 & $2.6\times$ \\
+    \texttt{gpt-5.5}         & \$0.18 & \$0.68 & \$0.25 & $2.7\times$ \\
+    \texttt{glm-5.2}         & \$0.07 & \$0.11 & \$0.05 & $2.1\times$ \\
     \bottomrule
-  \end{tabular}
+  \end{tabular}%
+  }
 \end{table}
 
 A code-refinement step costs two to three times as much as a
@@ -112,3 +155,40 @@ while deployment refinement adjusts a small, structured \texttt{spec.yaml}
 that code refinement also fails outright more often than deployment refinement
 before ever producing a usable comparison; on top of that risk, it is
 consistently the more expensive lever to attempt, for all three models.
+
+\paragraph{How spend accumulates over the budget.}
+Table~\ref{tab:appendix-cost-iteration} gives the mean per-task spend at
+each iteration index. The baseline call is the single most expensive
+iteration for every model, but only 13\% of a task's total; the ten
+refinement iterations that follow are close to flat, so total spend is
+close to linear in the iteration budget. This is what makes the budget,
+rather than any per-call property, the parameter that sets the price of a
+run.
+
+\begin{table}[htbp]
+  \centering
+  \caption{Mean LLM spend (USD) per task at each iteration index, and the
+    cumulative share of a task's total spend reached by that index
+    (pooled over all three models).}
+  \label{tab:appendix-cost-iteration}
+  \small
+  \resizebox{\linewidth}{!}{%
+  \begin{tabular}{@{}lrrrrr@{}}
+    \toprule
+    \textbf{Iteration} & \textbf{\texttt{claude-opus-4-8}} & \textbf{\texttt{gpt-5.5}} & \textbf{\texttt{glm-5.2}} & \textbf{All} & \textbf{Cum.\ share} \\
+    \midrule
+    000 & \$0.64 & \$1.19 & \$0.12 & \$0.65 & 13\% \\
+    001 & \$0.40 & \$0.45 & \$0.12 & \$0.32 & 20\% \\
+    002 & \$0.48 & \$0.54 & \$0.10 & \$0.37 & 27\% \\
+    003 & \$0.59 & \$0.51 & \$0.08 & \$0.39 & 35\% \\
+    004 & \$0.64 & \$0.49 & \$0.07 & \$0.40 & 43\% \\
+    005 & \$0.63 & \$0.49 & \$0.11 & \$0.41 & 52\% \\
+    006 & \$0.58 & \$0.78 & \$0.13 & \$0.49 & 62\% \\
+    007 & \$0.64 & \$0.49 & \$0.12 & \$0.42 & 70\% \\
+    008 & \$0.60 & \$0.62 & \$0.18 & \$0.47 & 80\% \\
+    009 & \$0.61 & \$0.66 & \$0.15 & \$0.47 & 89\% \\
+    010 & \$0.56 & \$0.87 & \$0.17 & \$0.53 & 100\% \\
+    \bottomrule
+  \end{tabular}%
+  }
+\end{table}

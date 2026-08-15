@@ -85,8 +85,9 @@ instance so that cache stays useful. The harness does not need to send
 any explicit cache parameters for this model.
 
 Table~\ref{tab:setup-model-config} gives the resulting per-model context
-window and price list; Appendix~\ref{ch:appendix-additional-results}
-reports what that translated to in measured spend over this evaluation.
+window and price list; Section~\ref{sec:results-cost} reports what that
+translated to in measured spend over this evaluation, and
+Appendix~\ref{ch:appendix-additional-results} breaks it down further.
 
 \begin{table}[htbp]
   \centering
@@ -111,7 +112,7 @@ reports what that translated to in measured spend over this evaluation.
   point conversational runs here cross by roughly iteration~5.
   $^\ddagger$\texttt{glm-5.2} is accessed through OpenRouter rather than a
   first-party API and has no fixed \$/MTok rate in this evaluation: its
-  measured cost (Appendix~\ref{ch:appendix-additional-results}) is taken directly from
+  measured cost (Section~\ref{sec:results-cost}) is taken directly from
   OpenRouter's own reported per-request charge, which already nets out its
   implicit caching discount, rather than computed from a price list.
 \end{table}

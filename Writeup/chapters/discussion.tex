@@ -15,23 +15,45 @@
 \section{Interpreting the Results}
 \label{sec:discussion-interpretation}
 
-\paragraph{Correctness gates deployment more consistently than any
-model-level difference.} The clearest pattern across all five research
-questions is not a capability gap between models, but a division of
-labour between the two refinement levers: both the largest source of
-attrition and the largest single-step goodput recoveries trace to code
-correctness rather than deployment refinement
-(Section~\ref{sec:results-summary}), and this holds for all three models.
-Where model differences do appear, they concentrate in a narrower place
-than a first glance at raw completion counts would suggest: all 63 tasks
+\paragraph{Code correctness decides whether there is a working deployment
+to tune at all.} The two levers are not symmetric, and the asymmetry runs
+the same way for all three models. Code is where iterations are lost: 47
+of the 61 recorded failures fall in the code phase, 45 of them
+functional-test or build failures (Section~\ref{sec:results-rq6}), and
+code refinement fails outright before producing any measurement in
+$14.6\%$ of the steps that choose it, against $4.0\%$ for deployment
+refinement (Section~\ref{sec:results-rq3}). Code is also where the
+recoveries come from: it revives a dead predecessor more often than
+deployment refinement does, and it carries the heavy positive tail of
+single-step gains for every model, even where its typical step is not the
+larger of the two (Section~\ref{sec:results-rq3}). The asymmetry is
+therefore about which lever moves a task \emph{into} a working state, not
+about which one is safe to use once it is there. Deployment refinement is
+not risk-free once it runs: every model has deployment steps that collapse
+a working deployment to zero goodput (Section~\ref{sec:results-rq3}), and
+the case studies show one doing so on a well-reasoned rationale
+(Section~\ref{sec:results-case-studies}). The claim this data supports is
+the narrow one, that code correctness governs the path into a working
+state, rather than the broader one that code refinement is the better or
+safer lever in general.
+
+\paragraph{The models differ, but that ordering is the weaker of the two
+patterns.} \texttt{gpt-5.5} reaches a geometric-mean best goodput more
+than double \texttt{claude-opus-4-8}'s (Section~\ref{sec:results-rq1}), so
+model choice is plainly not neutral for the outcome. That ranking,
+however, rests on one draw per task, whereas the lever asymmetry above
+reappears independently in all three models, which makes it the better
+supported of the two findings even though the model gap is the more
+conspicuous one. The model differences that do appear also sit in a
+narrower place than raw completion counts would suggest: all 63 tasks
 reached a baseline and completed the full ten-iteration refinement budget
-(Chapter~\ref{ch:results}), so the interesting variation in this dataset is
-not \emph{whether} a model finishes, but how it uses the two levers once it
-starts.
+(Chapter~\ref{ch:results}), so the interesting variation in this dataset
+is not \emph{whether} a model finishes, but how it uses the two levers
+once it starts.
 
 \paragraph{What can and cannot be said about cost.} \texttt{glm-5.2} costs
 roughly a fifth as much per task as \texttt{gpt-5.5} or
-\texttt{claude-opus-4-8} (Appendix~\ref{ch:appendix-additional-results}),
+\texttt{claude-opus-4-8} (Section~\ref{sec:results-cost}),
 and that advantage costs it neither completion reliability nor achieved
 goodput: it completes every task and its geometric-mean best goodput
 slightly exceeds \texttt{claude-opus-4-8}'s
@@ -311,12 +333,11 @@ today's reactive autoscalers (Section~\ref{sec:rw-cluster}) clear, since
 HPA/VPA-style mechanisms do not reason about database topology or
 placement at all.
 
-\paragraph{For LLM-guided performance tuning more broadly.} The recurring
-finding that correctness bugs dominate the failure budget
-(Section~\ref{sec:results-summary}) is a caution against evaluating
-performance-tuning agents purely on their tuning behaviour in isolation:
-in this dataset, the single largest lever on final goodput was not a
-tuning decision at all, but whether the code was correct enough to deploy
-under load in the first place, a class of bug that, as
-Section~\ref{sec:results-case-studies}'s pooling case study shows, a
-single-container functional-test suite cannot even see.
+\paragraph{For LLM-guided performance tuning more broadly.} The
+code-correctness result above cautions against evaluating a
+performance-tuning agent on its tuning behaviour alone. A benchmark that
+hands such an agent a known-good application and scores only its
+configuration choices would be measuring the smaller of the two effects
+observed here, and would be structurally unable to see the class of bug
+that surfaces only under load behind real infrastructure
+(Section~\ref{sec:results-case-studies}).
