@@ -1,10 +1,11 @@
 <div align="center">
-    <h1>BaxBench — Kubernetes Deployment Optimization Fork</h1>
+    <img src="docs/img/mascot.png" alt="IterBench mascot" width="200">
+    <h1>IterBench — Kubernetes Deployment Optimization Fork of BaxBench</h1>
 </div>
 
 ## Overview
 
-This repository is a fork of [BaxBench](https://baxbench.com) ([paper](https://arxiv.org/abs/2502.11844)), a benchmark that evaluates whether LLMs can generate correct and secure backend applications. The fork keeps BaxBench's scenario/framework/task definitions and builds an iterative deployment-optimization loop on top, used for a master's thesis on LLM-driven deployment optimization under fixed cluster resource constraints.
+**IterBench** is this repository's framework name in the thesis; the code identifiers throughout the repo (module names, CLI flags, directory names) stay `baxbench-*`/`k8s_bench` for continuity with the fork it's built on. This repository is a fork of [BaxBench](https://baxbench.com) ([paper](https://arxiv.org/abs/2502.11844)), a benchmark that evaluates whether LLMs can generate correct and secure backend applications. The fork keeps BaxBench's scenario/framework/task definitions and builds an iterative deployment-optimization loop on top, used for a master's thesis on LLM-driven deployment optimization under fixed cluster resource constraints.
 
 **`k8s_bench`** is the core contribution: an iterative loop (decide → code → spec → deploy → benchmark → feedback) where an LLM agent repeatedly refines both the *application code* and its *Kubernetes deployment configuration*, guided by real Locust load-test goodput and cluster resource utilization. See [docs/k8s_approach.md](docs/k8s_approach.md).
 
@@ -44,9 +45,10 @@ tests/                    # pytest unit tests (pure-logic modules only, e.g. k8s
 docs/                     # design notes for the k8s pipeline (approach, prompt design, failure taxonomy, Locust pipeline)
 results/                  # generated code + logs, one dir per model (gitignored)
 results_reverified/       # deploy-only repeated measurements (gitignored)
+results_reverified2/      # second reverification pass, gap-fills what results_reverified/ missed (gitignored)
 results_aggregate/        # cross-run aggregate tables/figures (gitignored)
 gen_scenarios/            # scenario_builder's own artifacts/ + results/ (gitignored) — see
-                          #   "Generating new scenarios" below
+                          #   "Generating new scenarios" below and gen_scenarios/README.md
 ```
 
 To stream a remote re-verification tree into an archive, use
@@ -117,6 +119,11 @@ See [docs/k8s_approach.md](docs/k8s_approach.md), [docs/k8s_stage_failures.md](d
 pipenv run python scripts/analysis/aggregate_evaluation.py
 pipenv run python scripts/results_overview.py
 ```
+
+Raw result trees are gitignored and too large to commit; trimmed reference
+snapshots are published as GitHub Release assets instead — see
+[docs/results_archive.md](docs/results_archive.md) for what's in them, the
+network-confound background, and the download command.
 
 ## Generating new scenarios (AutoBaxBuilder)
 

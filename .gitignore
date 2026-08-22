@@ -338,11 +338,14 @@ results-old/
 results-05-12/
 results/
 results_reverified/
+results_lan/
 results_custom/
 results_aggregate/
+results_aggregate_lan/
 
 # scenario_builder's own artifacts/results (gen_scenarios/artifacts, gen_scenarios/results)
-gen_scenarios/
+gen_scenarios/*
+!gen_scenarios/README.md
 
 # Ignore all build artifacts in the snapshots
 results_snapshots/**/target/
