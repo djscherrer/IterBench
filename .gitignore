@@ -386,3 +386,15 @@ baxbench-results_reverified-*.tar.gz
 missfont.log
 Writeup/main.log
 Writeup/main.pdf
+
+# Agent console logs: OpenHands writes the full `docker run -e KEY=...` command
+# line into these, which leaks every API key in the environment. Never commit.
+*_console.html
+**/openhands_console.html
+
+# Compiled server binaries emitted into result dirs. The `**/server` rule above
+# only caught one name; Go builds are named after the scenario.
+**/code/app
+**/code/myapp
+**/code/petstore
+**/code/microblog
