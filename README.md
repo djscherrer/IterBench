@@ -1,6 +1,6 @@
 <div align="center">
     <img src="docs/img/mascot.png" alt="IterBench mascot" width="200">
-    <h1>IterBench — Kubernetes Deployment Optimization Fork of BaxBench</h1>
+    <h1>IterBench: Kubernetes Deployment Optimization Fork of BaxBench</h1>
 </div>
 
 ## Overview
@@ -41,12 +41,13 @@ scripts/
 ├── analysis/             # results aggregation across models/scenarios
 └── results_overview.py, fetch_results.sh
 
-tests/                    # pytest unit tests (pure-logic modules only, e.g. k8s_bench/reverify/); `pytest` from repo root
-docs/                     # design notes for the k8s pipeline (approach, prompt design, failure taxonomy, Locust pipeline)
+docs/                     # design notes for the k8s pipeline (approach, prompt design, failure taxonomy,
+                          #   Locust pipeline, load-generator saturation audit)
 results/                  # generated code + logs, one dir per model (gitignored)
 results_reverified/       # deploy-only repeated measurements (gitignored)
 results_reverified2/      # second reverification pass, gap-fills what results_reverified/ missed (gitignored)
-results_aggregate/        # cross-run aggregate tables/figures (gitignored)
+results_aggregate/        # cross-run aggregate tables/figures (figures gitignored; the four CSVs are tracked,
+                          #   see "Reported results" below)
 gen_scenarios/            # scenario_builder's own artifacts/ + results/ (gitignored) — see
                           #   "Generating new scenarios" below and gen_scenarios/README.md
 ```
@@ -145,6 +146,31 @@ python orchestrator.py --export_latest --scenario FooBarScenario
 ```
 
 Each `--generate_*` step writes numbered artifacts into the artifacts directory (`FooBarScenario_iu{t}` after t test-iteration steps, `_iw{t}` after t security-iteration steps, `_implementations_i{t/u/w}{t}` for the corresponding solutions). `--export_latest` promotes the newest iteration into `src/scenarios/generated_scenarios/` — a staging area for manual review before a scenario is wired into `scenarios.all_scenarios`.
+
+## Reported results
+
+The evaluation covers 63 tasks (7 scenarios × 3 frameworks × 3 models), one trajectory each,
+with a baseline plus ten refinement iterations, for 693 planned candidate iterations of which
+632 reached the load-test stage.
+
+Every number and figure in the thesis is computed from four tracked CSVs in `results_aggregate/`:
+
+| File | Rows | Contents |
+|---|---:|---|
+| `cells.csv` | 63 | one row per task: baseline, first, best and final sustained goodput, lever counts, LLM spend |
+| `iterations.csv` | 632 | one row per benchmarked iteration: goodput, selected lever, deltas, key spec fields |
+| `failures.csv` | 61 | one row per recorded pipeline failure: stage, kind, model, scenario, framework |
+| `load_profile_phases.csv` | 632 | per-run load-profile outcome: phase durations, explore stop reason, recovery and refine success |
+
+Regenerate them from a full results tree with:
+
+```bash
+pipenv run python scripts/analysis/aggregate_evaluation.py --results-root results
+```
+
+The complete per-iteration artifact tree (generated source, rendered manifests, Locust output and
+cluster diagnostics for all 632 benchmarked iterations) is roughly 16 GB and is not distributed
+here. It is retained and available on request.
 
 ## Troubleshooting
 

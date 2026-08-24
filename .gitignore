@@ -341,6 +341,10 @@ results_reverified/
 results_lan/
 results_custom/
 results_aggregate/
+# ...except the four aggregate CSVs every reported number is derived from.
+!results_aggregate/
+results_aggregate/*
+!results_aggregate/*.csv
 results_aggregate_lan/
 
 # scenario_builder's own artifacts/results (gen_scenarios/artifacts, gen_scenarios/results)
