@@ -9,7 +9,7 @@
 # Prerequisites:
 #   1. ./scripts/k8s_preflight.sh
 #   2. ./scripts/k8s_setup_cluster.sh  (kubeadm + registry when profile enables it)
-#   3. Docker on node0 for build + push
+#   3. Docker on the control host for build + push
 #
 # Quick smoke (one sample, one phase):
 #   ONLY_SAMPLES="0" FORCE="true" ./scripts/bench_k8s.sh
@@ -29,28 +29,27 @@ set -euo pipefail
 # e.g. z.ai/... or deepseek/...) needs an explicit provider; append it to that
 # one entry as "model:provider" rather than setting PROVIDER globally, so
 # different models can use different providers in the same run:
-#   MODELS="openai/gpt-5.5-2026-04-23 anthropic/claude-opus-4-8 z.ai/glm-5.2:openrouter"
-# Final three-model comparison reported in the thesis (Chapter 5). glm-5.2 needs
-# an explicit ":openrouter" provider suffix since its prefix is not auto-detected.
-MODELS="openai/gpt-5.5-2026-04-23 anthropic/claude-opus-4-8 z.ai/glm-5.2:openrouter"
-PROVIDER=""           # openai | anthropic | together_ai | openrouter | swissai | vllm
+#   MODELS="provider/model another-provider/model:provider" ./scripts/bench_k8s.sh
+# This public wrapper intentionally has no thesis-run scope baked in. Set the
+# required variables in the environment before running it.
+MODELS="${MODELS:-}"
+PROVIDER="${PROVIDER:-}"  # openai | anthropic | together_ai | openrouter | swissai | vllm
                                 # fallback for MODELS entries with no ":provider" suffix
-ONLY_SAMPLES="0"                # e.g. "0"; empty → N_SAMPLES
-N_SAMPLES=""
-ENVS="Python-Flask Go-net/http Rust-Actix"
-# Final seven-scenario set reported in the thesis (Chapter 5).
-SCENARIOS="ClickCount Recipes BranchWeave_InteractiveStoryGraph Petstore ParcelPinLockerPickup SplitNestSharedExpenseLedger TransitPulseDelayReporter"
-TEMPERATURE="0.2"
-SAFETY_PROMPT="high_performance"
-RESULTS_DIR=""                  # empty → default results path
+ONLY_SAMPLES="${ONLY_SAMPLES:-}" # e.g. "0"; empty → N_SAMPLES
+N_SAMPLES="${N_SAMPLES:-}"
+ENVS="${ENVS:-}"
+SCENARIOS="${SCENARIOS:-}"
+TEMPERATURE="${TEMPERATURE:-0.2}"
+SAFETY_PROMPT="${SAFETY_PROMPT:-high_performance}"
+RESULTS_DIR="${RESULTS_DIR:-}"   # empty → default results path
 
 # --- Run configuration (k8s experiment workspace + iterative loop) ---
 # Cluster profile: kubeconfig, nodes, registry, Locust hosts (see k8s_bench/cluster/profiles.py).
-K8S_CLUSTER="baxbench-emulab"
+K8S_CLUSTER="${K8S_CLUSTER:-}"
 # Workspace slug → results/.../sampleN/k8s-experiments/<slug>/
-K8S_EXPERIMENT="results"
+K8S_EXPERIMENT="${K8S_EXPERIMENT:-experiment}"
 # Iterative loop: iteration-000 (baseline) .. iteration-NNN (N = value below)
-K8S_ITERATIONS="10"
+K8S_ITERATIONS="${K8S_ITERATIONS:-0}"
 K8S_WAIT_TIMEOUT="1200"         # seconds to wait for K8s resources to become Ready
 K8S_REFINEMENT="auto"           # auto | deployment | code
 BASELINE_CODE_MAX_ATTEMPTS="10"
@@ -58,11 +57,11 @@ BASELINE_SPEC_MAX_ATTEMPTS="10"
 
 # --- LLM limits ---
 # Ledger: sampleN/k8s-experiments/<slug>/llm_cost_ledger.json
-BAXBENCH_LLM_MAX_COST="20"      # USD; stop when estimated experiment spend exceeds this
+BAXBENCH_LLM_MAX_COST="${BAXBENCH_LLM_MAX_COST:-5}" # USD; stop when estimated experiment spend exceeds this
 MAX_RETRIES="3"                 # per-call LLM retry/backoff during codegen, spec, decision
 
 # --- Bench configuration (Locust load + re-run behaviour) ---
-BAXBENCH_LOAD_PROFILE=("k8s-explore-refine")  # users, spawn rate, runtime from profile registry
+BAXBENCH_LOAD_PROFILE=("${BAXBENCH_LOAD_PROFILE:-}") # users, spawn rate, runtime from profile registry
 FORCE="false"                   # true = redo iterations even if already finished (success or failed)
 
 # --- Execution ---
@@ -70,6 +69,13 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 export PYTHONPATH="${ROOT}/src${PYTHONPATH:+:${PYTHONPATH}}"
 # Suppress per-command ssh/scp spam in 05-bench/bench.log (set to 1 to debug remoting).
 export BAXBENCH_LOG_COMMANDS="${BAXBENCH_LOG_COMMANDS:-0}"
+
+for required in MODELS ENVS SCENARIOS K8S_CLUSTER; do
+  if [ -z "${!required}" ]; then
+    echo "Set ${required} before running this script; see docs/reproducing.md." >&2
+    exit 2
+  fi
+done
 
 add_arg() {
     local flag=$1

@@ -28,16 +28,16 @@
 
 set -euo pipefail
 
-# === EDIT THESE (overridable via --flags) ===========================
-CLUSTER="baxbench-emulab"
-LOAD_PROFILE="k8s-explore-refine"
-TIMEOUT="600"
-WAIT_TIMEOUT="600"
-PORT="5001"
-# ====================================================================
+# Set ITER and CLUSTER via the environment or --iter/--cluster. The remaining
+# values are general operational defaults and can likewise be overridden.
+CLUSTER="${CLUSTER:-}"
+LOAD_PROFILE="${LOAD_PROFILE:-k8s-explore-refine}"
+TIMEOUT="${TIMEOUT:-600}"
+WAIT_TIMEOUT="${WAIT_TIMEOUT:-600}"
+PORT="${PORT:-5001}"
 
-ITER="results/z-ai-glm-5.2/Petstore/Go-net-http/temp0.2-openapi-high_performance/sample0/k8s-experiments/results/iterations/iteration-008-code"
-KEEP_BENCH="false"
+ITER="${ITER:-}"
+KEEP_BENCH="${KEEP_BENCH:-false}"
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -52,6 +52,10 @@ done
 
 if [ -z "$ITER" ]; then
   echo "Usage: $0 --iter <path-to-iteration-folder>" >&2
+  exit 2
+fi
+if [ -z "$CLUSTER" ]; then
+  echo "Usage: $0 --cluster <profile> --iter <path-to-iteration-folder>" >&2
   exit 2
 fi
 if [ ! -d "$ITER" ]; then

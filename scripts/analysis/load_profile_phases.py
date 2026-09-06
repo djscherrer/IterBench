@@ -45,6 +45,23 @@ from workspace.paths import (  # noqa: E402
 )
 from plots.aggregate.tables import CellKey, discover_cells  # noqa: E402
 
+
+def _round_for_publication(df: pd.DataFrame) -> pd.DataFrame:
+    """Match the CSV precision to the load controller's measurement resolution."""
+    return df.round(
+        {
+            "warmup_duration_s": 1,
+            "explore_duration_s": 1,
+            "explore_peak_goodput_rps": 1,
+            "recovery_duration_s": 1,
+            "refine_duration_s": 1,
+            "sustained_goodput_rps": 1,
+            "total_duration_s": 1,
+            "peak_sustained_gap_rps": 1,
+            "peak_sustained_gap_pct": 2,
+        }
+    )
+
 # ---------------------------------------------------------------------------
 # bench.log parsing
 # ---------------------------------------------------------------------------
@@ -348,7 +365,7 @@ def main() -> int:
         print("No parseable bench.log files found.", file=sys.stderr)
         return 1
 
-    df = pd.DataFrame(all_rows)
+    df = _round_for_publication(pd.DataFrame(all_rows))
     args.out_csv.parent.mkdir(parents=True, exist_ok=True)
     df.to_csv(args.out_csv, index=False)
     print(f"Wrote {args.out_csv} ({len(df)} rows)")

@@ -43,9 +43,9 @@ class RegistryConfig:
 
 
 def _local_primary_ipv4() -> str:
-    """Prefer Emulab experiment LAN (``/etc/hosts`` → ``10.x``) over control-net."""
+    """Prefer the local host's private LAN address when one is configured."""
     for cmd in (
-        "getent ahostsv4 node0 2>/dev/null | awk '{print $1; exit}'",
+        "getent ahostsv4 \"$(hostname -s)\" 2>/dev/null | awk '{print $1; exit}'",
         "ip -4 -o addr show scope global | awk '{print $4}' | cut -d/ -f1",
     ):
         proc = subprocess.run(["bash", "-lc", cmd], capture_output=True, text=True, check=False)

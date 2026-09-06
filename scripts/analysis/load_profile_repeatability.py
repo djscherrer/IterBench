@@ -197,7 +197,12 @@ def _iteration_network_metadata(exp_dir: Path, iteration_id: str) -> dict[str, o
     try:
         payload = json.loads(config_path.read_text(encoding="utf-8"))
         deploy_result = payload.get("deploy_result") or {}
-        target = deploy_result.get("nodeport_target") or payload.get("nodeport_target")
+        runtime = deploy_result.get("runtime") or {}
+        target = (
+            runtime.get("nodeport_target")
+            or deploy_result.get("nodeport_target")
+            or payload.get("nodeport_target")
+        )
     except (OSError, json.JSONDecodeError, AttributeError):
         pass
 

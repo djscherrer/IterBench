@@ -12,9 +12,22 @@ deploy and experiment orchestration. Bench observability is in the top-level
 
 ### K8s bench: probe → Locust
 
-For k8s-bench, the **04-deploy** stage writes `probe.json` (namespace, image, port, NodePort target). The **05-bench** stage reads that probe and runs `run_distributed_locust` in `k8s_bench/stages/bench.py` — distributed Locust on SSH load hosts plus `diagnostics_session_for_k8s`. Bench does not re-resolve NodePort or patch `spec.yaml`; missing probe runtime fields fail with “re-run deploy”.
+For k8s-bench, the **04-deploy** stage writes `probe.json`, grouping the two
+runtime hand-off fields (`namespace` and `nodeport_target`)
+separately from deployment provenance such as the image and apply output. The
+**05-bench** stage reads that probe and runs `run_distributed_locust` in
+`k8s_bench/stages/bench.py` — distributed Locust on SSH load hosts plus
+`diagnostics_session_for_k8s`. Bench does not re-resolve NodePort or patch
+`spec.yaml`; missing probe runtime fields fail with “re-run deploy”.
 
-`config.json` under `05-bench/` records the LLM `spec.yaml` snapshot and the full `deploy_result` (including runtime fields) for plotting and inspection.
+`config.json` under `05-bench/` records the LLM `spec.yaml` snapshot and the
+full, grouped `deploy_result` (runtime plus provenance) for plotting and
+inspection.
+
+`nodeport_target` is the complete external Locust URL. `backend_port` is the
+application Service/container port used by Deploy's manifest; it is retained
+for provenance, but Bench does not need it when the complete NodePort URL is
+available.
 
 ### Per-run on-disk layout
 

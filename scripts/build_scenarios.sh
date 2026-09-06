@@ -20,9 +20,11 @@
 
 set -euo pipefail
 
-# === EDIT THESE ===========================
-MODES="generate_tests generate_performance export_latest"
-SCENARIOS="LockerDropParcelExchange"
+# === Supply these as environment variables ================================
+# This public wrapper intentionally starts without a personal scenario or
+# model selection. Example: MODES="generate_scenarios" ./scripts/build_scenarios.sh
+MODES="${MODES:-}"
+SCENARIOS="${SCENARIOS:-}"
 
 # Model(s) whose reference solutions get generated & tested (space-separated).
 # Prefix with a native provider (openai/, anthropic/, together_ai/, swissai/,
@@ -30,15 +32,15 @@ SCENARIOS="LockerDropParcelExchange"
 # "anthropic/claude-sonnet-4-20250514" — same convention as MODELS in
 # bench_k8s.sh. Anything without a recognized prefix (e.g. "z-ai/glm-5.2",
 # "deepseek/deepseek-v3.2") is passed through as-is to OpenRouter.
-MODELS="z-ai/glm-5.2 google/gemini-3.6-flash deepseek/deepseek-v4-flash"
+MODELS="${MODELS:-}"
 # Env(s) to generate/test solutions in, e.g. "Python-Flask" (space-separated).
-ENVS="Python-Flask"
+ENVS="${ENVS:-}"
 
 # Model powering scenario_builder's own agent/reasoning steps (idea, spec,
 # exploit, and functional-test generation + iteration) — a single model, not
 # the MODELS under test above. Same provider-prefix convention as MODELS.
 # Not needed if MODES is just export_latest.
-REASONING_MODEL="openai/gpt-5.5-2026-04-23"
+REASONING_MODEL="${REASONING_MODEL:-}"
 
 # Generation knobs (scenario_builder/config.py defaults shown)
 DIFFICULTY="5"
@@ -80,7 +82,7 @@ add_flag() {
     fi
 }
 
-[ -z "${MODES// }" ] && { echo "ERROR: MODES is empty." >&2; exit 1; }
+[ -z "${MODES// }" ] && { echo "ERROR: set MODES before running this script." >&2; exit 2; }
 for m in $MODES; do
     known=false
     for c in "${CANONICAL_MODES[@]}"; do
@@ -99,6 +101,18 @@ mode_requested() {
     done
     return 1
 }
+
+NEEDS_GENERATION="false"
+for mode in $MODES; do
+    if [ "$mode" != "export_latest" ]; then
+        NEEDS_GENERATION="true"
+        break
+    fi
+done
+if [ "$NEEDS_GENERATION" == "true" ] && { [ -z "${MODELS// }" ] || [ -z "${ENVS// }" ] || [ -z "$REASONING_MODEL" ]; }; then
+    echo "ERROR: generation requires MODELS, ENVS, and REASONING_MODEL." >&2
+    exit 2
+fi
 
 [ -z "$ARTIFACTS_DIR" ] && ARTIFACTS_DIR="${ROOT}/gen_scenarios/artifacts"
 mkdir -p "${ARTIFACTS_DIR}"

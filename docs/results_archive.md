@@ -1,17 +1,22 @@
-# Result archives (GitHub Release)
+# Raw result archives
 
-Trimmed, downloadable snapshots of the evaluation result trees, published as
-assets on the GitHub Release
-[`results-archive-2026-08-22`](https://github.com/djscherrer/iterperfbench/releases/tag/results-archive-2026-08-22)
-rather than committed into the repo (multi-hundred-MB files don't belong in
-git history). None of these is the tree the analysis pipeline reads from —
-that's the (gitignored, local-only) `results/` + `results_aggregate/` in the
-working repo. These archives exist so the underlying data can be browsed
-without pulling the full raw trees off the benchmarking machine.
+The multi-hundred-megabyte raw evaluation trees are release assets rather than
+Git files. The compact, final analysis dataset is already tracked in
+[`results_aggregate/`](../results_aggregate/) and is the recommended starting
+point for readers; it supports the published summaries, figures, and
+per-iteration appendix without an archive download.
+
+When the `results-archive-2026-08-22` release has been mirrored to the public
+repository, download it from the clone's own configured remote:
 
 ```bash
-gh release download results-archive-2026-08-22 --repo djscherrer/iterperfbench
+gh release download results-archive-2026-08-22 \
+  --repo "$(gh repo view --json nameWithOwner --jq .nameWithOwner)"
 ```
+
+The release must be present on that remote; this repository deliberately does
+not hard-code a private repository URL. The archives are raw provenance inputs,
+not the final analysis tree used by the checked-in CSVs.
 
 ## The four archives
 
@@ -77,10 +82,10 @@ first; for the 17 cells above, the `05-bench/` measurements in this tree are
 the confounded, partly-control-network ones. `01-decision/02-code/03-spec`
 and (by default) `04-deploy` are unaffected by the confound and are always
 correct here, since the network path only touches the load-generation stage.
-This archive also still contains a `TimeCapsuleNotesVault` scenario for
-gpt-5.5 and glm-5.2: that scenario was dropped from the final 7-scenario set
-before the anthropic runs started, so it never got copied into the repo's
-`results/`. Its presence here is leftover, not a gap in the working tree.
+Note that the raw tree carries some scenario directories outside the seven
+evaluated scenarios, left over from earlier exploratory runs. They are not
+part of the reported dataset and are not copied into the repo's `results/`.
+Filter the archive to the seven evaluated scenarios before publishing it.
 
 ### `results_network_fix_and_reverification_trimmed.tar.gz`
 The first re-verification pass: every candidate in the 17 confounded cells
@@ -94,8 +99,8 @@ This pass was **incomplete**: it left 10 iterations unfilled across exactly
 3 cells (2 gpt-5.5 Rust-Actix cells, 1 glm-5.2 ClickCount cell), and one
 gpt-5.5 Petstore/Rust-Actix cell looked like it had crashed
 (`locust_infra` -> 0 rps). That crash turned out to be a mistyped
-`--load-profile` value (`explore-refine`/`explore_refine` instead of
-`k8s-explore-refine`) that aborted 72+ Rust-Actix iterations across 15 cells
+`--load-profile` value (an unsupported label rather than the registered
+Explore-Refine profile) that aborted 72+ Rust-Actix iterations across 15 cells
 before Locust ever ran, not a real measurement problem.
 
 ### `results_reverification2_trimmed.tar.gz`
@@ -142,7 +147,7 @@ the source directories on the benchmarking machine with `rsync` (dry-run,
   described above, not a copy of this raw archive. The diff was consistent
   with exactly that patching (17 cells' `05-bench/` swapped, 3 cells'
   gap-filled iterations added, load-profile cleanup timestamps from
-  2026-08-11 on the affected `meta.json` files) plus the `TimeCapsuleNotesVault`
+  2026-08-11 on the affected `meta.json` files) plus the out-of-scope scenario
   leftovers noted above. No unexplained data loss was found in this
   comparison; a handful of local-only, very large `backend.log` files from
   one crash-looping sample (`SplitNestSharedExpenseLedger`, Rust-Actix,

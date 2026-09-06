@@ -1,17 +1,17 @@
 #!/bin/bash
 # BaxBench - Kubernetes lab bootstrap (kubeadm + optional private registry)
 #
-# Run FROM node0 (control-plane) AFTER ./scripts/k8s_preflight.sh succeeds.
+# Run from the control-plane host after ./scripts/k8s_preflight.sh succeeds.
 # Installs the cluster, then configures the image registry when the profile has
-# registry_enabled=true (e.g. baxbench-emulab).
+# registry_enabled=true.
 #
 # Topology: src/k8s_bench/cluster/profiles.py (control_node, worker_nodes)
-# Select profile: BAXBENCH_K8S_CLUSTER below.
+# Set BAXBENCH_K8S_CLUSTER to the profile name before running this wrapper.
 
 set -euo pipefail
 
-BAXBENCH_K8S_CLUSTER="baxbench-emulab"
-KUBECONFIG_PATH=""
+BAXBENCH_K8S_CLUSTER="${BAXBENCH_K8S_CLUSTER:-}"
+KUBECONFIG_PATH="${KUBECONFIG_PATH:-}"
 
 # kubeadm / CNI (not host topology)
 K8S_POD_NETWORK_CIDR="10.244.0.0/16"
@@ -23,6 +23,11 @@ K8S_SKIP_REGISTRY="false"
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 export PYTHONPATH="${ROOT}/src${PYTHONPATH:+:${PYTHONPATH}}"
+
+if [ -z "$BAXBENCH_K8S_CLUSTER" ]; then
+    echo "Set BAXBENCH_K8S_CLUSTER to a profile in src/k8s_bench/cluster/profiles.py." >&2
+    exit 2
+fi
 
 add_arg() {
     local -n _args=$1

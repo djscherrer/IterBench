@@ -39,6 +39,15 @@ Each phase record includes at least:
   - **Evidence**: `llm_error`
 - **`kind="llm_parse"`**
   - **Evidence**: `llm_error` (what was missing / malformed)
+  - **Known caveat**: some instances are provider-side output truncation
+    (response cut off mid-statement, no closing code fence) rather than a
+    genuine formatting failure. `single_completion()` only logs
+    `finish_reason` when it equals `"length"` (`src/llm/providers/_base.py`),
+    so a provider that truncates without reporting `"length"` leaves no
+    trace to distinguish the two after the fact. Observed for `z-ai/glm-5.2`
+    via OpenRouter/GMICloud, where usage was well under the requested
+    `max_tokens` in both cases, so it is not attributable to an
+    under-provisioned token budget on our side.
 - **`kind="docker_build"`**
   - **Evidence**: `diagnostic_excerpt` (compile/build log excerpt)
 - **`kind="functional_test"`**
@@ -67,7 +76,7 @@ Each phase record includes at least:
 
 ## 04-deploy (overlay spec in memory, render manifests, `kubectl apply`, probe)
 
-Deploy reads **`03-spec/spec.yaml`** (LLM plan), applies **`update_iteration_spec`** overlay in memory (image, port, labels — does not rewrite spec on disk), renders **`04-deploy/manifests/`**, applies to cluster, then writes **`04-deploy/probe.json`** including runtime fields (`image_reference`, `backend_port`, `nodeport_target`, `deploy_labels`).
+Deploy reads **`03-spec/spec.yaml`** (LLM plan), applies **`update_iteration_spec`** overlay in memory (image, port, labels — does not rewrite spec on disk), renders **`04-deploy/manifests/`**, applies to cluster, then writes **`04-deploy/probe.json`** with grouped runtime fields (`namespace`, `nodeport_target`) and retained provenance (`backend_port`, `image_reference`, `deploy_labels`, apply output, and readiness details).
 
 ### Failure records (`DeployFailureRecord`)
 
@@ -90,7 +99,7 @@ Captured evidence:
 
 ## 05-bench (Locust + diagnostics; consumes `probe.json`)
 
-Bench loads runtime facts from **`04-deploy/probe.json`** only (not re-derived from spec). It reads **`03-spec/spec.yaml`** only for diagnostics topology (DB/pooler/cache). Entry point: `run_distributed_locust` in `stages/bench.py`.
+Bench loads runtime facts from the `runtime` section of **`04-deploy/probe.json`** only (not re-derived from spec). The explicit `nodeport_target` supplies the complete Locust URL; `backend_port` is retained as deployment provenance and is not needed by the normal Bench path. It reads **`03-spec/spec.yaml`** only for diagnostics topology (DB/pooler/cache). Entry point: `run_distributed_locust` in `stages/bench.py`.
 
 ### Failure records (`BenchFailureRecord`)
 
@@ -105,4 +114,3 @@ Bench loads runtime facts from **`04-deploy/probe.json`** only (not re-derived f
 ### Bench diagnostics enrichment
 
 (Optional) Also capture Locust worker stderr from distributed runs when available.
-

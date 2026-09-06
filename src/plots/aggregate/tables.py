@@ -22,12 +22,9 @@ from pathlib import Path
 from typing import Any
 
 import pandas as pd
-import yaml
 
 from workspace.paths import (
     ITERATIONS_DIRNAME,
-    PHASE_SPEC_DIRNAME,
-    find_iteration_spec_path,
     iteration_bench_dir,
     iteration_folder_is_failed,
     parse_iteration_folder_name,
@@ -213,73 +210,8 @@ def cell_summary_row(key: CellKey, exp_dir: Path) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
-# Iteration-level long table: goodput trajectories + spec knobs (RQ1 / RQ5)
+# Iteration-level long table: goodput trajectories (RQ1 / RQ2)
 # ---------------------------------------------------------------------------
-
-_CPU_RE = re.compile(r"^(\d+(?:\.\d+)?)m$")
-
-
-def _cpu_to_millicores(value: Any) -> float | None:
-    if value is None:
-        return None
-    s = str(value).strip()
-    m = _CPU_RE.match(s)
-    if m:
-        return float(m.group(1))
-    try:
-        return float(s) * 1000.0
-    except ValueError:
-        return None
-
-
-_MEM_RE = re.compile(r"^(\d+(?:\.\d+)?)([EPTGMK]i?)?$")
-_MEM_UNIT_TO_MI = {
-    "Ki": 1 / 1024,
-    "Mi": 1.0,
-    "Gi": 1024.0,
-    "Ti": 1024.0 * 1024,
-    "K": 1 / 1024,
-    "M": 1.0,
-    "G": 1024.0,
-    "T": 1024.0 * 1024,
-}
-
-
-def _mem_to_mi(value: Any) -> float | None:
-    if value is None:
-        return None
-    s = str(value).strip()
-    m = _MEM_RE.match(s)
-    if not m:
-        return None
-    qty = float(m.group(1))
-    unit = m.group(2) or "Mi"
-    factor = _MEM_UNIT_TO_MI.get(unit)
-    if factor is None:
-        return None
-    return qty * factor
-
-
-def _spec_knobs_for_iteration(iteration_path: Path) -> dict[str, Any]:
-    spec_path = find_iteration_spec_path(iteration_path) or (
-        iteration_path / PHASE_SPEC_DIRNAME / "spec.yaml"
-    )
-    if not spec_path.is_file():
-        return {}
-    try:
-        payload = yaml.safe_load(spec_path.read_text(encoding="utf-8")) or {}
-    except (OSError, yaml.YAMLError):
-        return {}
-    backend = payload.get("backend") or {}
-    backend_resources = backend.get("resources") or {}
-    database = payload.get("database") or {}
-    return {
-        "backend_replicas": backend.get("replicas"),
-        "backend_cpu_request_m": _cpu_to_millicores(backend_resources.get("cpu_request")),
-        "backend_memory_request_mi": _mem_to_mi(backend_resources.get("memory_request")),
-        "database_replicas": database.get("replicas"),
-        "database_max_connections": database.get("max_connections"),
-    }
 
 
 def iteration_rows_for_cell(
@@ -288,8 +220,6 @@ def iteration_rows_for_cell(
     rows: list[dict[str, Any]] = []
     prev_goodput: float | None = None
     for point in points:
-        iteration_path = exp_dir / ITERATIONS_DIRNAME / point.folder_name
-        knobs = _spec_knobs_for_iteration(iteration_path)
         delta = None
         delta_pct = None
         if prev_goodput is not None:
@@ -309,7 +239,6 @@ def iteration_rows_for_cell(
                 "delta_goodput_rps": delta,
                 "delta_goodput_pct": delta_pct,
                 "recovered_from_zero": bool(prev_goodput == 0.0 and point.goodput_rps > 0.0),
-                **knobs,
             }
         )
         prev_goodput = point.goodput_rps

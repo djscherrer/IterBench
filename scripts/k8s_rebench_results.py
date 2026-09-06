@@ -5,7 +5,7 @@ Bulk re-benchmark / reverify existing Kubernetes iteration results.
     cp -r results results_reverified
     python scripts/k8s_rebench_results.py \\
         --results-dir results_reverified \\
-        --cluster baxbench-emulab \\
+        --cluster <your-profile> \\
         --load-profile default \\
         --force
 
@@ -149,8 +149,7 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         type=Path,
         default=None,
         help="Filter: path to a text file listing whole cells to process, one per line as "
-        "'<model_dir>/<scenario_dir>/<env_dir>' (on-disk names, e.g. "
-        "'openai-gpt-5.5-2026-04-23/ClickCount/Go-net-http'). Blank lines and '#' comments "
+        "'<model_dir>/<scenario_dir>/<env_dir>' (on-disk directory names). Blank lines and '#' comments "
         "are ignored. Every cell not listed is skipped. Combine with --only-missing-artifacts "
         "to gap-fill just those cells.",
     )

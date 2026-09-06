@@ -1,12 +1,12 @@
 #!/bin/bash
 # BaxBench - Kubernetes preflight
 #
-# Prerequisites checklist (run from node0 before the first preflight):
+# Prerequisites checklist (run from the control-plane host before the first preflight):
 #   [ ] Passwordless SSH to every host in profiles.py (control, workers, Locust)
 #   [ ] Host keys in ~/.ssh/known_hosts — preflight uses non-interactive SSH;
 #       on a fresh/wiped cluster run once (edit hostnames to match your profile):
-#         ssh-keyscan -H node0 node1 node2 node3 node4 node5 node6 node7 node8 >> ~/.ssh/known_hosts
-#   [ ] kubectl on node0 PATH (apt install; not a pip package)
+#         ssh-keyscan -H <control> <worker1> <locust1> >> ~/.ssh/known_hosts
+#   [ ] kubectl on the control host PATH (apt install; not a pip package)
 #   [ ] pipenv + Python 3.12; pipenv install in repo root
 #
 # Run order:
@@ -16,15 +16,15 @@
 #   3. THIS SCRIPT  — K8S_SKIP_CLUSTER_CHECKS=false to verify the cluster (optional)
 #
 # Topology: edit K8S_CLUSTER_REGISTRY in src/k8s_bench/cluster/profiles.py
-# Select profile: BAXBENCH_K8S_CLUSTER below.
+# Set BAXBENCH_K8S_CLUSTER to the profile name before running this wrapper.
 
 set -euo pipefail
 
 # --- Cluster profile (single selector; hosts live in profiles.py) ---
-BAXBENCH_K8S_CLUSTER="baxbench-emulab"
+BAXBENCH_K8S_CLUSTER="${BAXBENCH_K8S_CLUSTER:-}"
 
 # --- Preflight behaviour ---
-K8S_INSTALL_PREREQUISITES="true"
+K8S_INSTALL_PREREQUISITES="${K8S_INSTALL_PREREQUISITES:-false}"
 K8S_SKIP_CLUSTER_CHECKS="false"
 
 # Optional: Kubernetes apt channel (pkgs.k8s.io), e.g. v1.29
@@ -33,6 +33,11 @@ K8S_SKIP_CLUSTER_CHECKS="false"
 # --- Execution ---
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 export PYTHONPATH="${ROOT}/src${PYTHONPATH:+:${PYTHONPATH}}"
+
+if [ -z "$BAXBENCH_K8S_CLUSTER" ]; then
+    echo "Set BAXBENCH_K8S_CLUSTER to a profile in src/k8s_bench/cluster/profiles.py." >&2
+    exit 2
+fi
 
 ARGS=("--mode" "k8s-preflight")
 

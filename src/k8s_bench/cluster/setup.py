@@ -77,7 +77,7 @@ def _lab_ipv4(host: str, logger: logging.Logger) -> str:
     control-network address that the default route uses.
     """
     if _is_local_host(host):
-        short = (host or "").strip().split("@")[-1].split(".")[0] or "node0"
+        short = (host or "").strip().split("@")[-1].split(".")[0] or "localhost"
         for cmd in (
             f"getent ahostsv4 {shlex.quote(short)} 2>/dev/null | awk '{{print $1; exit}}'",
             "ip -4 -o addr show scope global | awk '{print $4}' | cut -d/ -f1",

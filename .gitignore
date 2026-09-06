@@ -338,10 +338,11 @@ results-old/
 results-05-12/
 results/
 results_reverified/
+results_reverified2/
 results_lan/
 results_custom/
 results_aggregate/
-# ...except the four aggregate CSVs every reported number is derived from.
+# ...except the four aggregate CSVs every number in the thesis derives from.
 !results_aggregate/
 results_aggregate/*
 !results_aggregate/*.csv
@@ -367,6 +368,7 @@ results_snapshots/**/performance
 results_snapshots/**/*perf*/
 *.tar
 throughput*.csv
+*.pptx.inspect.ndjson
 
 prompts/*
 

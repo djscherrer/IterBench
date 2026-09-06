@@ -1,6 +1,6 @@
 <div align="center">
     <img src="docs/img/mascot.png" alt="IterBench mascot" width="200">
-    <h1>IterBench: Kubernetes Deployment Optimization Fork of BaxBench</h1>
+    <h1>IterBench — Kubernetes Deployment Optimization Fork of BaxBench</h1>
 </div>
 
 ## Overview
@@ -8,6 +8,20 @@
 **IterBench** is this repository's framework name in the thesis; the code identifiers throughout the repo (module names, CLI flags, directory names) stay `baxbench-*`/`k8s_bench` for continuity with the fork it's built on. This repository is a fork of [BaxBench](https://baxbench.com) ([paper](https://arxiv.org/abs/2502.11844)), a benchmark that evaluates whether LLMs can generate correct and secure backend applications. The fork keeps BaxBench's scenario/framework/task definitions and builds an iterative deployment-optimization loop on top, used for a master's thesis on LLM-driven deployment optimization under fixed cluster resource constraints.
 
 **`k8s_bench`** is the core contribution: an iterative loop (decide → code → spec → deploy → benchmark → feedback) where an LLM agent repeatedly refines both the *application code* and its *Kubernetes deployment configuration*, guided by real Locust load-test goodput and cluster resource utilization. See [docs/k8s_approach.md](docs/k8s_approach.md).
+
+## Documentation
+
+The compact, GitHub-friendly companion to the thesis is available under
+[`docs/`](docs/README.md):
+
+| Guide | Contents |
+| --- | --- |
+| [Background](docs/background.md) | The relationship between BaxBench, AutoBaxBuilder, and IterBench. |
+| [Methods](docs/methods.md) | Scenario/workload construction, iterative optimisation, deployment constraints, and adaptive load testing. |
+| [Running and reproducing](docs/reproducing.md) | Published-data reconstruction, raw-result aggregation, and new cluster runs. |
+| [Evaluation](docs/evaluation.md) | Setup, results, figures, and interpretation limits. |
+| [Complete results appendix](docs/results_appendix.md) | All 693 baseline/refinement outcomes, linked to the tracked aggregate CSVs. |
+| [Master's thesis (PDF)](docs/Scherrer_David_Masters_Thesis_647.pdf) | Full thesis: *Benchmarking LLM-Driven Iterative Optimisation of Deployed Backend Services*. |
 
 ## Repository layout
 
@@ -41,13 +55,11 @@ scripts/
 ├── analysis/             # results aggregation across models/scenarios
 └── results_overview.py, fetch_results.sh
 
-docs/                     # design notes for the k8s pipeline (approach, prompt design, failure taxonomy,
-                          #   Locust pipeline, load-generator saturation audit)
+tests/                    # pytest unit tests (pure-logic modules only, e.g. k8s_bench/reverify/); `pytest` from repo root
+docs/                     # design notes for the k8s pipeline (approach, prompt design, failure taxonomy, Locust pipeline)
 results/                  # generated code + logs, one dir per model (gitignored)
 results_reverified/       # deploy-only repeated measurements (gitignored)
-results_reverified2/      # second reverification pass, gap-fills what results_reverified/ missed (gitignored)
-results_aggregate/        # cross-run aggregate tables/figures (figures gitignored; the four CSVs are tracked,
-                          #   see "Reported results" below)
+results_aggregate/        # cross-run aggregate CSV snapshots (tracked); regenerated figures are gitignored
 gen_scenarios/            # scenario_builder's own artifacts/ + results/ (gitignored) — see
                           #   "Generating new scenarios" below and gen_scenarios/README.md
 ```
@@ -79,8 +91,12 @@ master-network evidence, and byte-identical rows that were not re-run), use:
 Install the environment from the repo root:
 
 ```bash
-pipenv sync
+pipenv install --dev
 ```
+
+The `Pipfile.lock` currently needs refreshing before `pipenv sync` can be
+treated as the reproducible-install command. `pipenv install --dev` is the
+working command for this revision.
 
 Run any script inside the project environment:
 
@@ -102,12 +118,15 @@ CSCS_API_KEY=
 
 ## Usage
 
-Everything is driven through `src/main.py --mode <mode>`; `scripts/` just wraps common invocations.
+Everything is driven through `src/main.py --mode <mode>`; `scripts/` wraps
+common invocations. The cluster wrappers intentionally require your model,
+task, and cluster-profile selection rather than embedding the thesis run.
 
 ```bash
-scripts/k8s_preflight.sh        # validate cluster access
-scripts/k8s_setup_cluster.sh    # provision the benchmarking cluster
-scripts/bench_k8s.sh            # run the iterative decide/code/spec/deploy/bench loop
+BAXBENCH_K8S_CLUSTER=<your-profile> scripts/k8s_preflight.sh
+BAXBENCH_K8S_CLUSTER=<your-profile> scripts/k8s_setup_cluster.sh
+MODELS=<provider/model> ENVS=<framework> SCENARIOS=<scenario> \
+  K8S_CLUSTER=<your-profile> scripts/bench_k8s.sh
 ```
 
 Restrict the task set with `--scenarios`, `--envs`, `--only_samples` (space-separated values). Arguments can also be loaded from a file, e.g. `python src/main.py @config.args`.
@@ -121,20 +140,19 @@ pipenv run python scripts/analysis/aggregate_evaluation.py
 pipenv run python scripts/results_overview.py
 ```
 
-Raw result trees are gitignored and too large to commit; trimmed reference
-snapshots are published as GitHub Release assets instead — see
-[docs/results_archive.md](docs/results_archive.md) for what's in them, the
-network-confound background, and the download command.
+The aggregate command requires a raw `results/` tree. Readers can reproduce
+the published summaries and appendices directly from the tracked
+`results_aggregate/*.csv` files; see [the reproduction guide](docs/reproducing.md).
+Raw result trees are intentionally too large to commit; see
+[docs/results_archive.md](docs/results_archive.md) for their provenance and
+the network-confound background.
 
 ## Generating new scenarios (AutoBaxBuilder)
 
 `src/scenario_builder/` bootstraps new BaxBench scenarios end-to-end — idea → OpenAPI spec → reference solution → functional tests → security exploits → Locust script — cutting manual scenario-authoring effort by ~12× while matching or outperforming expert-written tests and exploits ([paper](https://arxiv.org/abs/2512.21132)). It's a separate package from the rest of this repo, but resolves `env`, `scenarios`, `llm`, `tasks`, and `cwes` to this repo's own copies rather than keeping forks.
 
-```bash
-scripts/orchestrate_scenarios.sh
-```
-
-or drive it directly (its entry point is `orchestrator.py`, run from `src/scenario_builder/`):
+Drive the pipeline directly (its entry point is `orchestrator.py`, run from
+`src/scenario_builder/`):
 
 ```bash
 cd src/scenario_builder
@@ -146,31 +164,6 @@ python orchestrator.py --export_latest --scenario FooBarScenario
 ```
 
 Each `--generate_*` step writes numbered artifacts into the artifacts directory (`FooBarScenario_iu{t}` after t test-iteration steps, `_iw{t}` after t security-iteration steps, `_implementations_i{t/u/w}{t}` for the corresponding solutions). `--export_latest` promotes the newest iteration into `src/scenarios/generated_scenarios/` — a staging area for manual review before a scenario is wired into `scenarios.all_scenarios`.
-
-## Reported results
-
-The evaluation covers 63 tasks (7 scenarios × 3 frameworks × 3 models), one trajectory each,
-with a baseline plus ten refinement iterations, for 693 planned candidate iterations of which
-632 reached the load-test stage.
-
-Every number and figure in the thesis is computed from four tracked CSVs in `results_aggregate/`:
-
-| File | Rows | Contents |
-|---|---:|---|
-| `cells.csv` | 63 | one row per task: baseline, first, best and final sustained goodput, lever counts, LLM spend |
-| `iterations.csv` | 632 | one row per benchmarked iteration: goodput, selected lever, deltas, key spec fields |
-| `failures.csv` | 61 | one row per recorded pipeline failure: stage, kind, model, scenario, framework |
-| `load_profile_phases.csv` | 632 | per-run load-profile outcome: phase durations, explore stop reason, recovery and refine success |
-
-Regenerate them from a full results tree with:
-
-```bash
-pipenv run python scripts/analysis/aggregate_evaluation.py --results-root results
-```
-
-The complete per-iteration artifact tree (generated source, rendered manifests, Locust output and
-cluster diagnostics for all 632 benchmarked iterations) is roughly 16 GB and is not distributed
-here. It is retained and available on request.
 
 ## Troubleshooting
 

@@ -145,7 +145,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"\nDone. Removed deploy/bench for {len(affected)} iteration(s).")
         print("Re-bench them with:")
         print(f"  python scripts/k8s_rebench_results.py --results-dir {root} \\")
-        print("    --cluster baxbench-emulab --load-profile k8s-explore-refine \\")
+        print("    --cluster <your-profile> --load-profile k8s-explore-refine \\")
         print("    --only-missing-artifacts")
     return 0
 

@@ -88,44 +88,6 @@ K8S_CLUSTER_REGISTRY: dict[str, K8sClusterProfile] = {
         kubeconfig_path="~/.kube/config-lab",
         notes="Workloads run on cluster nodes; use spec.yaml for replica/resource tuning.",
     ),
-    "baxbench-emulab": K8sClusterProfile(
-        name="baxbench-emulab",
-        description=(
-            "Emulab: node0 control+BaxBench+registry :5000; "
-            "node1 Locust master + 16 workers, node2/node3/node4 32 workers each; "
-            "k8s workers node5-8."
-        ),
-        kube_context="kubernetes-admin@kubernetes",
-        kubeconfig_path="/tmp/dscherre/.kube/config-baxbench-emulab",
-        control_node="node0",
-        worker_nodes=("node5", "node6", "node7", "node8"),
-        load_master="node1",
-        load_workers=(
-            "node1", "node1", "node1", "node1", "node1", "node1", "node1", "node1",
-            "node1", "node1", "node1", "node1", "node1", "node1", "node1", "node1",
-
-            "node2", "node2", "node2", "node2", "node2", "node2", "node2", "node2",
-            "node2", "node2", "node2", "node2", "node2", "node2", "node2", "node2",
-            "node2", "node2", "node2", "node2", "node2", "node2", "node2", "node2",
-            "node2", "node2", "node2", "node2", "node2", "node2", "node2", "node2",
-
-            "node3", "node3", "node3", "node3", "node3", "node3", "node3", "node3",
-            "node3", "node3", "node3", "node3", "node3", "node3", "node3", "node3",
-            "node3", "node3", "node3", "node3", "node3", "node3", "node3", "node3",
-            "node3", "node3", "node3", "node3", "node3", "node3", "node3", "node3",
-
-            "node4", "node4", "node4", "node4", "node4", "node4", "node4", "node4",
-            "node4", "node4", "node4", "node4", "node4", "node4", "node4", "node4",
-            "node4", "node4", "node4", "node4", "node4", "node4", "node4", "node4",
-            "node4", "node4", "node4", "node4", "node4", "node4", "node4", "node4",
-
-        ),
-        registry_enabled=True,
-        registry_host="",  # auto-detect node0 lab IP at bench time
-        registry_port=5000,
-        registry_auto_host=True,
-        notes="Registry is configured by ./scripts/k8s_setup_cluster.sh when registry_enabled=true.",
-    ),
 }
 
 

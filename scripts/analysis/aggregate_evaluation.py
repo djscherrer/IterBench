@@ -8,7 +8,7 @@ for every cell that has an ``iterations/`` tree, and produces:
 - ``cells.csv``      one row per scenario x framework x model cell (baseline /
                       final / best goodput, completion status, LLM cost).
 - ``iterations.csv``  one row per successful iteration (goodput, refinement
-                      kind, delta vs. previous iteration, spec knobs).
+                      kind, and delta vs. the previous iteration).
 - ``failures.csv``   one row per recorded ``failure.json`` (phase, kind).
 - ``figures/*.png`` + ``*.pdf``  the plots in ``plots.aggregate.figures``.
 
@@ -34,8 +34,38 @@ _SRC = _REPO_ROOT / "src"
 if str(_SRC) not in sys.path:
     sys.path.insert(0, str(_SRC))
 
-from plots.aggregate.tables import collect_all, geometric_mean  # noqa: E402
+from plots.aggregate.tables import AggregateData, collect_all, geometric_mean  # noqa: E402
 from plots.aggregate.figures import generate_all_figures  # noqa: E402
+
+
+def _round_for_publication(data: AggregateData) -> AggregateData:
+    """Limit CSV precision to the resolution meaningful to readers.
+
+    Goodput is measured to tenths; ratios and percent changes retain three
+    and two decimal places, respectively. This prevents binary floating-point
+    artefacts from leaking into the public data release.
+    """
+    return AggregateData(
+        cells=data.cells.round(
+            {
+                "baseline_goodput_rps": 1,
+                "final_goodput_rps": 1,
+                "max_goodput_rps": 1,
+                "first_nonzero_goodput_rps": 1,
+                "improvement_ratio": 3,
+                "gain_first_nonzero": 3,
+                "total_llm_cost_usd": 4,
+            }
+        ),
+        iterations=data.iterations.round(
+            {
+                "goodput_rps": 1,
+                "delta_goodput_rps": 1,
+                "delta_goodput_pct": 2,
+            }
+        ),
+        failures=data.failures,
+    )
 
 
 def main() -> int:
@@ -58,6 +88,7 @@ def main() -> int:
         include_models=set(args.include_models) if args.include_models else None,
         exclude_models=set(args.exclude_models) if args.exclude_models else None,
     )
+    data = _round_for_publication(data)
 
     if data.cells.empty:
         print("No matching k8s experiment cells found.", file=sys.stderr)

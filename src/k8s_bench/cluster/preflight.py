@@ -52,9 +52,9 @@ def _validate_kubeconfig_file(logger: logging.Logger) -> None:
             f"KUBECONFIG file does not exist: {path}\n"
             "On the control-plane after kubeadm init, copy /etc/kubernetes/admin.conf "
             "to the machine where you run BaxBench, e.g.\n"
-            "  mkdir -p /tmp/dscherre/.kube\n"
-            "  sudo cp /etc/kubernetes/admin.conf /tmp/dscherre/.kube/config-baxbench-emulab\n"
-            "  chmod 600 /tmp/dscherre/.kube/config-baxbench-emulab\n"
+            "  mkdir -p ~/.kube\n"
+            "  sudo cp /etc/kubernetes/admin.conf ~/.kube/config\n"
+            "  chmod 600 ~/.kube/config\n"
             "Or set K8S_SKIP_CLUSTER_CHECKS=true to only run SSH node checks."
         )
     logger.info("kubeconfig: %s", path)

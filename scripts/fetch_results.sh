@@ -8,19 +8,19 @@
 #       [REMOTE_RESULTS_DIR]
 #
 # Example:
-#   ./scripts/fetch_results.sh dscherre@node0 \
-#     /tmp/dscherre/baxbench \
+#   ./scripts/fetch_results.sh USER@HOST \
+#     /path/to/baxbench \
 #     ~/Downloads results_reverified
 
 set -euo pipefail
 
-if [[ $# -lt 1 || $# -gt 4 ]]; then
-  echo "Usage: $0 USER@HOST [REMOTE_REPO] [LOCAL_OUTPUT_DIR] [REMOTE_RESULTS_DIR]" >&2
+if [[ $# -lt 2 || $# -gt 4 ]]; then
+  echo "Usage: $0 USER@HOST REMOTE_REPO [LOCAL_OUTPUT_DIR] [REMOTE_RESULTS_DIR]" >&2
   exit 2
 fi
 
 remote_host=$1
-remote_repo=${2:-/tmp/dscherre/baxbench}
+remote_repo=$2
 output_dir=${3:-.}
 remote_results_dir=${4:-results_reverified}
 timestamp=$(date -u +%Y%m%dT%H%M%SZ)

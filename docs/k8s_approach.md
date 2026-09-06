@@ -168,7 +168,7 @@ Three layers; do not conflate them.
 |----------|------------|----------|---------------------------|
 | **`03-spec/spec.yaml`** | Spec stage (LLM) | Workload **plan**: replicas, resources, pooler, DB topology, cache. Image may be placeholder (`baxbench/pending-at-bench:latest`). | **No** — stays the LLM record |
 | **`04-deploy/manifests/all.yaml`** | Deploy (`write_manifest_files`) | Rendered K8s YAML from **in-memory overlay** (LLM spec + runtime fields) | N/A (regenerated each deploy) |
-| **`04-deploy/probe.json`** | Deploy (on success) | **Runtime snapshot** + apply result | Written once per successful deploy |
+| **`04-deploy/probe.json`** | Deploy (on success) | **Runtime hand-off** + provenance/apply result | Written once per successful deploy |
 
 **Deploy overlay (in memory only)** — `update_iteration_spec()` in `stages/deploy.py`:
 
@@ -177,16 +177,22 @@ Three layers; do not conflate them.
 - Does **not** rewrite `spec.yaml` on disk.
 - Passes merged `K8sWorkloadSpec` to `deploy_iteration(spec=…)`.
 
-**`probe.json` runtime fields** (in addition to `success`, `namespace`, `wait_details`, …):
+**`probe.json` structure** (in addition to top-level `success`):
+
+- `runtime`: the two fields Bench consumes — `namespace` and `nodeport_target`.
+- `provenance`: retained-only deployment evidence — image, manifest/context, labels, timestamp, readiness-wait details, and apply output.
 
 | Field | Meaning |
 |-------|---------|
-| `image_reference` | Pushed registry tag for the FT-built image |
-| `backend_port` | App port used in manifests / Locust |
-| `nodeport_target` | External URL for load generators (`http://<node>:<nodePort>`) |
-| `deploy_labels` | BaxBench metadata labels applied at deploy |
+| `runtime.nodeport_target` | External URL for load generators (`http://<node>:<nodePort>`) |
+| `provenance.backend_service_url` | In-cluster DNS address of the backend Service, retained for provenance |
+| `provenance.backend_port` | App Service/container port used by Deploy's manifest and retained for audit |
+| `provenance.image_reference` | Pushed registry tag for the FT-built image |
+| `provenance.deploy_labels` | BaxBench metadata labels applied at deploy |
 
-Bench **must not** re-derive these; it reads them from `probe.json` via `load_probe_deploy_result()`. Missing runtime fields → error (“re-run deploy”).
+Bench **must not** re-derive these; it reads them from the `runtime` section of
+`probe.json` via `load_probe_deploy_result()`. The complete `nodeport_target`
+is the Locust target URL. Missing runtime fields → error (“re-run deploy”).
 
 Bench still reads **`spec.yaml`** for one purpose only: **diagnostics topology** (which DB/pooler/cache services exist) for `diagnostics_session_for_k8s`. That information is not stored in the probe.
 
@@ -223,7 +229,8 @@ run_bench_stage
 
 `run_distributed_locust` (formerly `run_k8s_bench_iteration`) is the Locust + diagnostics engine. It does not apply manifests or push images.
 
-`05-bench/config.json` embeds the LLM `spec.yaml` dict plus full `deploy_result` (including runtime fields) for post-run inspection.
+`05-bench/config.json` embeds the LLM `spec.yaml` dict plus the grouped
+`deploy_result` (runtime plus provenance) for post-run inspection.
 
 ---
 
@@ -393,7 +400,7 @@ be deleted first, with no Kubernetes contact and no filesystem writes:
 ```bash
 python scripts/k8s_rebench_results.py \
     --results-dir results_reverified \
-    --cluster baxbench-emulab \
+    --cluster <your-profile> \
     --load-profile default \
     --dry-run
 ```
@@ -403,7 +410,7 @@ python scripts/k8s_rebench_results.py \
 ```bash
 python scripts/k8s_rebench_results.py \
     --results-dir results_reverified \
-    --cluster baxbench-emulab \
+    --cluster <your-profile> \
     --load-profile default
 ```
 
