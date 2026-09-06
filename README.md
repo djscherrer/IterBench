@@ -1,5 +1,5 @@
 <div align="center">
-    <img src="docs/img/mascot.png" alt="IterBench mascot" width="200">
+    <img src="docs/img/iterbench-icon.png" alt="IterBench icon" width="200">
     <h1>IterBench — Kubernetes Deployment Optimization Fork of BaxBench</h1>
 </div>
 
