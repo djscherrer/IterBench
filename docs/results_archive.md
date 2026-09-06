@@ -26,10 +26,10 @@ not the final analysis tree used by the checked-in CSVs.
   internal-LAN reverification pass.
 - **`results_reverification2_trimmed.tar.gz`** — a second pass that gap-fills
   what the first one missed.
-- **`gen_scenarios.tar.gz`** — the AutoBaxBuilder scenario-authoring working
-  directory (untrimmed — see [`gen_scenarios/README.md`](../gen_scenarios/README.md)
-  for what's in it; that file is tracked in the repo despite `gen_scenarios/`
-  itself being gitignored).
+- **`gen_scenarios.tar.gz`** — optional, untrimmed AutoBaxBuilder
+  scenario-authoring scratch state. It is a release asset when available, not
+  a tracked repository directory, and is not needed to reproduce the
+  published evaluation.
 
 The three `results_*` archives have their `05-bench/diagnostics/` (k8s pod
 logs, pgbouncer/postgres logs, cluster metrics) and `05-bench/locust/logs/`

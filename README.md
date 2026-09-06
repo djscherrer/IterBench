@@ -55,13 +55,10 @@ scripts/
 ├── analysis/             # results aggregation across models/scenarios
 └── results_overview.py, fetch_results.sh
 
-tests/                    # pytest unit tests (pure-logic modules only, e.g. k8s_bench/reverify/); `pytest` from repo root
 docs/                     # design notes for the k8s pipeline (approach, prompt design, failure taxonomy, Locust pipeline)
 results/                  # generated code + logs, one dir per model (gitignored)
 results_reverified/       # deploy-only repeated measurements (gitignored)
 results_aggregate/        # cross-run aggregate CSV snapshots (tracked); regenerated figures are gitignored
-gen_scenarios/            # scenario_builder's own artifacts/ + results/ (gitignored) — see
-                          #   "Generating new scenarios" below and gen_scenarios/README.md
 ```
 
 To stream a remote re-verification tree into an archive, use
@@ -129,7 +126,7 @@ MODELS=<provider/model> ENVS=<framework> SCENARIOS=<scenario> \
   K8S_CLUSTER=<your-profile> scripts/bench_k8s.sh
 ```
 
-Restrict the task set with `--scenarios`, `--envs`, `--only_samples` (space-separated values). Arguments can also be loaded from a file, e.g. `python src/main.py @config.args`.
+Restrict the task set with `--scenarios`, `--envs`, `--only_samples` (space-separated values).
 
 See [docs/k8s_approach.md](docs/k8s_approach.md), [docs/k8s_stage_failures.md](docs/k8s_stage_failures.md), [docs/k8s_conversational_prompt_slimming.md](docs/k8s_conversational_prompt_slimming.md), and [docs/locust_pipeline.md](docs/locust_pipeline.md) for design details.
 
@@ -164,6 +161,9 @@ python orchestrator.py --export_latest --scenario FooBarScenario
 ```
 
 Each `--generate_*` step writes numbered artifacts into the artifacts directory (`FooBarScenario_iu{t}` after t test-iteration steps, `_iw{t}` after t security-iteration steps, `_implementations_i{t/u/w}{t}` for the corresponding solutions). `--export_latest` promotes the newest iteration into `src/scenarios/generated_scenarios/` — a staging area for manual review before a scenario is wired into `scenarios.all_scenarios`.
+
+The builder creates its local `gen_scenarios/` working directory on demand; it
+is intentionally not part of the public repository.
 
 ## Troubleshooting
 
